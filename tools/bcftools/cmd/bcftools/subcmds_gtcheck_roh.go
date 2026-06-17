@@ -36,7 +36,7 @@ Options:
       --n-matches INT            Print only the top INT matches per query sample. Negative sorts by HWE prob. 0 = all.
       --no-HWE-prob              Disable the -log P(HWE) column.
   -o, --output FILE              Write output to FILE (default stdout).
-  -O, --output-type t|z          t = tab-text (default), z = compressed (v1 supports only t).
+  -O, --output-type t|z[N]       t = tab-text (default), z = BGZF-compressed (optional level N=0-9).
   -p, --pairs LIST               Comma-separated sample pairs.
   -P, --pairs-file FILE          File of tab-separated sample pairs.
   -r, --regions REGION           Comma-separated list of regions (post-filter in v1).
@@ -55,10 +55,9 @@ Options:
       --version                  Show version.
 
 Notes: GT and PL scoring, the probability/integer discordance paths,
-the HWE column, --n-matches trimming and --distinctive-sites are
-implemented. The remaining gaps (-O z compressed output, the -c/--cluster
-dendrogram, and filter expressions) are tracked in
-docs/PARITY_ROADMAP.md#bcftools.
+the HWE column, --n-matches trimming, --distinctive-sites and both -O
+output containers (t and z) are implemented. The remaining gap (the
+-c/--cluster dendrogram) is tracked in docs/PARITY_ROADMAP.md#bcftools.
 `
 
 func runGtcheck(args []string) int {
@@ -122,8 +121,8 @@ func runGtcheck(args []string) int {
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "t", "Output type (t or z)")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output file")
 	cliflag.StringVar(fs, &cluster, "c", "cluster", "", "Cluster MIN,MAX")
-	fs.StringVar(&distinctiveSites, "distinctive-sites", "", "Find distinguishing sites (accepted; v1 not implemented)")
-	fs.IntVar(&nMatches, "n-matches", 0, "Top-N matches (accepted; v1 not implemented)")
+	fs.StringVar(&distinctiveSites, "distinctive-sites", "", "Emit the minimal set of sites distinguishing at least NUM pairs")
+	fs.IntVar(&nMatches, "n-matches", 0, "Print only the top INT matches per query sample (negative sorts by HWE prob; 0 = all)")
 	// Upstream-deprecated `-G/--GTs-only`. We MUST accept it AND emit
 	// the literal upstream deprecation error.
 	cliflag.BoolVar(fs, &gtsOnlyDeprecated, "G", "GTs-only", false, "Deprecated upstream alias")
@@ -157,16 +156,20 @@ func runGtcheck(args []string) int {
 		return 2
 	}
 
-	// Reject only the genuinely unimplemented flags (the -c/--cluster
-	// dendrogram and -O z compressed output). PL scoring, --n-matches
-	// and --distinctive-sites are implemented below.
-	if deferred := checkGtcheckDeferred(checkGtcheckDeferredInputs{
-		cluster:    cluster,
-		outputType: outputType,
-	}); deferred != "" {
-		fmt.Fprintf(os.Stderr, "bcftools gtcheck: %s is not implemented in v1; tracked in docs/PARITY_ROADMAP.md#bcftools\n", deferred)
+	// Parse -O t|z[<level>] into the output container and BGZF level,
+	// matching upstream vcfgtcheck.c's `case 'O'`: only t and z are valid
+	// (u/b are rejected with the upstream "output type not recognised"
+	// diagnostic); a trailing digit on z sets the compression level, and a
+	// bare digit argument sets the level on the default text container.
+	outContainer, outLevel, oerr := parseGtcheckOutputType(outputType)
+	if oerr != nil {
+		fmt.Fprintln(os.Stderr, oerr)
 		return 2
 	}
+
+	// All gtcheck output containers (t and z), -c/--cluster, PL scoring,
+	// --n-matches and --distinctive-sites are implemented; there is no
+	// longer any deferred-flag gate here.
 
 	// Parse -c/--cluster MIN,MAX into the clustering thresholds.
 	var clusterMin, clusterMax float64
@@ -235,7 +238,8 @@ func runGtcheck(args []string) int {
 		DistinctiveSites:     dsValue,
 		HasDistinctiveSites:  dsSet,
 		NMatches:             nMatches,
-		OutputType:           outputType,
+		OutputType:           outContainer,
+		CompressLevel:        outLevel,
 		Cluster:              clusterSet,
 		ClusterMin:           clusterMin,
 		ClusterMax:           clusterMax,
@@ -280,19 +284,43 @@ func splitSamplesArg(arg string) (qry, gt []string, err error) {
 	return nil, nil, fmt.Errorf("Which one? Query samples (qry:%s) or genotype samples (gt:%s)?", arg, arg)
 }
 
-// checkGtcheckDeferredInputs groups the flag values that the port
-// recognises but does not implement.
-type checkGtcheckDeferredInputs struct {
-	cluster    string
-	outputType string
-}
-
-func checkGtcheckDeferred(in checkGtcheckDeferredInputs) string {
-	switch {
-	case in.outputType != "" && in.outputType != "t":
-		return "-O z (compressed output)"
+// parseGtcheckOutputType parses the gtcheck -O argument into its container
+// ("t" text or "z" BGZF) and BGZF compression level (-1 = default). It is a
+// faithful port of vcfgtcheck.c's `case 'O'`: the first character selects the
+// container (t/z), or, if it is neither, the whole argument must be a 0-9
+// compression level (which leaves the container at the default text); any
+// remaining characters after the first set the level. u/b and other unknown
+// types are rejected with upstream's literal diagnostics.
+func parseGtcheckOutputType(arg string) (container string, level int, err error) {
+	container = "t"
+	level = -1
+	if arg == "" {
+		return container, level, nil
 	}
-	return ""
+	switch arg[0] {
+	case 't':
+		container = "t"
+	case 'z':
+		container = "z"
+	default:
+		// Not t/z: the whole argument must parse as a 0-9 level. On failure
+		// upstream reports the type as unrecognised.
+		lv, perr := strconv.Atoi(arg)
+		if perr != nil || lv < 0 || lv > 9 {
+			return "", 0, fmt.Errorf("The output type \"%s\" not recognised", arg)
+		}
+		level = lv
+		return container, level, nil
+	}
+	// A suffix after the container letter is a 0-9 compression level.
+	if len(arg) > 1 {
+		lv, perr := strconv.Atoi(arg[1:])
+		if perr != nil || lv < 0 || lv > 9 {
+			return "", 0, fmt.Errorf("Could not parse argument: --output-type %s", arg[1:])
+		}
+		level = lv
+	}
+	return container, level, nil
 }
 
 // parseGtcheckCluster parses the `-c/--cluster MIN,MAX` argument into its two

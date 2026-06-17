@@ -57,10 +57,12 @@ PLINK export modes (implemented to the PLINK1 spec; biallelic only):
                                    (SNP-major; A1=ALT, A2=REF). Multi-allelic
                                    and no-ALT records are skipped with a warning.
 
-Accepted-and-deferred conversion modes (parse cleanly; v1 emits a
-"not implemented" error pointing at docs/PARITY_ROADMAP.md if any
-are actually set):
-  --gvcf (block-output pairing).
+gVCF conversion (implemented):
+      --gvcf2vcf                   Expand gVCF reference blocks to per-site VCF
+                                   (requires -f/--fasta-ref).
+      --gvcf                       Upstream prefix-abbreviation of --gvcf2vcf;
+                                   identical behaviour.
+  -f, --fasta-ref FILE             Reference FASTA used to fill expanded sites.
 
 Accepted-and-ignored stubs (no-op against the round-trip flow):
   --regions-overlap, --targets-overlap, --no-version,
@@ -99,7 +101,7 @@ func runConvert(args []string) int {
 		verbosity           int
 		gvcf2vcf            bool
 		fastaRef            string
-		gvcfBlocks          string
+		gvcfAlias           bool
 		gensample           string
 		gensample2vcf       string
 		threeN6             bool
@@ -140,7 +142,13 @@ func runConvert(args []string) int {
 	fs.IntVar(&verbosity, "verbosity", 0, "")
 	fs.BoolVar(&gvcf2vcf, "gvcf2vcf", false, "")
 	cliflag.StringVar(fs, &fastaRef, "f", "fasta-ref", "", "")
-	fs.StringVar(&gvcfBlocks, "gvcf", "", "")
+	// Upstream `bcftools convert` has no standalone --gvcf option: in GNU
+	// getopt_long, `--gvcf` is the unambiguous-prefix abbreviation of the
+	// no-argument `--gvcf2vcf` flag (see reference_code/bcftools/vcfconvert.c
+	// loptions; the binary treats `--gvcf` exactly like `--gvcf2vcf`). Go's
+	// flag package does not do prefix matching, so we register --gvcf as an
+	// explicit boolean alias of --gvcf2vcf to reproduce that behaviour.
+	fs.BoolVar(&gvcfAlias, "gvcf", false, "")
 	cliflag.StringVar(fs, &gensample, "g", "gensample", "", "")
 	cliflag.StringVar(fs, &gensample2vcf, "G", "gensample2vcf", "", "")
 	fs.BoolVar(&threeN6, "3N6", false, "")
@@ -222,7 +230,9 @@ func runConvert(args []string) int {
 		}
 		return 0
 	}
-	if gvcf2vcf {
+	// `--gvcf` is upstream's prefix abbreviation of `--gvcf2vcf`; treat them
+	// identically (expand gVCF reference blocks back to per-site VCF).
+	if gvcf2vcf || gvcfAlias {
 		rest := fs.Args()
 		if len(rest) == 0 {
 			fmt.Fprintln(os.Stderr, "bcftools convert: missing input file")
@@ -248,17 +258,6 @@ func runConvert(args []string) int {
 			return 1
 		}
 		return 0
-	}
-
-	// Reject conversion modes that aren't implemented in v1 with a
-	// clear error pointing at docs/PARITY_ROADMAP.md (rather than
-	// silently accepting and producing the wrong output). The GEN/sample
-	// family (-g/-G/--tag/--3N6/--sex/--vcf-ids) is handled below.
-	if deferred := checkConvertDeferred(checkConvertDeferredInputs{
-		gvcfBlocks: gvcfBlocks,
-	}); deferred != "" {
-		fmt.Fprintf(os.Stderr, "bcftools convert: %s not implemented in v1; tracked in docs/PARITY_ROADMAP.md#bcftools\n", deferred)
-		return 2
 	}
 
 	// PLINK exporters (--plink / --tped / --plink-bed). Mutually exclusive
@@ -506,24 +505,6 @@ func runConvertHap(in convertHapInputs) (bool, int) {
 		return true, 0
 	}
 	return false, 0
-}
-
-// checkConvertDeferredInputs groups the conversion-mode flag values that
-// v1 recognises but does not implement. checkConvertDeferred returns
-// the upstream flag name when any are set, or "" if none.
-type checkConvertDeferredInputs struct {
-	gvcfBlocks string
-}
-
-func checkConvertDeferred(in checkConvertDeferredInputs) string {
-	switch {
-	case in.gvcfBlocks != "":
-		// --gvcf block-output pairing is the only convert mode not yet
-		// implemented in v1 (the GEN/sample, TSV→VCF, gVCF→VCF and
-		// IMPUTE2 HAP/legend families all dispatch earlier).
-		return "--gvcf"
-	}
-	return ""
 }
 
 // convertGenInputs groups the parsed flag values that drive the GEN/sample

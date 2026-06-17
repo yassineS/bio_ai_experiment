@@ -19,6 +19,8 @@ package bcftools
 
 import (
 	"bytes"
+	"compress/gzip"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -333,4 +335,114 @@ func mustParseFloat(t *testing.T, s string) float64 {
 		t.Fatalf("parse %q: %v", s, err)
 	}
 	return f
+}
+
+// gunzipAll decompresses a (possibly multi-member, as BGZF is) gzip stream
+// fully. BGZF output is ordinary gzip framing, so the stdlib reader decodes
+// it; Multistream(true) consumes every concatenated member.
+func gunzipGtcheckBytes(t *testing.T, b []byte) string {
+	t.Helper()
+	zr, err := gzip.NewReader(bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	zr.Multistream(true)
+	out, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("gzip read: %v", err)
+	}
+	if err := zr.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	return string(out)
+}
+
+// runUpstreamGtcheckRaw runs upstream gtcheck capturing raw (binary) stdout,
+// used for -O z where the output is a BGZF stream rather than text.
+func runUpstreamGtcheckRaw(t *testing.T, bin string, args []string, dir string) []byte {
+	t.Helper()
+	cmd := exec.Command(bin, append([]string{"gtcheck"}, args...)...)
+	cmd.Dir = dir
+	var out, errBuf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("upstream gtcheck %v failed: %v\nstderr:\n%s", args, err, errBuf.String())
+	}
+	return out.Bytes()
+}
+
+// runGoGtcheckRaw runs the Go port capturing raw (binary) output.
+func runGoGtcheckRaw(t *testing.T, queryPath string, opts GtcheckOptions) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	if _, err := GtcheckFile(queryPath, &out, opts); err != nil {
+		t.Fatalf("Go GtcheckFile failed: %v", err)
+	}
+	return out.Bytes()
+}
+
+// TestParityGtcheck_OutputTypeZ verifies that gtcheck -O z emits a
+// BGZF/gzip stream whose decompressed content is byte-identical to (a) our
+// own -O t text and (b) upstream's -O z decompressed content, across both
+// cross-check and panel modes and a compression-level suffix. This is the
+// correct parity check for BGZF: the framed bytes differ by deflate backend,
+// but the decompressed payload must match exactly (modulo provenance).
+func TestParityGtcheck_OutputTypeZ(t *testing.T) {
+	bin := upstreamBcftoolsGtcheck(t)
+	dir, path := writeParityFixture(t)
+
+	cases := []struct {
+		name string
+		args []string
+		opts GtcheckOptions
+	}{
+		{"z-crosscheck", []string{"-O", "z", "-u", "GT"}, GtcheckOptions{OutputType: "z", CompressLevel: -1, UseTag: "GT"}},
+		{"z-level3", []string{"-O", "z3", "-u", "GT"}, GtcheckOptions{OutputType: "z", CompressLevel: 3, UseTag: "GT"}},
+		{"z-pairs", []string{"-O", "z", "-p", "S3,S1,S1,S2"}, GtcheckOptions{OutputType: "z", CompressLevel: -1, PairsSpec: "S3,S1,S1,S2"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Our -O z, decompressed.
+			ourZ := stripNonReproducible(gunzipGtcheckBytes(t, runGoGtcheckRaw(t, path, tc.opts)))
+			// Our -O t text.
+			tOpts := tc.opts
+			tOpts.OutputType = "t"
+			ourT := stripNonReproducible(runGoGtcheck(t, path, tOpts))
+			if ourZ != ourT {
+				t.Fatalf("-O z decompressed != -O t [%s]\n--- z ---\n%s\n--- t ---\n%s", tc.name, ourZ, ourT)
+			}
+			// Upstream -O z, decompressed.
+			upZ := stripNonReproducible(gunzipGtcheckBytes(t, runUpstreamGtcheckRaw(t, bin, append(tc.args, path), dir)))
+			if ourZ != upZ {
+				t.Fatalf("-O z decompressed != upstream -O z [%s]\n--- ours ---\n%s\n--- upstream ---\n%s", tc.name, ourZ, upZ)
+			}
+		})
+	}
+}
+
+// TestParityGtcheck_OutputTypeRejects verifies the gtcheck -O argument
+// validation matches upstream: u and b are rejected (only t and z are valid
+// containers), with upstream's literal "output type not recognised" wording.
+func TestParityGtcheck_OutputTypeRejects(t *testing.T) {
+	bin := upstreamBcftoolsGtcheck(t)
+	dir, path := writeParityFixture(t)
+	for _, bad := range []string{"u", "b"} {
+		t.Run(bad, func(t *testing.T) {
+			cmd := exec.Command(bin, "gtcheck", "-O", bad, path)
+			cmd.Dir = dir
+			var errBuf bytes.Buffer
+			cmd.Stderr = &errBuf
+			if err := cmd.Run(); err == nil {
+				t.Fatalf("upstream -O %s unexpectedly succeeded", bad)
+			}
+			if !strings.Contains(errBuf.String(), "output type") {
+				t.Fatalf("upstream -O %s: stderr %q lacks 'output type'", bad, errBuf.String())
+			}
+			// Our CLI parser (parseGtcheckOutputType, in the cmd package) is
+			// asserted to reject u/b with upstream's wording in
+			// TestUnitParseGtcheckOutputType; this test confirms the
+			// upstream side of that contract.
+		})
+	}
 }

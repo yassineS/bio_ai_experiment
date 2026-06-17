@@ -49,33 +49,25 @@ func TestRunConvertChromDeprecated(t *testing.T) {
 	}
 }
 
-// TestCheckConvertDeferred locks in the upstream-flag-name surface that
-// runConvert hard-rejects rather than silently accepting. Per the
-// project's "every documented upstream flag must be recognised — either
-// implemented or gracefully rejected with a pointer at PARITY_ROADMAP.md"
-// rule (docs/PARITY_ROADMAP.md#definition-of-11), a future refactor that
-// drops any of these from the rejection set without implementing the
-// underlying behaviour is a regression.
-func TestCheckConvertDeferred(t *testing.T) {
-	if got := checkConvertDeferred(checkConvertDeferredInputs{}); got != "" {
-		t.Fatalf("empty inputs: got deferred=%q, want \"\"", got)
+// TestUnitConvertGvcfAlias confirms that `--gvcf` is treated as the
+// upstream prefix-abbreviation of `--gvcf2vcf` (no longer a deferred
+// block-output mode). Upstream getopt_long resolves `--gvcf` to the
+// no-argument `--gvcf2vcf` flag, which requires -f/--fasta-ref; our CLI
+// reproduces that exact behaviour. Runs with no upstream binary.
+func TestUnitConvertGvcfAlias(t *testing.T) {
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.vcf")
+	if err := os.WriteFile(in, []byte(genCLIVCF), 0o644); err != nil {
+		t.Fatalf("write vcf: %v", err)
 	}
-	cases := []struct {
-		name string
-		in   checkConvertDeferredInputs
-		want string
-	}{
-		// The GEN/sample, TSV->VCF, gVCF->VCF and IMPUTE2 HAP/legend
-		// families are now all implemented and dispatched in runConvert
-		// before this gate. The only convert mode still hard-rejected is
-		// --gvcf block-output pairing.
-		{"gvcf", checkConvertDeferredInputs{gvcfBlocks: "10,20"}, "--gvcf"},
+	// Without -f/--fasta-ref both --gvcf and --gvcf2vcf must fail with the
+	// same "requires the --fasta-ref option" diagnostic (exit 1), proving
+	// --gvcf dispatches into the gVCF->VCF expansion rather than a deferred
+	// gate (which previously returned exit 2).
+	if code := runConvert([]string{"--gvcf", in}); code != 1 {
+		t.Fatalf("convert --gvcf without -f: exit=%d, want 1", code)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := checkConvertDeferred(tc.in); got != tc.want {
-				t.Errorf("deferred(%s): got %q, want %q", tc.name, got, tc.want)
-			}
-		})
+	if code := runConvert([]string{"--gvcf2vcf", in}); code != 1 {
+		t.Fatalf("convert --gvcf2vcf without -f: exit=%d, want 1", code)
 	}
 }
