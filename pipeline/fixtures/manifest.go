@@ -12,7 +12,11 @@ import (
 
 // manifestVersion is bumped whenever the generation logic changes in a way that
 // invalidates cached fixtures.
-const manifestVersion = 1
+//
+// v2: dropped the invalid biallelic "1/2" genotype from the single-sample VCF;
+// added FASTQ (single-end plain + .gz), paired-end FASTQ, a GFF3 annotation,
+// and a multi-sample VCF (plain + bgzipped + tabixed).
+const manifestVersion = 2
 
 // Manifest records what was generated for one scale tier so the runner can
 // resolve fixture paths and decide whether a cached set is still valid.

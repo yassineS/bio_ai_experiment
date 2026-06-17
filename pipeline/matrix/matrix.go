@@ -18,14 +18,18 @@ type InputKind string
 // The set of fixture kinds the generator produces. They share one coordinate
 // space so that, e.g., a BED file and a BAM file refer to the same contigs.
 const (
-	InputBAM      InputKind = "bam"       // sorted+indexed BAM over the reference
-	InputCRAM     InputKind = "cram"      // same alignments as CRAM (+ reference)
-	InputVCF      InputKind = "vcf"       // bgzipped+tabixed VCF
-	InputVCFPlain InputKind = "vcf_plain" // uncompressed VCF
-	InputBED      InputKind = "bed"       // plain BED3/BED6
-	InputBED12    InputKind = "bed12"     // BED12
-	InputFASTA    InputKind = "fasta"     // reference FASTA (+ .fai)
-	InputNone     InputKind = ""          // entry supplies its own inputs via Args
+	InputBAM         InputKind = "bam"             // sorted+indexed BAM over the reference
+	InputCRAM        InputKind = "cram"            // same alignments as CRAM (+ reference)
+	InputVCF         InputKind = "vcf"             // bgzipped+tabixed VCF
+	InputVCFPlain    InputKind = "vcf_plain"       // uncompressed VCF
+	InputVCFMulti    InputKind = "vcf_multi_plain" // uncompressed multi-sample VCF
+	InputBED         InputKind = "bed"             // plain BED3/BED6
+	InputBED12       InputKind = "bed12"           // BED12
+	InputFASTA       InputKind = "fasta"           // reference FASTA (+ .fai)
+	InputFASTQ       InputKind = "fastq"           // single-end FASTQ
+	InputFASTQPaired InputKind = "fastq_paired"    // paired-end FASTQ ({fastq1}/{fastq2})
+	InputGFF         InputKind = "gff"             // GFF3 annotation
+	InputNone        InputKind = ""                // entry supplies its own inputs via Args
 )
 
 // CompareMode selects how the runner decides whether our output matches
@@ -78,7 +82,18 @@ type Entry struct {
 
 	// Args are the flags/positionals shared by both invocations, with fixture
 	// placeholders (see runner.resolvePlaceholders) substituted by the runner.
+	// When OurArgs / UpstreamArgs are set they override Args for that side.
 	Args []string
+
+	// OurArgs, when non-nil, replaces Args for OUR invocation only. UpstreamArgs
+	// does the same for the upstream invocation. These exist for tools whose CLI
+	// shape genuinely differs from upstream's (e.g. our skewer is subcommand-
+	// based with -i/-o flags while upstream skewer is flat with positionals), so
+	// a single shared Args cannot express both sides. The same {placeholder}
+	// substitution applies to each. When set, the per-side subcommand prepend
+	// still applies (UsesSubcommand for ours, always for upstream).
+	OurArgs      []string
+	UpstreamArgs []string
 
 	// Input is the primary fixture kind this entry consumes. Placeholders in
 	// Args referencing it (e.g. "{bam}") are resolved from the manifest.
@@ -94,6 +109,17 @@ type Entry struct {
 	// Skip, when non-empty, documents why the entry is intentionally not run
 	// (e.g. "upstream segfaults on empty CRAM"); it is reported as SKIP.
 	Skip string
+
+	// OutputFiles names the output files an entry writes through an output
+	// PREFIX rather than to stdout, given relative to the prefix the {out}
+	// placeholder resolves to (e.g. ".frq", ".mosdepth.summary.txt"). When
+	// non-empty the runner gives each side its own temp directory, resolves
+	// {out} to "<tmpdir>/out", runs the tool, and compares each named output
+	// file between the two directories instead of comparing stdout. Files
+	// ending in ".gz" are decompressed before comparison so BGZF block framing
+	// differences do not cause spurious divergence. This is the mechanism the
+	// vcftools and mosdepth matrices use; it pairs with Compare: DirContents.
+	OutputFiles []string
 }
 
 // CompareModeOrDefault returns the entry's comparison mode, defaulting to

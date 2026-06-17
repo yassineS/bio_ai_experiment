@@ -1,6 +1,13 @@
 package runner
 
-import "testing"
+import (
+	"compress/gzip"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/yassineS/bio_ai_experiment/pipeline/matrix"
+)
 
 // TestStripProvenanceSAM checks @PG/@CO removal without touching data lines.
 func TestStripProvenanceSAM(t *testing.T) {
@@ -55,5 +62,51 @@ func TestCompareSimilarity(t *testing.T) {
 	e := CompareSimilarity([]byte("chr1\t1.0\n"), []byte("chr1\t2.0\n"))
 	if e.Equal {
 		t.Errorf("expected out-of-tolerance numeric to diverge")
+	}
+}
+
+// TestCompareOutputFiles_ByteExact covers matching, mismatch, and gzip handling
+// of the output-file comparison path used by vcftools and mosdepth.
+func TestCompareOutputFiles_ByteExact(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeGz := func(name, content string) {
+		f, err := os.Create(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		gw := gzip.NewWriter(f)
+		if _, err := gw.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+		gw.Close()
+		f.Close()
+	}
+	// Plain text, identical.
+	write("a.frq", "chr1\t1\tA\n")
+	write("b.frq", "chr1\t1\tA\n")
+	if r := CompareOutputFiles(filepath.Join(dir, "a"), filepath.Join(dir, "b"), []string{".frq"}, matrix.ByteExact); !r.Equal {
+		t.Errorf("identical .frq should match: %+v", r)
+	}
+	// Gzipped, identical payload (different framing is irrelevant after decode).
+	writeGz("a.bed.gz", "chr1\t0\t100\t5\n")
+	writeGz("b.bed.gz", "chr1\t0\t100\t5\n")
+	if r := CompareOutputFiles(filepath.Join(dir, "a"), filepath.Join(dir, "b"), []string{".bed.gz"}, matrix.ByteExact); !r.Equal {
+		t.Errorf("identical gzip payload should match: %+v", r)
+	}
+	// Mismatch.
+	write("a.diff", "x\n")
+	write("b.diff", "y\n")
+	if r := CompareOutputFiles(filepath.Join(dir, "a"), filepath.Join(dir, "b"), []string{".diff"}, matrix.ByteExact); r.Equal {
+		t.Errorf("differing files should diverge")
+	}
+	// Presence mismatch (one side missing).
+	write("a.only", "x\n")
+	if r := CompareOutputFiles(filepath.Join(dir, "a"), filepath.Join(dir, "b"), []string{".only"}, matrix.ByteExact); r.Equal {
+		t.Errorf("missing-on-one-side should diverge")
 	}
 }

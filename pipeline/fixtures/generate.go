@@ -13,7 +13,11 @@
 //	CRAM (+ reference)       : `samtools view -C -T ref`
 //	VCF.gz + .tbi            : VCF text -> `bgzip` -> `tabix -p vcf`
 //	plain VCF                : the same VCF text, uncompressed
+//	multi-sample VCF(.gz)    : N-sample VCF text -> `bgzip` -> `tabix -p vcf`
 //	BED / BED12              : generated text over the same coordinate space
+//	GFF3                     : gene/mRNA/exon/CDS rows over the same contigs
+//	FASTQ (SE plain + .gz)   : seeded reads w/ adapters + low-quality tails
+//	FASTQ (paired R1/R2)     : matched-name mate pairs for PE QC tools
 //
 // All randomness flows from a single seed (default 1) so a given scale tier is
 // byte-reproducible. Fixtures are cached under pipeline/.fixtures/<scale>/ with
@@ -171,6 +175,24 @@ func Generate(opt Options) (*Manifest, error) {
 	_ = m.recordFile("vcf", vcfGz, false)
 	_ = m.recordFile("vcf_tbi", vcfGz+".tbi", false)
 
+	// --- Multi-sample VCF: plain + bgzipped + tabixed ---
+	// Several vcftools modes (relatedness, het, LD) need more than one sample;
+	// the single-sample VCF above keeps the simpler per-site modes simple.
+	vcfMultiPath := filepath.Join(dir, "variants.multi.vcf")
+	if err := writeMultiSampleVCF(vcfMultiPath, contigs, p, rng); err != nil {
+		return nil, err
+	}
+	if err := run(bgzip, "-kf", vcfMultiPath); err != nil {
+		return nil, fmt.Errorf("bgzip multi vcf: %w", err)
+	}
+	vcfMultiGz := vcfMultiPath + ".gz"
+	if err := run(tabix, "-p", "vcf", "-f", vcfMultiGz); err != nil {
+		return nil, fmt.Errorf("tabix multi vcf: %w", err)
+	}
+	_ = m.recordFile("vcf_multi_plain", vcfMultiPath, true)
+	_ = m.recordFile("vcf_multi", vcfMultiGz, false)
+	_ = m.recordFile("vcf_multi_tbi", vcfMultiGz+".tbi", false)
+
 	// --- BED (plain + BED12) ---
 	bedPath := filepath.Join(dir, "intervals.bed")
 	bed12Path := filepath.Join(dir, "intervals12.bed")
@@ -181,6 +203,30 @@ func Generate(opt Options) (*Manifest, error) {
 	_ = m.recordFile("bed", bedPath, true)
 	_ = m.recordFile("bed12", bed12Path, true)
 	_ = m.recordFile("genome", genomePath, true)
+
+	// --- GFF3 (genes/mRNA/exon/CDS over the same contigs) ---
+	gffPath := filepath.Join(dir, "annotations.gff3")
+	if err := writeGFF(gffPath, contigs, p, rng); err != nil {
+		return nil, err
+	}
+	_ = m.recordFile("gff", gffPath, true)
+
+	// --- FASTQ: single-end (plain + .gz) and paired-end ---
+	fastqPath := filepath.Join(dir, "reads.fastq")
+	fastqGzPath := fastqPath + ".gz"
+	if err := writeFastqSE(fastqPath, fastqGzPath, p, rng); err != nil {
+		return nil, err
+	}
+	_ = m.recordFile("fastq", fastqPath, true)
+	_ = m.recordFile("fastq_gz", fastqGzPath, false)
+
+	fastq1Path := filepath.Join(dir, "reads_R1.fastq")
+	fastq2Path := filepath.Join(dir, "reads_R2.fastq")
+	if err := writeFastqPE(fastq1Path, fastq2Path, p, rng); err != nil {
+		return nil, err
+	}
+	_ = m.recordFile("fastq1", fastq1Path, true)
+	_ = m.recordFile("fastq2", fastq2Path, true)
 
 	if err := m.save(dir); err != nil {
 		return nil, err
