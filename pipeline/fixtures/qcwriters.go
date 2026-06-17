@@ -226,7 +226,21 @@ func writeGFF(path string, contigs []contig, p Params, rng *rand.Rand) error {
 			if ee >= g.end {
 				ee = g.end
 			}
-			phase := (e * 2) % 3
+			// Emit VALID GFF3: make each CDS span a whole number of codons
+			// (length a multiple of 3) and give every CDS phase 0. Then each CDS
+			// starts at a codon boundary regardless of strand, so the phase is
+			// consistent and bcftools csq does not reject the transcript (its GFF
+			// reader skips transcripts whose CDS phase disagrees with the
+			// cumulative CDS length mod 3). An arbitrary phase here previously
+			// produced an invalid GFF that upstream silently dropped, making csq
+			// output diverge purely as a fixture artifact.
+			cdsLen := ee - es + 1
+			cdsLen -= cdsLen % 3
+			if cdsLen < 3 {
+				cdsLen = 3
+			}
+			ee = es + cdsLen - 1
+			phase := 0
 			fmt.Fprintf(w, "%s\tparity\texon\t%d\t%d\t.\t%c\t.\tID=%s.exon%d;Parent=%s\n",
 				c.Name, es, ee, g.strand, tid, e+1, tid)
 			fmt.Fprintf(w, "%s\tparity\tCDS\t%d\t%d\t.\t%c\t%d\tID=%s.cds%d;Parent=%s\n",
