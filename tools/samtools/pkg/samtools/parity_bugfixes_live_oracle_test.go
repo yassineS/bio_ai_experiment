@@ -99,3 +99,42 @@ func TestLiveMpileupZeroDepthRows(t *testing.T) {
 		}
 	}
 }
+
+// bugfixSortTieSAM stacks several records at the same (chr1,100) coordinate
+// with a mix of forward and reverse strands (interleaved in input order), so
+// the coordinate tie-break (forward-before-reverse, input order preserved
+// within a strand) is exercised, plus one record at a later position.
+const bugfixSortTieSAM = "@HD\tVN:1.6\n" +
+	"@SQ\tSN:chr1\tLN:1000\n" +
+	"A\t0\tchr1\t100\t60\t5M\t*\t0\t0\tACGTA\tIIIII\n" +
+	"B\t16\tchr1\t100\t60\t5M\t*\t0\t0\tACGTA\tIIIII\n" +
+	"C\t0\tchr1\t100\t60\t5M\t*\t0\t0\tACGTA\tIIIII\n" +
+	"D\t0\tchr1\t100\t60\t5M\t*\t0\t0\tACGTA\tIIIII\n" +
+	"E\t16\tchr1\t100\t60\t5M\t*\t0\t0\tACGTA\tIIIII\n" +
+	"F\t0\tchr1\t120\t60\t5M\t*\t0\t0\tACGTA\tIIIII\n"
+
+// TestLiveSortCoordinateTieBreak is the parity case for bug #3: a coordinate
+// sort of equal-(rname,pos) records must decode to the identical record order
+// as upstream samtools (forward strand before reverse, input order preserved
+// within each strand). We compare the decoded SAM record stream, never the
+// BGZF bytes.
+func TestLiveSortCoordinateTieBreak(t *testing.T) {
+	live := upstreamSamtools(t)
+	ours := ourSamtoolsBinary(t)
+	dir := t.TempDir()
+	sam := filepath.Join(dir, "tie.sam")
+	if err := os.WriteFile(sam, []byte(bugfixSortTieSAM), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	upstream := decodeBAMRecords(t, runSamtools(t, live, "sort", "--no-PG", sam))
+	mine := decodeBAMRecords(t, runSamtools(t, ours, "sort", "--no-PG", sam))
+	if len(upstream) != len(mine) {
+		t.Fatalf("sort tie record count: upstream=%d ours=%d", len(upstream), len(mine))
+	}
+	for i := range upstream {
+		if upstream[i] != mine[i] {
+			t.Errorf("sort tie record %d differs:\nupstream=%+v\nours=%+v", i, upstream[i], mine[i])
+		}
+	}
+}
