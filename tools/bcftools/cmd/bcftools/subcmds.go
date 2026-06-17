@@ -229,6 +229,7 @@ func runIsec(args []string) int {
 		Prefix:       prefix,
 		OutputFormat: format,
 		Threads:      threads,
+		CmdArgv:      append([]string{"isec"}, args...),
 	}
 	if writeList != "" {
 		for _, p := range strings.Split(writeList, ",") {

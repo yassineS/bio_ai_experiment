@@ -154,6 +154,13 @@ type IsecOptions struct {
 	// parallel BGZF compression of -O z and -O b output via bgzf.MultiWriter;
 	// the framed result decodes byte-identically regardless of thread count.
 	Threads int
+	// InputPaths are the input file names, used only for the README.txt legend
+	// (which names each private/shared output file after its source). Set by
+	// IsecFiles; may be empty when Isec is called directly.
+	InputPaths []string
+	// CmdArgv is the `isec ...` argument vector echoed into README.txt's "The
+	// command line was:" line. Set by the CLI; may be empty.
+	CmdArgv []string
 }
 
 // IsecFiles is the file-aware entry point. It opens each path through
@@ -176,6 +183,9 @@ func IsecFiles(paths []string, out io.Writer, opts IsecOptions) (int, error) {
 		}
 		headers[i] = hdr
 		groups[i] = recs
+	}
+	if opts.InputPaths == nil {
+		opts.InputPaths = paths
 	}
 	return Isec(headers, groups, out, opts)
 }
@@ -221,52 +231,63 @@ func Isec(headers []*vcf.Header, groups [][]*vcf.Variant, stdout io.Writer, opts
 		}
 	}
 
-	// Sort the union key list using the first-input contig order as the
-	// primary signal. Ties fall back to lexicographic.
+	// Sort the union key list by (contig order, POS) only, stably. Upstream's
+	// synced reader presents records at the same position in file order, so the
+	// tie-break must preserve first-appearance order (keyOrder is built in file
+	// order) rather than re-sort by REF/ALT — otherwise two records at one POS
+	// (e.g. A>T then A>C) would be emitted A>C-first.
 	primaryOrder := contigOrder(headers[0])
 	sort.SliceStable(keyOrder, func(i, j int) bool {
 		ai, bi := keyVariants[keyOrder[i]][0].variant, keyVariants[keyOrder[j]][0].variant
-		ka := keyFor(ai, primaryOrder)
-		kb := keyFor(bi, primaryOrder)
-		if !ka.equal(kb) {
-			return ka.less(kb)
-		}
-		return keyOrder[i] < keyOrder[j]
+		return keyFor(ai, primaryOrder).less(keyFor(bi, primaryOrder))
 	})
 
-	// Decide which keys pass the -n constraint.
-	keep := map[string]bool{}
-	for _, k := range keyOrder {
-		mem := *keyMembership[k]
-		if !nfilesPasses(mem, opts.Nfiles) {
-			continue
-		}
-		keep[k] = true
-	}
+	// The -n constraint is applied per matched site in the emit loop below (a
+	// site is one paired occurrence across inputs), mirroring upstream's
+	// per-record synced-reader test rather than a per-position one.
 
-	// Open per-input output files when -p is set.
+	// VENN mode: with exactly two inputs and no membership constraint, upstream
+	// (vcfisec.c: nfiles==2 && !isec_op -> OP_VENN) writes the four-way Venn
+	// decomposition — 0000 records private to input 1, 0001 private to input 2,
+	// 0002 the input-1 copy of shared records, 0003 the input-2 copy — rather
+	// than one file per input.
+	venn := n == 2 && opts.Nfiles.Mode == 0
+
+	// Open per-input output files when -p is set. In VENN mode there are four
+	// files; file i draws its header from input vennReader[i].
 	var perInputW []variantWriter
 	var perInputClose []func()
+	var sitesF *os.File
+	vennReader := []int{0, 1, 0, 1}
 	if opts.Prefix != "" {
 		if err := os.MkdirAll(opts.Prefix, 0755); err != nil {
 			return 0, fmt.Errorf("bcftools isec: mkdir %s: %w", opts.Prefix, err)
 		}
-		// Drop a small README in the prefix (matches upstream convention).
-		readmePath := filepath.Join(opts.Prefix, "README.txt")
-		_ = os.WriteFile(readmePath, []byte(isecReadme(headers, opts)), 0644)
-		// One file per input, named 0000.vcf, 0001.vcf, ... matching upstream.
 		ext := outputExt(opts.OutputFormat)
-		for i := range groups {
-			path := filepath.Join(opts.Prefix, fmt.Sprintf("%04d.vcf%s", i, ext))
-			f, err := os.Create(path)
+		nOut := n
+		hdrFor := func(i int) *vcf.Header { return headers[i] }
+		if venn {
+			nOut = 4
+			hdrFor = func(i int) *vcf.Header { return headers[vennReader[i]] }
+		}
+		// README.txt names each output file after its source; build it with the
+		// real output paths so the legend matches upstream.
+		outNames := make([]string, nOut)
+		for i := 0; i < nOut; i++ {
+			outNames[i] = filepath.Join(opts.Prefix, fmt.Sprintf("%04d.vcf%s", i, ext))
+		}
+		readmePath := filepath.Join(opts.Prefix, "README.txt")
+		_ = os.WriteFile(readmePath, []byte(isecReadme(opts, outNames, venn)), 0644)
+		for i := 0; i < nOut; i++ {
+			f, err := os.Create(outNames[i])
 			if err != nil {
-				return 0, fmt.Errorf("bcftools isec: create %s: %w", path, err)
+				return 0, fmt.Errorf("bcftools isec: create %s: %w", outNames[i], err)
 			}
 			w, finish, err := openOutput(f, ViewOptions{
 				OutputFormat:  opts.OutputFormat,
 				CompressLevel: opts.CompressLevel,
 				Threads:       opts.Threads,
-			}, headers[i])
+			}, hdrFor(i))
 			if err != nil {
 				_ = f.Close()
 				return 0, err
@@ -281,31 +302,16 @@ func Isec(headers []*vcf.Header, groups [][]*vcf.Variant, stdout io.Writer, opts
 				return 0, err
 			}
 		}
-		// Also write a sites.txt listing kept positions and membership bits
-		// — the upstream shape is `CHROM POS REF ALT N\tBITS`.
+		// sites.txt (one line per matched site, written in the per-occurrence
+		// emit loop below) lists every site's CHROM POS REF ALT and membership
+		// bits, matching upstream's `CHROM\tPOS\tREF\tALT\tBITS` shape.
 		sitesPath := filepath.Join(opts.Prefix, "sites.txt")
-		sitesF, err := os.Create(sitesPath)
+		sf, err := os.Create(sitesPath)
 		if err != nil {
 			return 0, fmt.Errorf("bcftools isec: create %s: %w", sitesPath, err)
 		}
-		defer sitesF.Close()
-		for _, k := range keyOrder {
-			if !keep[k] {
-				continue
-			}
-			cells := keyVariants[k]
-			v := cells[0].variant
-			mem := *keyMembership[k]
-			bits := make([]byte, n)
-			for i, b := range mem {
-				if b {
-					bits[i] = '1'
-				} else {
-					bits[i] = '0'
-				}
-			}
-			fmt.Fprintf(sitesF, "%s\t%d\t%s\t%s\t%s\n", v.Chrom, v.Pos, v.Ref, strings.Join(v.Alt, ","), string(bits))
-		}
+		defer sf.Close()
+		sitesF = sf
 	}
 
 	// Open the stdout writer if -w is set or both -p and -w are empty
@@ -341,41 +347,93 @@ func Isec(headers []*vcf.Header, groups [][]*vcf.Variant, stdout io.Writer, opts
 		}
 	}
 
-	// Walk the keys and emit.
+	// Walk the keys and emit one logical site per matched occurrence. When a
+	// key holds several records from one input (intra-position duplicates),
+	// upstream's synced reader pairs the k-th occurrence across inputs, so we
+	// iterate occurrences rather than collapse them — each occurrence has its
+	// own membership and its own sites.txt line.
 	totalKept := 0
+	bits := make([]byte, n)
 	for _, k := range keyOrder {
-		if !keep[k] {
-			continue
+		// Group this key's records by input, preserving file order.
+		byFile := make([][]*vcf.Variant, n)
+		for _, c := range keyVariants[k] {
+			byFile[c.groupIdx] = append(byFile[c.groupIdx], c.variant)
 		}
-		totalKept++
-		cells := keyVariants[k]
-		// Per-input projection: write each cell to its respective per-input
-		// file.
-		if opts.Prefix != "" {
-			for _, c := range cells {
-				if err := perInputW[c.groupIdx].Write(c.variant); err != nil {
-					return totalKept, err
-				}
+		maxOcc := 0
+		for gi := range byFile {
+			if len(byFile[gi]) > maxOcc {
+				maxOcc = len(byFile[gi])
 			}
 		}
-		// stdout dump: pick the first cell whose group is in writeFromInputs.
-		if openStdout {
-			for _, want := range writeFromInputs {
-				wi := want - 1
-				if wi < 0 || wi >= n {
-					continue
-				}
-				for _, c := range cells {
-					if c.groupIdx != wi {
-						continue
+		for occ := 0; occ < maxOcc; occ++ {
+			present := make([]bool, n)
+			firstGi := -1
+			for gi := range byFile {
+				if occ < len(byFile[gi]) {
+					present[gi] = true
+					if firstGi < 0 {
+						firstGi = gi
 					}
-					if err := stdoutW.Write(c.variant); err != nil {
+				}
+			}
+			if !nfilesPasses(present, opts.Nfiles) {
+				continue
+			}
+			totalKept++
+			rep := byFile[firstGi][occ]
+			// sites.txt: CHROM POS REF ALT BITS (first present input's record).
+			if sitesF != nil {
+				for gi := 0; gi < n; gi++ {
+					if present[gi] {
+						bits[gi] = '1'
+					} else {
+						bits[gi] = '0'
+					}
+				}
+				ref := rep.Ref
+				if ref == "" {
+					ref = "."
+				}
+				alt := "."
+				if len(rep.Alt) > 0 {
+					alt = strings.Join(rep.Alt, ",")
+				}
+				fmt.Fprintf(sitesF, "%s\t%d\t%s\t%s\t%s\n", rep.Chrom, rep.Pos, ref, alt, string(bits))
+			}
+			// Per-input projection.
+			if opts.Prefix != "" {
+				if venn && present[0] && present[1] {
+					// Shared: input-1 copy -> 0002, input-2 copy -> 0003.
+					if err := perInputW[2].Write(byFile[0][occ]); err != nil {
 						return totalKept, err
 					}
-					goto wrote
+					if err := perInputW[3].Write(byFile[1][occ]); err != nil {
+						return totalKept, err
+					}
+				} else {
+					for gi := range byFile {
+						if present[gi] {
+							if err := perInputW[gi].Write(byFile[gi][occ]); err != nil {
+								return totalKept, err
+							}
+						}
+					}
 				}
 			}
-		wrote:
+			// stdout dump: first requested input that is present at this site.
+			if openStdout {
+				for _, want := range writeFromInputs {
+					wi := want - 1
+					if wi < 0 || wi >= n || !present[wi] {
+						continue
+					}
+					if err := stdoutW.Write(byFile[wi][occ]); err != nil {
+						return totalKept, err
+					}
+					break
+				}
+			}
 		}
 	}
 	if openStdout {
@@ -472,34 +530,41 @@ func outputExt(f OutputFormat) string {
 	return ""
 }
 
-// isecReadme is a small explainer dropped into the prefix dir so users know
-// what the per-input files contain. Matches upstream's habit of writing a
-// README.txt next to the outputs.
-func isecReadme(headers []*vcf.Header, opts IsecOptions) string {
+// isecReadme renders the README.txt legend in upstream vcfisec's exact shape:
+// a provenance preamble, then one "<outfile>\tfor records private to\t<input>"
+// (and, in VENN mode, "<outfile>\tfor records from <input> shared by both\t..."
+// ) line per output file. outNames are the full output paths; venn selects the
+// four-file Venn legend over the one-file-per-input legend.
+func isecReadme(opts IsecOptions, outNames []string, venn bool) string {
 	var b strings.Builder
-	b.WriteString("This directory was produced by `bcftools isec` (Go port).\n\n")
-	b.WriteString("Per-input projections:\n")
-	for i := range headers {
-		b.WriteString(fmt.Sprintf("  000%d.vcf - records from input %d that pass the membership constraint\n", i, i+1))
-	}
-	b.WriteString("\nMembership constraint:\n")
-	switch opts.Nfiles.Mode {
-	case 0:
-		b.WriteString("  (none — all keys present in any input)\n")
-	case '+':
-		b.WriteString(fmt.Sprintf("  +%d (present in at least %d input files)\n", opts.Nfiles.N, opts.Nfiles.N))
-	case '=':
-		b.WriteString(fmt.Sprintf("  =%d (present in exactly %d input files)\n", opts.Nfiles.N, opts.Nfiles.N))
-	case '~':
-		bits := make([]byte, len(opts.Nfiles.Bits))
-		for i, b2 := range opts.Nfiles.Bits {
-			if b2 {
-				bits[i] = '1'
-			} else {
-				bits[i] = '0'
-			}
+	b.WriteString("This file was produced by vcfisec.\n")
+	b.WriteString("The command line was:\tbcftools")
+	if len(opts.CmdArgv) > 0 {
+		b.WriteString(" ")
+		b.WriteString(opts.CmdArgv[0])
+		b.WriteString(" ")
+		for _, a := range opts.CmdArgv[1:] {
+			b.WriteString(" ")
+			b.WriteString(a)
 		}
-		b.WriteString(fmt.Sprintf("  ~%s (bitmask)\n", string(bits)))
+	}
+	b.WriteString("\n\nUsing the following file names:\n")
+	in := opts.InputPaths
+	get := func(i int) string {
+		if i < len(in) {
+			return in[i]
+		}
+		return fmt.Sprintf("input%d", i+1)
+	}
+	if venn && len(outNames) == 4 {
+		fmt.Fprintf(&b, "%s\tfor records private to\t%s\n", outNames[0], get(0))
+		fmt.Fprintf(&b, "%s\tfor records private to\t%s\n", outNames[1], get(1))
+		fmt.Fprintf(&b, "%s\tfor records from %s shared by both\t%s %s\n", outNames[2], get(0), get(0), get(1))
+		fmt.Fprintf(&b, "%s\tfor records from %s shared by both\t%s %s\n", outNames[3], get(1), get(0), get(1))
+	} else {
+		for i, name := range outNames {
+			fmt.Fprintf(&b, "%s\tfor stripped\t%s\n", name, get(i))
+		}
 	}
 	return b.String()
 }
