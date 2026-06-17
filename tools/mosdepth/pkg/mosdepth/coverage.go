@@ -284,7 +284,16 @@ func (a *covAccum) emitRuns(fn func(start, end int, depth int32)) {
 // The implementation is a separate sweep so it can be applied to regions
 // that don't span the whole reference without re-emitting the per-base
 // output.
-func (a *covAccum) regionStats(beg0, end0 int, thresholds []int, emitFn func(start, end int, depth int32)) (sum int64, perThreshold []int64, minD, maxD int32) {
+// meanL, when > 0, makes regionStats also return fmean — the per-base
+// divide-then-accumulate mean Σ(depth_i / meanL) over the (clamped) base range,
+// matching upstream mosdepth's imean() exactly (`result += float64(vals[i])/L`
+// per base, L = the ORIGINAL region width). This is NOT the same float64 value
+// as sum/width: per-base division accumulates rounding that can shift the value
+// by ~1 ULP and flip the %.2f-formatted region depth (e.g. 945/280 = 3.375
+// formats to 3.38, but Σ(d/280) lands just below 3.375 and formats to 3.37).
+// The regions.bed.gz column uses this; the summary path passes meanL=0 to skip
+// the per-base loop (it uses sum/length and would otherwise pay O(chromLen)).
+func (a *covAccum) regionStats(beg0, end0 int, thresholds []int, emitFn func(start, end int, depth int32), meanL float64) (sum int64, perThreshold []int64, minD, maxD int32, fmean float64) {
 	if beg0 < 0 {
 		beg0 = 0
 	}
@@ -295,6 +304,7 @@ func (a *covAccum) regionStats(beg0, end0 int, thresholds []int, emitFn func(sta
 		perThreshold = make([]int64, len(thresholds))
 		return
 	}
+	accumMean := meanL > 0
 	perThreshold = make([]int64, len(thresholds))
 	// Sort events once.
 	a.sortEvents()
@@ -318,6 +328,15 @@ func (a *covAccum) regionStats(beg0, end0 int, thresholds []int, emitFn func(sta
 		}
 		runLen := nextPos - pos
 		sum += int64(depth) * int64(runLen)
+		if accumMean {
+			// Per-base divide-then-accumulate, exactly as upstream imean's
+			// `for i in start..<stop: result += float64(vals[i])/L` — repeated
+			// addition, NOT runLen*(depth/L), so the float rounding matches.
+			dv := float64(depth) / meanL
+			for k := 0; k < runLen; k++ {
+				fmean += dv
+			}
+		}
 		for ti, th := range thresholds {
 			if int(depth) >= th {
 				perThreshold[ti] += int64(runLen)
@@ -345,7 +364,7 @@ func (a *covAccum) regionStats(beg0, end0 int, thresholds []int, emitFn func(sta
 			idx++
 		}
 	}
-	return sum, perThreshold, minD, maxD
+	return sum, perThreshold, minD, maxD, fmean
 }
 
 // medianHistCap mirrors upstream mosdepth's CountStat histogram size of
@@ -420,7 +439,7 @@ func (h *medianHist) median() float64 {
 // against an identical depth profile by construction.
 func (a *covAccum) regionMedian(beg0, end0 int) float64 {
 	var h medianHist
-	a.regionStats(beg0, end0, nil, h.addRun)
+	a.regionStats(beg0, end0, nil, h.addRun, 0)
 	return h.median()
 }
 

@@ -357,7 +357,7 @@ func runWithReader(rd sam.Reader, opts Options) error {
 		if hasReads {
 			perChromHist[r.Name] = accumHistogram(accum)
 			// Compute mean/min/max across the whole chromosome for the summary.
-			sum, _, minD, maxD := accum.regionStats(0, int(r.Length), nil, nil)
+			sum, _, minD, maxD, _ := accum.regionStats(0, int(r.Length), nil, nil, 0)
 			row := summaryRow{
 				chrom:  r.Name,
 				length: int64(r.Length),
@@ -451,8 +451,8 @@ func runWithReader(rd sam.Reader, opts Options) error {
 				if ce > cb {
 					regAgg.length += int64(ce - cb)
 				}
-				bsum, perTh, _, _ := accum.regionStats(iv.beg, iv.end, opts.Thresholds, emit)
 				width := iv.end - iv.beg
+				_, perTh, _, _, fmean := accum.regionStats(iv.beg, iv.end, opts.Thresholds, emit, float64(width))
 				var stat float64
 				if opts.UseMedian {
 					// Upstream routes the regions depth column through
@@ -460,7 +460,9 @@ func runWithReader(rd sam.Reader, opts Options) error {
 					// --use-median is set. Only this column changes.
 					stat = mh.median()
 				} else if width > 0 {
-					stat = float64(bsum) / float64(width)
+					// imean: Σ(depth_i/width), per-base — matches upstream's
+					// float accumulation byte-for-byte (see regionStats).
+					stat = fmean
 				}
 				if byWindow {
 					// Fixed-window distribution: one count per region at the

@@ -18,54 +18,27 @@ package matrix
 // the 2^N power set.
 //
 // ------------------------------------------------------------------------
-// Documented Skips (real divergences the matrix surfaced; each names a concrete
-// root cause and an owner so it is visible without breaking the run). None of
-// these are papered-over: they are flagged for follow-up by the bedtools agent.
+// Documented Skips. The bednuc / bedmakewindows / bedexpand / bedsummary /
+// bedfisher / bedsubtract / bed12tobed6 cases and the bedmap/bedmerge/bedwindow
+// collapse-order cases that were once listed here are FIXED and re-activated as
+// byte-exact entries. What remains:
 //
-//   - bednuc            — PANICS on every invocation: tools/bednuc/cmd/bednuc/
-//                         main.go registers the "seq" long flag twice (cliflag
-//                         BoolVar at line ~72 then fs.BoolVar at line ~75),
-//                         which flag.Var rejects with "flag redefined: seq".
-//                         Total breakage; the whole tool cannot run.
-//   - bedwindow (join)  — three gaps: (1) our -w default is 0, upstream's is
-//                         1000; (2) we truncate a BED12 -b record to 6 columns
-//                         (upstream emits all 12); (3) for equal-start B hits
-//                         our output orders them by end while upstream preserves
-//                         input order (the tie-break bug below). -v/-c (A-only)
-//                         outputs are unaffected and run as PASS.
-//   - tie-break order   — our interval sort tie-breaks equal-(chrom,start)
-//                         records by end ascending; upstream uses a stable sort
-//                         preserving input order. Surfaces in bedsort (default),
-//                         bedmap/bedmerge -o collapse|distinct|concat, and
-//                         bedwindow B-hit order. Order-independent ops
-//                         (mean/sum/min/max/count/…) are byte-exact and run.
-//   - bedsummary        — our output is a different table (columns differ; no
-//                         chrom_length / frac_genome / frac_all_* columns) and
-//                         the CLI does not accept -g, which upstream requires.
-//   - bedannotate       — our default output prepends a "# <file>" header line
-//                         upstream does not emit, and orders records differently.
-//   - bedexpand         — a trailing comma in the expanded column (e.g.
-//                         "127,127,") yields an extra empty expansion row; the
-//                         port counts the trailing empty field as a value.
-//   - bedmakewindows    — default -i mode "none" is rejected by our own parser
-//                         ("unknown -i mode") instead of emitting plain 3-column
-//                         windows; -i src emits an empty name column instead of
-//                         the source name. -i winnum / -i srcwinnum are correct.
-//   - bedtobam          — writes raw BGZF BAM to stdout; BGZF block framing
-//                         differs from htslib (our klauspost deflate backend)
-//                         though the DECODED records are byte-identical (verified
-//                         here out-of-band and by the per-tool suite). Binary
-//                         BGZF is never byte-compared in this pipeline.
-//   - bedtag            — different model entirely: upstream tags a BAM and
-//                         writes BAM; our bedtag is BED-in/BED-out (annotates A
-//                         with overlapping B names). Not comparable.
-//   - bedpairtobed /    — need a BEDPE fixture, which the pipeline corpus does
-//     bedpairtopair       not generate; both tools match on a crafted BEDPE
-//                         (verified out-of-band) but have no fixture to run on.
-//   - bedsplit (size)   — the default "size" heuristic bin-packs records into
-//                         files differently from upstream (same total records,
-//                         different per-file assignment). "-a simple" is
-//                         byte-exact and runs.
+//   - tie-break order   — bedsort (default and -sizeD) and bedcluster (-s) emit
+//                         equal-key records in a different order than upstream's
+//                         stable sort. Order-independent ops are byte-exact.
+//   - bedjaccard (-s)   — the is-sorted check runs over the strand-concatenated
+//                         B stream and false-errors "input B is not sorted".
+//   - bedannotate       — default-output record ordering differs from upstream.
+//   - bedsplit (size)   — the "size" heuristic bin-packs records into files
+//                         differently from upstream ("-a simple" is byte-exact).
+//   - bedtobam          — raw BGZF BAM to stdout; framing differs (klauspost vs
+//                         htslib) though decoded records match. Not byte-compared.
+//   - bedtag            — different model: upstream tags+writes BAM; our bedtag
+//                         is BED-in/BED-out. Not directly comparable.
+//   - bedpairtobed /    — need a BEDPE fixture the corpus does not generate
+//     bedpairtopair       (both error on a BED6 input, so the run is not meaningful).
+//   - bedoverlap        — needs a joined input stream with -cols; no fixture.
+//   - bedunionbedg      — needs a multi-sample bedGraph fixture.
 // ------------------------------------------------------------------------
 
 func init() {
@@ -130,8 +103,7 @@ func bedOverlapJoinTools() []Entry {
 	}.Expand()
 	out = append(out, sub...)
 	out = append(out,
-		btSkip("bedsubtract", "subtract", "reciprocal_r_unsupported", InputBED,
-			"our bedsubtract has no reciprocal -r flag ('flag provided but not defined: -r'); upstream subtract accepts -r (require reciprocal -f overlap). Real CLI gap, owned by the bedtools agent.",
+		bt("bedsubtract", "subtract", "reciprocal_r_unsupported", InputBED,
 			"-a", "{bed}", "-b", "{bed}", "-f", "0.5", "-r"),
 	)
 
@@ -174,8 +146,7 @@ func bedOverlapJoinTools() []Entry {
 	}
 	out = append(out, mapSpec...)
 	out = append(out,
-		btSkip("bedmap", "map", "collapse_tiebreak", InputBED,
-			"bedmap -o collapse|distinct|concat preserves B encounter order, which exposes our interval-sort tie-break gap: equal-(chrom,start) B records are ordered by end ascending here vs input order upstream. Real divergence, owned by the bedtools agent.",
+		bt("bedmap", "map", "collapse_tiebreak", InputBED,
 			"-a", "{bed}", "-b", "{bed}", "-c", "4", "-o", "collapse"),
 	)
 
@@ -210,8 +181,7 @@ func bedOverlapJoinTools() []Entry {
 		bt("bedwindow", "window", "v_w100", InputBED, "-a", "{bed}", "-b", "{bed}", "-w", "100", "-v"),
 		bt("bedwindow", "window", "c_w100", InputBED, "-a", "{bed}", "-b", "{bed}", "-w", "100", "-c"),
 		bt("bedwindow", "window", "v_lr", InputBED, "-a", "{bed}", "-b", "{bed}", "-l", "200", "-r", "50", "-v"),
-		btSkip("bedwindow", "window", "join_w100", InputBED,
-			"bedwindow join output diverges: (1) our -w default is 0 vs upstream 1000; (2) BED12 -b records are truncated to 6 columns; (3) equal-start B hits are ordered by end ascending vs input order upstream (the interval-sort tie-break gap). The -v/-c (A-only) entries above are byte-exact. Real divergence, owned by the bedtools agent.",
+		bt("bedwindow", "window", "join_w100", InputBED,
 			"-a", "{bed}", "-b", "{bed}", "-w", "100"),
 	)
 
@@ -241,8 +211,7 @@ func bedSingleFileTools() []Entry {
 	}.Expand()
 	out = append(out, merge...)
 	out = append(out,
-		btSkip("bedmerge", "merge", "collapse_tiebreak", InputBED,
-			"bedmerge -o collapse|distinct preserves encounter order, exposing the interval-sort tie-break gap (equal-start records ordered by end ascending vs input order upstream). Numeric merge ops above are byte-exact. Real divergence, owned by the bedtools agent.",
+		bt("bedmerge", "merge", "collapse_tiebreak", InputBED,
 			"-i", "{bed}", "-c", "4", "-o", "collapse"),
 	)
 
@@ -379,11 +348,9 @@ func bedGenomeTools() []Entry {
 		bt("bedmakewindows", "makewindows", "b_winnum", InputBED, "-b", "{bed}", "-w", "500", "-i", "winnum"),
 		bt("bedmakewindows", "makewindows", "b_srcwinnum", InputBED, "-b", "{bed}", "-w", "500", "-i", "srcwinnum"),
 		bt("bedmakewindows", "makewindows", "b_n_winnum", InputBED, "-b", "{bed}", "-n", "3", "-i", "winnum"),
-		btSkip("bedmakewindows", "makewindows", "default_none", InputBED,
-			"with the default -i mode 'none' our parser errors ('unknown -i mode \"none\"') instead of emitting plain 3-column windows; upstream emits 3 columns with no -i. Real bug, owned by the bedtools agent.",
+		bt("bedmakewindows", "makewindows", "default_none", InputBED,
 			"-g", "{genome}", "-w", "1000"),
-		btSkip("bedmakewindows", "makewindows", "i_src", InputBED,
-			"-i src emits an empty 4th column instead of the source name (the chrom in -g mode). Real bug, owned by the bedtools agent.",
+		bt("bedmakewindows", "makewindows", "i_src", InputBED,
 			"-g", "{genome}", "-w", "1000", "-i", "src"),
 	)
 
@@ -417,8 +384,7 @@ func bedStatTools() []Entry {
 	//     13134, so the contingency table and p-values diverge. The p-value
 	//     formatting (incl. '-nan') otherwise matches. ---
 	out = append(out,
-		btSkip("bedfisher", "fisher", "overlap_count", InputBED,
-			"bedfisher under-counts overlaps: on {bed} vs {bed} it reports 13134 overlaps where the true count (per `bedtools intersect`, on which ours and upstream agree: 14356) is 14356; upstream fisher reports 14356. The contingency table and p-value inputs therefore diverge. Real bug in our fisher overlap counter, owned by the bedtools agent.",
+		bt("bedfisher", "fisher", "overlap_count", InputBED,
 			"-a", "{bed}", "-b", "{bed}", "-g", "{genome}"),
 	)
 
@@ -442,8 +408,7 @@ func bedFormatTools() []Entry {
 	// --- bed12tobed6: drops the score column (real bug); the base run would
 	//     DIVERGE on every record, so it is registered only as a documented Skip. ---
 	out = append(out,
-		btSkip("bed12tobed6", "bed12tobed6", "score_dropped", InputBED12,
-			"bed12tobed6 emits score column 0 instead of preserving the BED12 score; upstream keeps the score on each split BED6 record. Real bug, owned by the bedtools agent.",
+		bt("bed12tobed6", "bed12tobed6", "score_dropped", InputBED12,
 			"-i", "{bed12}"),
 	)
 
@@ -496,8 +461,7 @@ func bedFormatTools() []Entry {
 	// --- expand: numeric/single-value columns PASS; trailing-comma column buggy. ---
 	out = append(out,
 		bt("bedexpand", "expand", "c5", InputBED, "-i", "{bed}", "-c", "5"),
-		btSkip("bedexpand", "expand", "trailing_comma_col11", InputBED12,
-			"bedexpand of a column whose values carry a trailing comma (e.g. BED12 blockSizes \"127,127,\") yields an extra empty expansion row; the port counts the trailing empty field. Real bug, owned by the bedtools agent.",
+		bt("bedexpand", "expand", "trailing_comma_col11", InputBED12,
 			"-i", "{bed12}", "-c", "11"),
 	)
 
@@ -634,8 +598,7 @@ func bedReportTools() []Entry {
 	out = append(out,
 		bt("bedigv", "igv", "base", InputBED, "-i", "{bed}"),
 		bt("bedlinks", "links", "base", InputBED, "-i", "{bed}"),
-		btSkip("bedsummary", "summary", "format_and_missing_g", InputBED,
-			"bedsummary emits a different table from upstream (no chrom_length / frac_genome / frac_all_* columns) and its CLI does not accept -g, which upstream requires. Real divergence, owned by the bedtools agent.",
+		bt("bedsummary", "summary", "format_and_missing_g", InputBED,
 			"-i", "{bed}", "-g", "{genome}"),
 	)
 

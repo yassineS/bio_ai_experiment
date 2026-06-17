@@ -81,20 +81,17 @@ func vcftoolsMatrix() []Entry {
 		}(),
 	}
 
-	// recode reorders INFO fields: our port emits INFO keys alphabetically
-	// (AF;DP) while upstream preserves the data-line order (DP;AF). That is a
-	// real, root-caused divergence owned by the vcftools agent, so the recode
-	// entry is Skipped (its OutputFiles diff would otherwise DIVERGE on every
-	// multi-INFO record). The fixture's INFO column is DP;AF in source order.
-	for i := range entries {
-		if entries[i].Name == "vcftools_recode_heavy" {
-			entries[i].Skip = "our vcftools recode emits INFO keys alphabetically (AF;DP); upstream preserves source order (DP;AF). " +
-				"Real divergence in tools/vcftools recode INFO serialisation, owned by the vcftools agent."
-		}
-	}
+	// recode INFO ordering now preserves the data-line source order (DP;AF) like
+	// upstream, so recode_heavy is byte-exact and runs (the prior alphabetical
+	// AF;DP serialisation was fixed).
 
 	// Upstream-crashing modes on this build (recorded as documented Skips so
-	// they neither run nor DIVERGE):
+	// they neither run nor DIVERGE). These are NOT our bugs and cannot be
+	// byte-validated: the vendored upstream binary aborts (glibc buffer overflow
+	// / segfault) before writing output, so there is no golden to compare
+	// against. Our port produces correct output, validated by the per-tool unit
+	// suite. Keeping them skipped is the correct terminal state — re-running
+	// upstream would only reproduce the crash.
 	crash := func(name, ext, reason string, modeArgs ...string) Entry {
 		e := multiS(name, ext, modeArgs...)
 		e.Skip = reason
@@ -113,14 +110,10 @@ func vcftoolsMatrix() []Entry {
 		crash("lroh", ".LROH",
 			"upstream vcftools --LROH segfaults on this build; our port produces correct output. Upstream bug.",
 			"--LROH"),
-		// --hardy: upstream prints the libc-formatted '-nan' for the ChiSq of a
-		// monomorphic site where our port prints Go's 'NaN'. A non-portable libc
-		// printf artifact, not a data difference.
-		func() Entry {
-			e := single("hardy", ".hwe", "--hardy")
-			e.Skip = "upstream prints glibc '-nan' for monomorphic-site ChiSq; our port prints 'NaN' (libc printf artifact, not a data difference)."
-			return e
-		}(),
+		// --hardy: byte-exact. Our .hwe writer now emits glibc's '-nan' for the
+		// monomorphic-site ChiSq (matching the upstream C++ printf rendering of a
+		// quiet NaN) instead of Go's 'NaN'.
+		single("hardy", ".hwe", "--hardy"),
 	)
 	return entries
 }
