@@ -347,14 +347,32 @@ func Roh(in io.Reader, out io.Writer, opts RohOptions) (RohResult, error) {
 		return RohResult{}, err
 	}
 
-	result := RohResult{}
-	for si, sample := range samples {
-		blocks := perSample[si]
-		for _, blk := range blocks {
-			if len(blk.markers) == 0 {
-				continue
+	// Determine the chromosome order as first seen in the data. Upstream's
+	// synced reader processes the genome chromosome by chromosome (in
+	// coordinate order) and, within a chromosome, flushes the per-sample HMM
+	// results sample by sample (header order). The ST/RG tables are therefore
+	// ordered chromosome-major then sample-major — not sample-major as a naive
+	// per-sample loop would produce.
+	var chromOrder []string
+	seenChrom := map[string]bool{}
+	for si := range samples {
+		for _, blk := range perSample[si] {
+			if !seenChrom[blk.chrom] {
+				seenChrom[blk.chrom] = true
+				chromOrder = append(chromOrder, blk.chrom)
 			}
-			runRohSample(&result, sample, blk.chrom, blk.markers, opts, gmap, bufMax, bufOlap)
+		}
+	}
+
+	result := RohResult{}
+	for _, chrom := range chromOrder {
+		for si, sample := range samples {
+			for _, blk := range perSample[si] {
+				if blk.chrom != chrom || len(blk.markers) == 0 {
+					continue
+				}
+				runRohSample(&result, sample, blk.chrom, blk.markers, opts, gmap, bufMax, bufOlap)
+			}
 		}
 	}
 

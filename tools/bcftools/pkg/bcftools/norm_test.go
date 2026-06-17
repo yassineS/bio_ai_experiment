@@ -300,9 +300,13 @@ func TestNormJoinMultiallelicSNPs(t *testing.T) {
 	if !strings.Contains(out, "AC=2,1") {
 		t.Errorf("expected AC=2,1:\n%s", out)
 	}
-	// GT for the donor records: 0/1 + 0/1 → 0/2 (second donor moves to slot 2)
-	if !strings.HasSuffix(strings.TrimRight(out, "\n"), "\t0/2") {
-		t.Errorf("expected joined GT 0/2:\n%s", out)
+	// GT for the donor records: 0/1 (A>G) + 0/1 (A>C). Upstream's
+	// merge_format_genotype keeps the first record's non-ref allele (the G at
+	// slot 1) in place and writes the second record's allele (C, merged index
+	// 2) into the first free strand, which is the leading ref slot — yielding
+	// "2/1", not "0/2". (Verified byte-for-byte against bcftools 1.23.1.)
+	if !strings.HasSuffix(strings.TrimRight(out, "\n"), "\t2/1") {
+		t.Errorf("expected joined GT 2/1:\n%s", out)
 	}
 }
 
@@ -401,7 +405,10 @@ func TestParseMultiallelicMode(t *testing.T) {
 		{"-snps", MultiallelicMode{Active: true, Split: true, Snps: true}, false},
 		{"+indels", MultiallelicMode{Active: true, Split: false, Indels: true}, false},
 		{"-both", MultiallelicMode{Active: true, Split: true, Snps: true, Indels: true}, false},
-		{"+any", MultiallelicMode{Active: true, Split: false, Snps: true, Indels: true}, false},
+		// "+any" (COLLAPSE_ANY) sets Any so the joiner merges every variant
+		// type into one record, distinct from "+both" which buckets by type.
+		{"+any", MultiallelicMode{Active: true, Split: false, Snps: true, Indels: true, Any: true}, false},
+		{"-any", MultiallelicMode{Active: true, Split: true, Snps: true, Indels: true, Any: true}, false},
 		{"snps", MultiallelicMode{}, true},
 		{"-other", MultiallelicMode{}, true},
 	}
@@ -758,5 +765,93 @@ func TestCheckRefMissingContig(t *testing.T) {
 	}
 	if n != 0 {
 		t.Fatalf("skip n=%d, want 0", n)
+	}
+}
+
+// TestUnitMergeAlleles exercises the pure allele-merge helper (a port of
+// htslib merge_alleles) without invoking any binary: identical SNPs collapse,
+// distinct SNPs append, and differing-length REFs are reconciled to a common
+// padded reference with the correct allele-index map.
+func TestUnitMergeAlleles(t *testing.T) {
+	cases := []struct {
+		name    string
+		a       []string // incoming line: REF, ALT...
+		b       []string // accumulator:   REF, ALT...
+		wantAls []string
+		wantMap []int
+		wantOK  bool
+	}{
+		{
+			name:    "same-snp",
+			a:       []string{"A", "C"},
+			b:       []string{"A", "C"},
+			wantAls: []string{"A", "C"},
+			wantMap: []int{0, 1},
+			wantOK:  true,
+		},
+		{
+			name:    "distinct-snp",
+			a:       []string{"A", "G"},
+			b:       []string{"A", "C"},
+			wantAls: []string{"A", "C", "G"},
+			wantMap: []int{0, 2},
+			wantOK:  true,
+		},
+		{
+			name:    "longer-incoming-ref-pads-accumulator",
+			a:       []string{"ATG", "A"}, // incoming REF longer
+			b:       []string{"AT", "A"},  // accumulator REF shorter -> padded to ATG
+			wantAls: []string{"ATG", "AG", "A"},
+			wantMap: []int{0, 2},
+			wantOK:  true,
+		},
+		{
+			name:   "incompatible-ref-prefix",
+			a:      []string{"C", "T"},
+			b:      []string{"A", "G"},
+			wantOK: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotAls, gotMap, ok := mergeAlleles(tc.a, tc.b)
+			if ok != tc.wantOK {
+				t.Fatalf("ok=%v want %v", ok, tc.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if strings.Join(gotAls, ",") != strings.Join(tc.wantAls, ",") {
+				t.Errorf("alleles=%v want %v", gotAls, tc.wantAls)
+			}
+			if len(gotMap) != len(tc.wantMap) {
+				t.Fatalf("map len=%d want %d (%v)", len(gotMap), len(tc.wantMap), gotMap)
+			}
+			for i := range gotMap {
+				if gotMap[i] != tc.wantMap[i] {
+					t.Errorf("map[%d]=%d want %d", i, gotMap[i], tc.wantMap[i])
+				}
+			}
+		})
+	}
+}
+
+// TestUnitMaxQual checks the QUAL-maximum helper handles missing (-1) values.
+func TestUnitMaxQual(t *testing.T) {
+	mk := func(qs ...float64) []*vcf.Variant {
+		out := make([]*vcf.Variant, len(qs))
+		for i, q := range qs {
+			out[i] = &vcf.Variant{Qual: q}
+		}
+		return out
+	}
+	if got := maxQual(mk(-1, -1)); got != -1 {
+		t.Errorf("all-missing: got %v want -1", got)
+	}
+	if got := maxQual(mk(10, -1, 30, 20)); got != 30 {
+		t.Errorf("max: got %v want 30", got)
+	}
+	if got := maxQual(mk(-1, 5)); got != 5 {
+		t.Errorf("single: got %v want 5", got)
 	}
 }

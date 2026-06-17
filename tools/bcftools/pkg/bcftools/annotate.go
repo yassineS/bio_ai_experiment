@@ -206,8 +206,9 @@ func Annotate(in io.Reader, out io.Writer, opts AnnotateOptions) (int, error) {
 	}
 
 	// -x: field removal.
+	removedAllFilters := false
 	if opts.Remove != "" {
-		applyRemovals(recs, hdr, opts.Remove)
+		removedAllFilters = applyRemovals(recs, hdr, opts.Remove)
 	}
 
 	// --set-id: macro-expand the ID column. Upstream applies this last, after
@@ -236,9 +237,10 @@ func Annotate(in io.Reader, out io.Writer, opts AnnotateOptions) (int, error) {
 	}
 
 	w, finish, err := openOutput(out, ViewOptions{
-		OutputFormat:  opts.OutputFormat,
-		CompressLevel: opts.CompressLevel,
-		Threads:       opts.Threads,
+		OutputFormat:       opts.OutputFormat,
+		CompressLevel:      opts.CompressLevel,
+		Threads:            opts.Threads,
+		SuppressPASSFilter: removedAllFilters,
 	}, hdr)
 	if err != nil {
 		return 0, err
@@ -687,8 +689,12 @@ func findMetaLineByID(hdr *vcf.Header, kind, id string) string {
 }
 
 // applyRemovals processes -x/--remove. Each entry is one of `INFO/TAG`,
-// `INFO` (drop all INFO), `FILTER`, `FILTER/NAME`, or `ID`.
-func applyRemovals(recs []*vcf.Variant, hdr *vcf.Header, spec string) {
+// `INFO` (drop all INFO), `FILTER`, `FILTER/NAME`, or `ID`. It returns
+// removedAllFilters=true when a bare `FILTER` entry was processed, so the
+// caller can suppress the write-time PASS re-injection (upstream
+// remove_hdr_lines(BCF_HL_FLT) drops every FILTER line, including PASS, and
+// they do not come back).
+func applyRemovals(recs []*vcf.Variant, hdr *vcf.Header, spec string) (removedAllFilters bool) {
 	for _, raw := range strings.Split(spec, ",") {
 		ent := strings.TrimSpace(raw)
 		switch {
@@ -697,6 +703,15 @@ func applyRemovals(recs []*vcf.Variant, hdr *vcf.Header, spec string) {
 				v.Info = map[string]string{}
 				v.InfoOrder = nil
 			}
+			// Upstream remove_hdr_lines(BCF_HL_INFO) strips every ##INFO line.
+			out := hdr.MetaInfo[:0]
+			for _, m := range hdr.MetaInfo {
+				if k, _ := structuredID(m); k == "INFO" {
+					continue
+				}
+				out = append(out, m)
+			}
+			hdr.MetaInfo = out
 		case strings.HasPrefix(ent, "INFO/"):
 			tag := ent[len("INFO/"):]
 			for _, v := range recs {
@@ -724,11 +739,26 @@ func applyRemovals(recs []*vcf.Variant, hdr *vcf.Header, spec string) {
 			}
 			hdr.MetaInfo = out
 		case ent == "FILTER":
+			// Upstream remove_filter with a NULL key sets FILTER to "." (missing)
+			// on every record and remove_hdr_lines(BCF_HL_FLT) drops every
+			// ##FILTER header line (PASS included).
 			for _, v := range recs {
 				v.Filter = []string{"."}
 			}
+			out := hdr.MetaInfo[:0]
+			for _, m := range hdr.MetaInfo {
+				if k, _ := structuredID(m); k == "FILTER" {
+					continue
+				}
+				out = append(out, m)
+			}
+			hdr.MetaInfo = out
+			removedAllFilters = true
 		case strings.HasPrefix(ent, "FILTER/"):
 			name := ent[len("FILTER/"):]
+			// Upstream sets flt_keep_pass=1 for FILTER/NAME: a record left with
+			// no filters after dropping NAME becomes PASS, not "." — and the
+			// matching ##FILTER header line is removed.
 			for _, v := range recs {
 				out := v.Filter[:0]
 				for _, f := range v.Filter {
@@ -737,17 +767,82 @@ func applyRemovals(recs []*vcf.Variant, hdr *vcf.Header, spec string) {
 					}
 					out = append(out, f)
 				}
-				if len(out) == 0 {
-					out = []string{"."}
+				if len(out) == 0 || (len(out) == 1 && out[0] == ".") {
+					out = []string{"PASS"}
 				}
 				v.Filter = out
 			}
+			out := hdr.MetaInfo[:0]
+			for _, m := range hdr.MetaInfo {
+				if k, id := structuredID(m); k == "FILTER" && id == name {
+					continue
+				}
+				out = append(out, m)
+			}
+			hdr.MetaInfo = out
+		case ent == "FORMAT", ent == "FMT":
+			// Drop every FORMAT field and its per-sample values, plus the
+			// ##FORMAT header lines (upstream remove_format +
+			// remove_hdr_lines(BCF_HL_FMT)).
+			removeFormatTags(recs, hdr, nil)
+		case strings.HasPrefix(ent, "FORMAT/"), strings.HasPrefix(ent, "FMT/"):
+			tag := ent[strings.IndexByte(ent, '/')+1:]
+			removeFormatTags(recs, hdr, map[string]bool{tag: true})
 		case ent == "ID":
 			for _, v := range recs {
 				v.ID = "."
 			}
 		}
 	}
+	return removedAllFilters
+}
+
+// removeFormatTags drops FORMAT fields from each record and the matching
+// ##FORMAT header lines. When want is nil every FORMAT tag *except GT* is
+// removed (upstream remove_format and remove_hdr_lines both preserve GT);
+// otherwise only the named tags are removed (remove_format_tag), and a named GT
+// is removed like any other tag.
+func removeFormatTags(recs []*vcf.Variant, hdr *vcf.Header, want map[string]bool) {
+	keep := func(tag string) bool {
+		if want == nil {
+			return tag == "GT" // bare FORMAT/FMT keeps GT
+		}
+		return !want[tag]
+	}
+	for _, v := range recs {
+		if len(v.Format) == 0 {
+			continue
+		}
+		newFmt := v.Format[:0]
+		for _, f := range v.Format {
+			if keep(f) {
+				newFmt = append(newFmt, f)
+			}
+		}
+		v.Format = newFmt
+		for si := range v.Samples {
+			if v.Samples[si].Data == nil {
+				continue
+			}
+			for tag := range v.Samples[si].Data {
+				if !keep(tag) {
+					delete(v.Samples[si].Data, tag)
+				}
+			}
+		}
+	}
+	out := hdr.MetaInfo[:0]
+	for _, m := range hdr.MetaInfo {
+		if k, id := structuredID(m); k == "FORMAT" {
+			// Bare FORMAT/FMT removal keeps GT's header line; a targeted
+			// removal drops only the named tags.
+			if (want == nil && id != "GT") || (want != nil && want[id]) {
+				continue
+			}
+		}
+		out = append(out, m)
+	}
+	hdr.MetaInfo = out
 }
 
 // readHeaderLines reads a file of `##...` meta lines, ignoring blank lines

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
 
 const concatHeader = `##fileformat=VCFv4.2
@@ -358,5 +360,57 @@ func TestSplitTopLevelQuotedComma(t *testing.T) {
 func TestMergeHeadersEmpty(t *testing.T) {
 	if _, err := MergeHeaders(nil); err == nil {
 		t.Error("expected error for empty input")
+	}
+}
+
+// TestUnitOrderPositionGroup checks the synced-reader emission ordering at a
+// single position without invoking any binary: groups are emitted by
+// descending pre-dedup count, ties broken by first-appearance order, and
+// records within a group keep file order.
+func TestUnitOrderPositionGroup(t *testing.T) {
+	mk := func(ref, alt, gt string) *vcf.Variant {
+		return &vcf.Variant{Chrom: "1", Pos: 20, Ref: ref, Alt: []string{alt},
+			Samples: []vcf.Sample{{Name: "S1", Data: map[string]string{"GT": gt}}}}
+	}
+	// file0: A>G, C>T, A>ATTT ; file1: A>ATTT  -> A>ATTT has count 2 (emitted
+	// first), then A>G, C>T in first-appearance order.
+	g0a := mk("A", "G", "0/1")
+	g0b := mk("C", "T", "0/1")
+	g0c := mk("A", "ATTT", "0/1")
+	g1a := mk("A", "ATTT", "1/1")
+	all := []taggedRec{
+		{v: g0a, file: 0}, {v: g0b, file: 0}, {v: g0c, file: 0},
+		{v: g1a, file: 1},
+	}
+	kept := []*vcf.Variant{g0a, g0b, g0c, g1a} // -d none keeps all
+	got := orderPositionGroup(all, kept)
+	want := []*vcf.Variant{g0c, g1a, g0a, g0b}
+	if len(got) != len(want) {
+		t.Fatalf("len=%d want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("pos %d: got %s>%s want %s>%s", i,
+				got[i].Ref, got[i].Alt[0], want[i].Ref, want[i].Alt[0])
+		}
+	}
+}
+
+// TestUnitConcatVariantKey checks the variant-key string used to group records.
+func TestUnitConcatVariantKey(t *testing.T) {
+	cases := []struct {
+		ref  string
+		alt  []string
+		want string
+	}{
+		{"A", []string{"C"}, "A>C"},
+		{"A", []string{"C", "G"}, "A>C,A>G"},
+		{"A", nil, "A>."},
+	}
+	for _, c := range cases {
+		got := concatVariantKey(&vcf.Variant{Ref: c.ref, Alt: c.alt})
+		if got != c.want {
+			t.Errorf("ref=%s alt=%v: got %q want %q", c.ref, c.alt, got, c.want)
+		}
 	}
 }

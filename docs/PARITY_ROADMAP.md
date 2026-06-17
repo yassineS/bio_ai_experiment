@@ -3682,6 +3682,54 @@ binary (fixtures vendored under `tools/bcftools/testdata/parity/`):
   `.csi`/`.tbi` output remains a deliberate non-target (BGZF framing differs,
   and our BCF CSI carries a small tabix-style aux block htslib omits for BCF).
 
+Recently closed (2026-06-17 parity-pipeline bugfix wave), each asserted
+byte-for-byte against the upstream binary (live-oracle tests, never `t.Skip`):
+
+- `view -c/-C/-q/-Q` (and `-x/-X`) now recompute and append `INFO/AC` and
+  `INFO/AN` even without a sample subset, matching `vcfview.c`'s `calc_ac`
+  path (the non-subset path prefers pre-existing INFO/AC,AN, then GT;
+  `-I/--no-update` still suppresses it). `TestView_ACANRecompute_UpstreamParity`.
+- `norm -m+` join now matches `vcfnorm.c`: biallelics at the same position are
+  bucketed by variant-type category (or all together for `-m+any`), merged via
+  a port of htslib `merge_alleles` (common padded REF + allele-index map) and
+  `merge_format_genotype` (so `0/1`+`0/1` joins to `2/1`, indels with
+  differing-length REFs share a padded REF). `TestNorm_JoinMultiallelic_UpstreamParity`.
+- `annotate -x` now strips the matching `##FILTER`/`##INFO`/`##FORMAT` header
+  lines (bare `FILTER`/`INFO` drop all; `FORMAT`/`FMT` keep GT; `FILTER/NAME`
+  rewrites an emptied record to PASS), fixing the header line ordering for
+  `-x FILTER`. `TestAnnotate_Remove_UpstreamParity`.
+- `merge --force-samples` added: duplicate sample names across inputs are
+  de-duped by prefixing the clashing name from input *i* with `<i+1>:`
+  (`A + A -> A, 2:A`), matching `vcfmerge.c merge_headers`.
+  `TestMerge_ForceSamples_UpstreamParity`.
+- `concat -a` overlap-merge record ordering now matches the synced reader
+  (`bcf_sr_sort.c`): records at a shared position are grouped by REF>ALT and
+  the groups emitted by descending pre-dedup count, ties by first-appearance.
+  `TestConcat_OverlapOrder_UpstreamParity`. (The `-d snps/indels/both` collapse
+  *model* — which records are dropped — remains a separate, pre-existing
+  divergence from upstream's variant-set pairing.)
+- `consensus` default het handling: when the VCF has samples and neither `-H`
+  nor an allele pick is given, upstream applies IUPAC ambiguity codes
+  (`consensus.c` `iupac_GTs`) across the `-s` sample or all samples; the port
+  did this only with `-I`. Now matched. `TestConsensus_DefaultIUPAC_UpstreamParity`.
+- `roh` ST/RG output is now ordered chromosome-major then sample-major (header
+  order), matching upstream's per-chromosome synced-reader flush.
+  `TestRoh_RecordOrder_UpstreamParity`.
+
+**`csq` and the parity pipeline's synthetic GFF:** the pipeline's
+`bcftools csq --force` matrix entry diverges, but the cause is the *fixture*,
+not the consequence engine. The synthetic `annotations.gff3` has invalid GFF3
+phase columns (`.`-phase exons, CDS phase ≠ len%3); upstream's GFF parser
+detects this and skips/truncates the offending transcripts ("inconsistent
+phase column ... skipping", indexing 689 CDSs not all 800), so it emits
+different/fewer consequences (e.g. `intron|gene00000` where the transcript was
+dropped). Our port does not yet validate the GFF phase column, so it keeps
+those transcripts and calls `missense`. On clean, valid-phase GFFs — single
+gene and overlapping opposite-strand genes alike — csq matches upstream
+byte-for-byte, and the extensive per-tool csq parity suite passes. The
+remaining narrow gap is GFF phase-column validation (the
+`phase != len%3` / `.`-phase skip logic in upstream's GFF reader).
+
 **Multi-threaded output compression** (`-@ / --threads N`) — DONE for the
 output-writer subcommands. Like upstream (which calls htslib
 `hts_set_threads` on the output file), the Go port now performs genuine

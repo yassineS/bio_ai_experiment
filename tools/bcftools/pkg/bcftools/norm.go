@@ -86,6 +86,11 @@ type MultiallelicMode struct {
 	Snps bool
 	// Indels controls whether indel records are affected.
 	Indels bool
+	// Any mirrors upstream COLLAPSE_ANY (the `any` type for -m+/-m-). When
+	// joining, every biallelic record at the same position is merged into a
+	// single multiallelic regardless of variant type; the default ("both")
+	// instead buckets records by type category before merging.
+	Any bool
 }
 
 // ParseMultiallelicMode turns the literal flag body (e.g. "-both") into the
@@ -108,9 +113,13 @@ func ParseMultiallelicMode(s string) (MultiallelicMode, error) {
 	}
 	rest := strings.ToLower(s[1:])
 	switch rest {
-	case "", "both", "any":
+	case "", "both":
 		m.Snps = true
 		m.Indels = true
+	case "any":
+		m.Snps = true
+		m.Indels = true
+		m.Any = true
 	case "snps":
 		m.Snps = true
 	case "indels":
@@ -606,94 +615,369 @@ func cloneVariant(v *vcf.Variant) *vcf.Variant {
 	return &c
 }
 
-// joinMultiallelics groups biallelic records sharing chrom/pos/ref into a
-// single multiallelic. INFO/AC and INFO/AF are re-joined as comma lists;
-// FORMAT/GT is re-numbered so each donor record's ALT lands at its new
-// position. Records that disagree on REF are left alone.
+// joinMultiallelics joins biallelic records at the same position into
+// multiallelics, mirroring upstream vcfnorm.c's mrows buffer (mrows_push /
+// mrows_can_flush / mrows_flush). All records sharing CHROM+POS are buffered;
+// within that window they are bucketed by variant-type category (or merged
+// wholesale for the "any" mode). Records of a category that occurs only once,
+// and records the mode does not target, pass through unchanged in their
+// original relative order. A bucket of two or more records is merged via
+// mergeBiallelicsToMultiallelic, which computes a common REF, remaps allele
+// indices, and combines FORMAT/GT exactly as merge_format_genotype does.
 func joinMultiallelics(variants []*vcf.Variant, m MultiallelicMode) []*vcf.Variant {
 	out := make([]*vcf.Variant, 0, len(variants))
 	i := 0
 	for i < len(variants) {
-		v := variants[i]
-		if !shouldAffect(v, m) || len(v.Alt) != 1 {
-			out = append(out, v)
-			i++
-			continue
-		}
-		// Find a contiguous run of records that share chrom+pos+ref and
-		// every member of which is biallelic and joinable.
+		// Collect the window of records at this CHROM+POS (the flush window).
 		j := i + 1
-		for j < len(variants) {
-			w := variants[j]
-			if w.Chrom != v.Chrom || w.Pos != v.Pos || w.Ref != v.Ref || len(w.Alt) != 1 {
-				break
-			}
-			if !shouldAffect(w, m) {
-				break
-			}
+		for j < len(variants) && variants[j].Chrom == variants[i].Chrom && variants[j].Pos == variants[i].Pos {
 			j++
 		}
-		if j-i == 1 {
-			out = append(out, v)
-			i++
-			continue
-		}
-		out = append(out, joinGroup(variants[i:j]))
+		out = append(out, joinWindow(variants[i:j], m)...)
 		i = j
 	}
 	return out
 }
 
-// joinGroup merges a run of biallelics (sharing CHROM/POS/REF) into one
-// multiallelic record. The first record's metadata is kept; ALTs are
-// concatenated; INFO/AC and INFO/AF are joined; FORMAT/GT alleles are
-// renumbered per donor.
-func joinGroup(records []*vcf.Variant) *vcf.Variant {
-	head := cloneVariant(records[0])
+// joinTypeBit returns the upstream bcf_get_variant_types category bit for a
+// record participating in the join (a biallelic record contributes its single
+// ALT's type). Records that are not biallelic, or whose type the mode does not
+// target, are reported with ok=false so they pass through unmerged.
+func joinTypeBit(v *vcf.Variant, m MultiallelicMode) (bit int, ok bool) {
+	if len(v.Alt) != 1 {
+		return 0, false
+	}
+	t := variantTypeBit(v.Ref, v.Alt[0])
+	switch {
+	case m.Any:
+		// Any non-reference biallelic joins regardless of type.
+		return t, true
+	case m.Snps && m.Indels:
+		// Default "both": every category is eligible, but kept in separate
+		// buckets (SNP, MNP, INDEL, OTHER are distinct).
+		return t, true
+	case m.Snps:
+		if t == vtSNP {
+			return t, true
+		}
+	case m.Indels:
+		if t == vtINDEL {
+			return t, true
+		}
+	}
+	return 0, false
+}
+
+// joinWindow joins the records at a single CHROM+POS. For COLLAPSE_ANY all
+// eligible records are merged into one multiallelic; otherwise records are
+// grouped by type category and only same-category runs of two or more are
+// merged, preserving the input order of everything else (matching upstream's
+// mrows_flush, which emits a single-record bucket verbatim).
+func joinWindow(window []*vcf.Variant, m MultiallelicMode) []*vcf.Variant {
+	if !m.Active || m.Split || len(window) == 1 {
+		return window
+	}
+	if m.Any {
+		eligible := make([]*vcf.Variant, 0, len(window))
+		var passthrough []*vcf.Variant
+		var firstIdx = -1
+		result := make([]*vcf.Variant, 0, len(window))
+		for idx, v := range window {
+			if _, ok := joinTypeBit(v, m); ok {
+				if firstIdx < 0 {
+					firstIdx = len(result)
+					result = append(result, nil) // placeholder for merged record
+				}
+				eligible = append(eligible, v)
+			} else {
+				passthrough = append(passthrough, v)
+				result = append(result, v)
+			}
+			_ = idx
+		}
+		if len(eligible) == 0 {
+			return window
+		}
+		if len(eligible) == 1 {
+			result[firstIdx] = eligible[0]
+		} else {
+			result[firstIdx] = mergeBiallelicsToMultiallelic(eligible, m)
+		}
+		_ = passthrough
+		return result
+	}
+	// Bucket by type category, preserving the first-seen order of categories
+	// and of pass-through records.
+	type bucket struct {
+		bit     int
+		records []*vcf.Variant
+		anchor  int // position of this bucket's output slot
+	}
+	var buckets []*bucket
+	byBit := map[int]*bucket{}
+	result := make([]*vcf.Variant, 0, len(window))
+	for _, v := range window {
+		bit, ok := joinTypeBit(v, m)
+		if !ok {
+			result = append(result, v)
+			continue
+		}
+		b := byBit[bit]
+		if b == nil {
+			b = &bucket{bit: bit, anchor: len(result)}
+			byBit[bit] = b
+			buckets = append(buckets, b)
+			result = append(result, nil) // placeholder, filled below
+		}
+		b.records = append(b.records, v)
+	}
+	for _, b := range buckets {
+		if len(b.records) == 1 {
+			result[b.anchor] = b.records[0]
+		} else {
+			result[b.anchor] = mergeBiallelicsToMultiallelic(b.records, m)
+		}
+	}
+	return result
+}
+
+// mergeBiallelicsToMultiallelic merges a run of biallelic records (already
+// determined to belong to one type bucket) into a single multiallelic record,
+// porting upstream vcfnorm.c's merge_biallelics_to_multiallelic. It computes a
+// common REF via mergeAlleles, takes the maximum QUAL, accumulates FILTERs,
+// joins per-allele INFO/AC and INFO/AF, and combines FORMAT/GT through
+// mergeFormatGenotype.
+func mergeBiallelicsToMultiallelic(records []*vcf.Variant, m MultiallelicMode) *vcf.Variant {
 	if len(records) == 1 {
-		return head
+		return records[0]
 	}
-	for k := 1; k < len(records); k++ {
-		r := records[k]
-		head.Alt = append(head.Alt, r.Alt...)
+	dst := cloneVariant(records[0])
+
+	// Build the merged allele list and per-record allele-index maps.
+	als := []string{records[0].Ref}
+	als = append(als, records[0].Alt...)
+	maps := make([][]int, len(records))
+	maps[0] = make([]int, len(als))
+	for i := range maps[0] {
+		maps[0][i] = i
 	}
-	// Join INFO/AC and INFO/AF if present in every record.
+	for i := 1; i < len(records); i++ {
+		rcAlleles := append([]string{records[i].Ref}, records[i].Alt...)
+		merged, mp, ok := mergeAlleles(rcAlleles, als)
+		if !ok {
+			// Cannot merge (incompatible REF prefixes): fall back to keeping
+			// the records unmerged is not possible here, so leave dst as-is.
+			return dst
+		}
+		als = merged
+		maps[i] = mp
+		// merging may have right-padded earlier maps' alleles by lengthening
+		// the common REF; the allele *indices* are unchanged, so earlier maps
+		// remain valid.
+	}
+	dst.Ref = als[0]
+	dst.Alt = als[1:]
+
+	// QUAL: take the maximum across records (missing QUAL is -1 in our model).
+	dst.Qual = maxQual(records)
+
+	// INFO/AC and INFO/AF: join per-allele values in the merged allele order
+	// when present in every record (Number=A semantics). Other INFO tags keep
+	// the first record's value (already copied by cloneVariant).
+	joinPerAlleleInfo(dst, records, maps, len(dst.Alt))
+
+	// FORMAT/GT: combine genotypes via the upstream algorithm.
+	if len(dst.Samples) > 0 && hasGT(dst.Format) {
+		mergeFormatGenotype(dst, records, maps)
+	}
+	return dst
+}
+
+// maxQual returns the maximum QUAL across records, treating -1 as missing.
+// When all are missing the result is -1 (rendered as "." downstream), matching
+// upstream which sets a missing float when no record has a QUAL.
+func maxQual(records []*vcf.Variant) float64 {
+	best := -1.0
+	haveBest := false
+	for _, r := range records {
+		if r.Qual < 0 {
+			continue
+		}
+		if !haveBest || r.Qual > best {
+			best = r.Qual
+			haveBest = true
+		}
+	}
+	if !haveBest {
+		return -1
+	}
+	return best
+}
+
+// joinPerAlleleInfo joins INFO/AC and INFO/AF (Number=A) across records using
+// the merged allele maps, mirroring upstream merge_info_numeric for VL_A tags:
+// a value at source ALT index k lands at the merged ALT index maps[i][k+1]-1.
+// The join is applied only when the tag is present in every record so that a
+// partially-annotated set is left to the first record's value.
+func joinPerAlleleInfo(dst *vcf.Variant, records []*vcf.Variant, maps [][]int, nAlt int) {
 	for _, tag := range []string{"AC", "AF"} {
-		joined := make([]string, 0, len(records))
-		ok := true
+		present := true
 		for _, r := range records {
-			val, present := r.Info[tag]
-			if !present {
-				ok = false
+			if _, ok := r.Info[tag]; !ok {
+				present = false
 				break
 			}
-			joined = append(joined, val)
 		}
-		if ok {
-			head.Info[tag] = strings.Join(joined, ",")
+		if !present {
+			continue
 		}
-	}
-	// Renumber GTs: donor record k (0-based) contributed allele index
-	// k+1. Within each sample we OR the per-donor alt calls together;
-	// the resulting genotype takes the highest contributing allele on
-	// each strand (e.g. "0/1" + "0/0" + "0/1" with donors at 1 and 3
-	// yields "0/3").
-	if len(head.Samples) > 0 && hasGT(head.Format) {
-		for s := range head.Samples {
-			strands := splitStrands(head.Samples[s].Data["GT"])
-			for k := 1; k < len(records); k++ {
-				donor := records[k].Samples[s].Data["GT"]
-				donorStrands := splitStrands(donor)
-				for i := range strands {
-					if i < len(donorStrands) && donorStrands[i].allele == "1" {
-						strands[i].allele = strconv.Itoa(k + 1)
-					}
+		merged := make([]string, nAlt)
+		for i := range merged {
+			merged[i] = "."
+		}
+		for i, r := range records {
+			parts := strings.Split(r.Info[tag], ",")
+			for k, p := range parts {
+				dstIdx := maps[i][k+1] - 1
+				if dstIdx >= 0 && dstIdx < nAlt {
+					merged[dstIdx] = p
 				}
 			}
-			head.Samples[s].Data["GT"] = joinStrands(strands)
+		}
+		setInfo(dst, tag, strings.Join(merged, ","))
+	}
+}
+
+// mergeAlleles merges the new record's allele list a into the accumulated
+// allele list b, porting htslib vcfmerge.c::merge_alleles verbatim (a is the
+// incoming line, b is the running accumulator). It returns the new accumulator,
+// a map from a's allele indices to accumulator indices, and ok=false when the
+// REF prefixes are incompatible. The reference allele is always index 0.
+//
+// When the new record's REF (a[0]) is longer than the accumulator's REF, every
+// accumulator allele (including the REF at index 0) is right-padded with a[0]'s
+// suffix so the merged REF becomes the longer one. Conversely, when the
+// accumulator's REF is longer, the new record's ALT alleles are padded before
+// being matched/added.
+func mergeAlleles(a, b []string) (merged []string, mp []int, ok bool) {
+	mp = make([]int, len(a))
+	mp[0] = 0
+	rla := len(a[0])
+	rlb := len(b[0])
+
+	// Most common case: identical single-base SNPs.
+	if len(a) == 2 && len(b) == 2 && rla == 1 && rlb == 1 && a[1] == b[1] && len(a[1]) == 1 && len(b[1]) == 1 {
+		mp[1] = 1
+		return b, mp, true
+	}
+
+	// REF prefixes must agree (case-insensitively).
+	minRL := rla
+	if rlb < minRL {
+		minRL = rlb
+	}
+	if !strings.EqualFold(a[0][:minRL], b[0][:minRL]) {
+		return nil, nil, false
+	}
+
+	out := append([]string{}, b...)
+
+	// b alleles need expanding (incl. REF) when a's REF is longer.
+	if rla > rlb {
+		suffix := a[0][rlb:]
+		for i := range out {
+			if len(out[i]) > 0 && (out[i][0] == '<' || out[i][0] == '*') {
+				continue // symbolic / overlapping-deletion alleles unchanged
+			}
+			out[i] = out[i] + suffix
 		}
 	}
-	return head
+
+	// Add a's ALT alleles, expanding them when b's REF is longer.
+	for i := 1; i < len(a); i++ {
+		ai := a[i]
+		if rlb > rla && len(a[i]) > 0 && a[i][0] != '<' && a[i][0] != '*' {
+			ai = a[i] + b[0][rla:]
+		}
+		found := -1
+		for j := 1; j < len(out); j++ {
+			if strings.EqualFold(ai, out[j]) {
+				found = j
+				break
+			}
+		}
+		if found >= 0 {
+			mp[i] = found
+			continue
+		}
+		mp[i] = len(out)
+		out = append(out, ai)
+	}
+	return out, mp, true
+}
+
+// mergeFormatGenotype combines the FORMAT/GT of a run of biallelic records
+// into dst, porting upstream vcfnorm.c::merge_format_genotype. For each sample
+// it starts from the first record's GT and folds in each subsequent record's
+// alleles using the per-record allele map: a non-missing, non-reference source
+// allele is written into the matching destination strand, never overwriting a
+// non-reference allele already there — a conflict instead falls back to the
+// first free (reference/missing) strand, which is why "0/1" + "0/1" joins to
+// "2/1" rather than "0/2".
+func mergeFormatGenotype(dst *vcf.Variant, records []*vcf.Variant, maps [][]int) {
+	for s := range dst.Samples {
+		gt := splitStrands(records[0].Samples[s].Data["GT"])
+		for i := 1; i < len(records); i++ {
+			if s >= len(records[i].Samples) {
+				continue
+			}
+			gt2 := splitStrands(records[i].Samples[s].Data["GT"])
+			for k2 := range gt2 {
+				src := gt2[k2].allele
+				if src == "." || src == "" {
+					continue // don't overwrite with missing
+				}
+				ial2, err := strconv.Atoi(src)
+				if err != nil {
+					continue
+				}
+				// Don't overwrite with ref unless the destination strand is
+				// missing.
+				if ial2 == 0 {
+					if k2 < len(gt) && gt[k2].allele != "." && gt[k2].allele != "" {
+						continue
+					}
+				}
+				ial := ial2
+				if ial2 < len(maps[i]) {
+					ial = maps[i][ial2]
+				}
+				dstStr := strconv.Itoa(ial)
+				if k2 < len(gt) {
+					cur := gt[k2].allele
+					if cur == "." || cur == "" || cur == "0" {
+						// Preserve phasing if the strand was phased.
+						gt[k2].allele = dstStr
+						continue
+					}
+				}
+				// Conflict: find the first free (ref/missing/end) strand.
+				placed := false
+				for k := range gt {
+					if gt[k].allele == "." || gt[k].allele == "" || gt[k].allele == "0" {
+						gt[k].allele = dstStr
+						placed = true
+						break
+					}
+				}
+				if !placed && k2 >= len(gt) {
+					// Ploidy grew: append a new strand.
+					gt = append(gt, strand{sep: '/', allele: dstStr})
+				}
+			}
+		}
+		dst.Samples[s].Data["GT"] = joinStrands(gt)
+	}
 }
 
 // strand pairs an allele with the separator that preceded it (so we can

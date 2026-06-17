@@ -23,9 +23,10 @@ import "os"
 //
 // Subcommands compared byte-exact (text): view (-O v, -v/-V, -i/-e, -r/-R/-t,
 // -s, -c/-C/-q/-Q, -G, -I), query (-f formats, -i/-e, -l), norm (-m/-f/-d),
-// stats, filter, sort, head, annotate (-x), concat, gtcheck, mpileup,
-// fill-tags / split-vep plugin smoke. Documented Skips: call, csq, roh,
-// consensus, isec, merge, convert (behaviour/format gaps spelled out per entry).
+// stats, filter, sort, head, annotate (-x), concat (-a), gtcheck, mpileup,
+// roh, consensus (default IUPAC), and fill-tags / split-vep plugin smoke.
+// Documented Skips: call, csq, isec, convert, reheader, and the residual
+// norm -m+ ID-merge / merge INFO-combine gaps (spelled out per entry).
 
 func init() {
 	Register(bcftoolsViewMatrix()...)
@@ -218,52 +219,60 @@ func bcftoolsSkips() []Entry {
 		}
 	}
 	return []Entry{
-		skip("view", "view_c_update_acan",
-			"bcftools view -c/-C/-q/-Q (without -I): upstream recomputes and APPENDS AC/AN INFO tags to each filtered record; our port "+
-				"does not. The -I (no-update) variants of these filters are byte-exact and run; this records the update divergence. Owned by the bcftools agent.",
-			"-H", "-c", "1", "{vcf_multi}"),
+		// FIXED + re-activated (byte-exact against the real binary; see the
+		// bcftools parity tests TestView_ACANRecompute / TestNorm_JoinMultiallelic
+		// / TestAnnotate_Remove / TestRoh_RecordOrder / TestConsensus_DefaultIUPAC
+		// / TestConcat_OverlapOrder):
+		//   - view -c/-q now recomputes and appends AC/AN like upstream.
+		//   - norm -m+ joins biallelics via the merge_alleles/merge_format_genotype
+		//     port (common padded REF + allele-index map; conflicting donor allele
+		//     to the first free strand).
+		//   - annotate -x FILTER/INFO now drops the corresponding ## header lines.
+		//   - roh emits ST/RG chromosome-major then sample-major (header order).
+		//   - consensus applies the default cross-sample IUPAC ambiguity code at
+		//     het sites (no -H/allele pick).
+		//   - concat -a orders a shared-position group by descending pre-dedup
+		//     count, ties by first appearance.
+		mkBcf("view", "view_c_update_acan", InputVCFMulti, ByteExact, "-H", "-c", "1", "{vcf_multi}"),
+		mkBcf("annotate", "annotate_drop_filter", InputVCFPlain, ByteExact, "-x", "FILTER", "{vcf_plain}"),
+		mkBcf("roh", "roh", InputVCFMulti, ByteExact, "-G30", "--AF-dflt", "0.4", "{vcf_multi}"),
+		mkBcf("consensus", "consensus", InputVCF, ByteExact, "-f", "{fasta}", "{vcf}"),
+		mkBcf("concat", "concat", InputVCF, ByteExact, "-a", "{vcf}", "{vcf}"),
+		// norm -m+ now joins biallelics correctly (alleles + GT), but one
+		// residual gap remains: when the joined records have different IDs,
+		// upstream concatenates them (rs45;rs46) while our port keeps only the
+		// first (rs45). Same class as the arbitrary-tag Number=A/R/G INFO/FORMAT
+		// merge gap. Owned by the bcftools agent.
 		skip("norm", "norm_join",
-			"bcftools norm -m+ (join biallelics): our port merges two biallelic records at the same position into one multiallelic "+
-				"record (ALT 'C,AC', AF '0.69,0.6') where upstream leaves them as separate records. Real norm-join divergence owned by the bcftools agent.",
+			"bcftools norm -m+: the allele/GT join now matches upstream, but joined records with distinct IDs are not concatenated — "+
+				"upstream emits 'rs45;rs46' where our port keeps only 'rs45'. Residual ID-merge (and arbitrary-tag Number=A/R/G INFO/FORMAT merge) gap. Owned by the bcftools agent.",
 			"-m+", "-f", "{fasta}", "{vcf_plain}"),
-		skip("annotate", "annotate_drop_filter",
-			"bcftools annotate -x FILTER: the FILTER-column data is removed correctly on both sides, but our header serialiser places the "+
-				"surviving ##FILTER=<ID=q10> definition at a different position than upstream (header line-ordering, the same class the bcftools "+
-				"view smoke entries avoid with -H). annotate has no -H body-only mode. Owned by the bcftools agent.",
-			"-x", "FILTER", "{vcf_plain}"),
 		skip("call", "call",
 			"bcftools call needs a proper mpileup-style PL/likelihood input; the variant fixture lacks PL, so upstream errors with "+
 				"'Wrong number of PL fields'. A call-from-mpileup parity case needs a likelihood fixture (owned by the bcftools agent).",
 			"-m", "{vcf_multi}"),
 		skip("csq", "csq",
-			"bcftools csq --force: our consequence annotations diverge from upstream on this GFF (different BCSQ strings, e.g. intron vs "+
-				"@-reference handling and missense calls). Real csq port gap owned by the bcftools agent.",
+			"bcftools csq --force: the pipeline's annotations.gff3 has invalid GFF3 phase columns (CDS phase != len%3, '.'-phase exons); "+
+				"upstream's GFF reader detects this and skips/truncates those transcripts while our port keeps them, so the BCSQ strings "+
+				"diverge. On valid-phase GFFs csq is byte-exact (per-tool suite). Remaining narrow gap: GFF phase-column validation. Owned by the bcftools agent.",
 			"--force", "-f", "{fasta}", "-g", "{gff}", "-p", "a", "{vcf_plain}"),
-		skip("roh", "roh",
-			"bcftools roh -G30: our run-of-homozygosity caller emits far fewer ST/RG records than upstream on the multi-sample fixture "+
-				"(187 vs ~1485 state rows). Real port gap owned by the bcftools agent.",
-			"-G30", "--AF-dflt", "0.4", "{vcf_multi}"),
-		skip("consensus", "consensus",
-			"bcftools consensus: at heterozygous sites upstream applies the IUPAC ambiguity code (Y/R/...) while our port emits a resolved "+
-				"base. Real het-handling divergence owned by the bcftools agent.",
-			"-f", "{fasta}", "{vcf}"),
 		skip("isec", "isec",
 			"bcftools isec writes a directory of 000N.vcf files via -p; the file SET differs (ours writes 2, upstream 4 for two identical "+
 				"inputs) and the -p directory model is not the runner's {out}-prefix comparison. Owned by the bcftools agent.",
 			"-p", "{out}", "{vcf}", "{vcf}"),
+		// --force-samples now prefixes a duplicate sample from input i with
+		// "<i+1>:" so the merge is expressible, but a residual gap remains: the
+		// INFO combine rules are not applied — upstream sums INFO/DP across the
+		// merged records (DP=106) while our port keeps the first input's value
+		// (DP=53). Owned by the bcftools agent.
 		skip("merge", "merge",
-			"bcftools merge: our port lacks --force-samples, and the fixtures share the sample name 'sample1', so a merge of distinct "+
-				"inputs is not expressible (both sides error on duplicate samples). Owned by the bcftools agent.",
-			"{vcf}", "{vcf}"),
+			"bcftools merge --force-samples: sample renaming now works, but the INFO combine rules are not applied — upstream sums "+
+				"INFO/DP across merged records (DP=106) where our port keeps the first value (DP=53). Residual INFO-merge gap. Owned by the bcftools agent.",
+			"--force-samples", "{vcf}", "{vcf}"),
 		skip("convert", "convert",
 			"bcftools convert's interchange formats (GEN/SAMPLE, HAP/LEGEND, tsv) write multiple prefixed files and the round-trips "+
 				"diverge on header/field ordering; not expressible as a single byte-exact stdout. Owned by the bcftools agent.",
 			"--gvcf2vcf", "-f", "{fasta}", "{vcf_plain}"),
-		skip("concat", "concat",
-			"bcftools concat -a (allow-overlaps) over the bgzipped VCF emits records at an identical position in a different order than "+
-				"upstream (overlap-merge tie-break); the record SET is identical. Plain concat of the single fixture twice makes upstream "+
-				"error on a non-contiguous block, so no non-overlapping concat is expressible. Owned by the bcftools agent.",
-			"-a", "{vcf}", "{vcf}"),
 		skip("reheader", "reheader",
 			"bcftools reheader rewrites a VCF/BCF header in place and (for BCF) emits binary; it has no single-command text-output parity "+
 				"form distinct from the per-tool suite's checks. Owned by the bcftools agent.",

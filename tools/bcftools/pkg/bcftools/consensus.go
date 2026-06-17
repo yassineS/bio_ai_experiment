@@ -272,6 +272,25 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) (int, error) 
 		}
 	}
 
+	// Determine upstream's iupac_GTs mode (consensus.c init_data): when the
+	// VCF carries samples and neither -H (a haplotype/allele pick) nor an
+	// explicit allele selector is given, the consensus applies IUPAC ambiguity
+	// codes derived from FORMAT/GT — across the chosen sample (-s) or across
+	// ALL samples when -s is absent. Sites-only VCFs keep the "apply 1st ALT"
+	// behaviour. iupacSamples is the list of sample indices to OR together;
+	// nil means the iupac_GTs mode is off.
+	var iupacSamples []int
+	if len(hdr.Samples) > 0 && opts.Haplotype == HapAuto && !opts.IUPACCodes {
+		if sampleIdx >= 0 {
+			iupacSamples = []int{sampleIdx}
+		} else {
+			iupacSamples = make([]int, len(hdr.Samples))
+			for i := range hdr.Samples {
+				iupacSamples[i] = i
+			}
+		}
+	}
+
 	// Group variants by chromosome (in stable input order). Use a map
 	// keyed by chrom to allow us to skip whole records that don't match
 	// any reference sequence.
@@ -343,7 +362,7 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) (int, error) 
 			if v.Pos <= lastEnd {
 				continue
 			}
-			alt, ok := selectAllele(v, sampleIdx, opts)
+			alt, ok := selectAllele(v, sampleIdx, iupacSamples, opts)
 			if !ok {
 				continue
 			}
@@ -434,12 +453,18 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) (int, error) 
 // selectAllele picks the ALT (or REF) string to inject per opts. Returns
 // (allele, true) when the record should be applied, or ("", false) when
 // it should be skipped (missing GT, ./. with no -M, mismatched REF, ...).
-func selectAllele(v *vcf.Variant, sampleIdx int, opts ConsensusOptions) (string, bool) {
+func selectAllele(v *vcf.Variant, sampleIdx int, iupacSamples []int, opts ConsensusOptions) (string, bool) {
 	if len(v.Alt) == 0 {
 		return "", false
 	}
+	// iupac_GTs mode (upstream default when the VCF has samples and no -H/-a):
+	// OR the alleles present in every selected sample's GT into one IUPAC code.
+	if len(iupacSamples) > 0 {
+		return iupacAlleleAcrossSamples(v, iupacSamples, opts)
+	}
 	if sampleIdx < 0 {
-		// No -s flag: apply the 1st ALT (upstream "all variants" default).
+		// No -s flag and no samples (sites-only VCF): apply the 1st ALT
+		// (upstream "all variants" default).
 		return v.Alt[0], true
 	}
 	if sampleIdx >= len(v.Samples) {
@@ -580,6 +605,41 @@ func phasedIndexAllele(parts []string, idx int, v *vcf.Variant, opts ConsensusOp
 		return "", false
 	}
 	return alleleString(slot, v), true
+}
+
+// iupacAlleleAcrossSamples implements upstream's iupac_GTs apply path
+// (consensus.c apply_variant): it collects the allele indices present in the
+// FORMAT/GT of every sample in samples (iupac_add_gt) and folds them into one
+// IUPAC ambiguity code via iupac_set_allele. When no sample carries a usable
+// allele the record is skipped (or the -M missing character is emitted).
+func iupacAlleleAcrossSamples(v *vcf.Variant, samples []int, opts ConsensusOptions) (string, bool) {
+	var parts []string
+	for _, si := range samples {
+		if si < 0 || si >= len(v.Samples) {
+			continue
+		}
+		gt, ok := v.Samples[si].Data["GT"]
+		if !ok {
+			continue
+		}
+		parts = append(parts, splitGT(gt)...)
+	}
+	// Keep only present (non-missing) allele tokens; if none are set the
+	// record is skipped unless -M provides a missing character.
+	anySet := false
+	for _, p := range parts {
+		if p != "." && p != "" {
+			anySet = true
+			break
+		}
+	}
+	if !anySet {
+		if opts.Missing != 0 {
+			return string(opts.Missing), true
+		}
+		return "", false
+	}
+	return iupacAllele(parts, v, opts)
 }
 
 // iupacAllele encodes the alleles present in a genotype as an IUPAC
