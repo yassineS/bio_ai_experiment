@@ -238,15 +238,10 @@ func bcftoolsSkips() []Entry {
 		mkBcf("roh", "roh", InputVCFMulti, ByteExact, "-G30", "--AF-dflt", "0.4", "{vcf_multi}"),
 		mkBcf("consensus", "consensus", InputVCF, ByteExact, "-f", "{fasta}", "{vcf}"),
 		mkBcf("concat", "concat", InputVCF, ByteExact, "-a", "{vcf}", "{vcf}"),
-		// norm -m+ now joins biallelics correctly (alleles + GT), but one
-		// residual gap remains: when the joined records have different IDs,
-		// upstream concatenates them (rs45;rs46) while our port keeps only the
-		// first (rs45). Same class as the arbitrary-tag Number=A/R/G INFO/FORMAT
-		// merge gap. Owned by the bcftools agent.
-		skip("norm", "norm_join",
-			"bcftools norm -m+: the allele/GT join now matches upstream, but joined records with distinct IDs are not concatenated — "+
-				"upstream emits 'rs45;rs46' where our port keeps only 'rs45'. Residual ID-merge (and arbitrary-tag Number=A/R/G INFO/FORMAT merge) gap. Owned by the bcftools agent.",
-			"-m+", "-f", "{fasta}", "{vcf_plain}"),
+		// norm -m+ is now byte-exact: biallelics join with the merged allele/GT
+		// map, distinct IDs are concatenated (rs45;rs46), and same-position
+		// records are emitted in variant-type-bit order.
+		mkBcf("norm", "norm_join", InputVCFPlain, ByteExact, "-m+", "-f", "{fasta}", "{vcf_plain}"),
 		skip("call", "call",
 			"bcftools call needs a proper mpileup-style PL/likelihood input; the variant fixture lacks PL, so upstream errors with "+
 				"'Wrong number of PL fields'. A call-from-mpileup parity case needs a likelihood fixture (owned by the bcftools agent).",
