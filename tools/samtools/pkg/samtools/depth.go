@@ -167,26 +167,47 @@ func emitDepthInterval(bw *bufio.Writer, ref string, beg0, end0 int, perInputRec
 	// difference array, then walk it. This is O(reads + width) per input.
 	width := end0 - beg0
 	diffs := make([][]int32, n)
+	// spanDiff tracks, per input, the difference array of how many reads
+	// physically SPAN each position (reference-consuming ops: M/=/X/D/N),
+	// independent of the base-quality filter. Upstream samtools depth emits
+	// a row for every position inside a read's span — including positions
+	// whose only covering bases are dropped by the -q (min base quality)
+	// filter, or that fall in a deletion / reference skip — printing depth 0
+	// there. See reference_code/samtools/bam2depth.c: the flush loops keep
+	// emitting position i while i < end_pos[n] (the running max read end)
+	// and only break once no file's read span still reaches i. Tracking the
+	// span separately from the qual-filtered depth reproduces that exactly.
+	spanDiff := make([][]int32, n)
 	for i := range perInputRecs {
 		diffs[i] = make([]int32, width+1)
+		spanDiff[i] = make([]int32, width+1)
 		for _, rec := range perInputRecs[i] {
-			addReadDepth(rec, beg0, end0, opts, diffs[i])
+			addReadDepth(rec, beg0, end0, opts, diffs[i], spanDiff[i])
 		}
 	}
 
 	// Stream the depth values position by position.
 	cur := make([]int32, n)
+	span := make([]int32, n)
 	for pos0 := beg0; pos0 < end0; pos0++ {
 		// Apply diffs[i][pos0 - beg0] to cur[i].
 		idx := pos0 - beg0
 		any := false
+		spanned := false
 		for i := range cur {
 			cur[i] += diffs[i][idx]
+			span[i] += spanDiff[i][idx]
 			if cur[i] > 0 {
 				any = true
 			}
+			if span[i] > 0 {
+				spanned = true
+			}
 		}
-		if !any && !opts.AllPositions && !opts.AllTransPositions {
+		// Emit when at least one input has positive depth, when at least one
+		// input's read span covers this position (depth-0 interior positions
+		// — matches upstream), or when -a/-aa forces every position.
+		if !any && !spanned && !opts.AllPositions && !opts.AllTransPositions {
 			continue
 		}
 		// Emit pos+1 (SAM is 1-based).
@@ -218,11 +239,40 @@ func emitDepthInterval(bw *bufio.Writer, ref string, beg0, end0 int, perInputRec
 // reference; deletions and reference skips consume reference but do not add
 // depth.
 //
+// In parallel it records the read's reference SPAN into spanDiff for every
+// reference-consuming op (M/=/X plus D and N): these positions count as
+// "covered by a read" for the purpose of emitting a row, even when the
+// per-base quality filter zeroes the depth or the op contributes no base
+// (deletion / reference skip). This mirrors upstream bam2depth.c, where a
+// position prints while it is within some read's [pos, bam_endpos) span and
+// the depth value is the count of bases passing the base-quality filter
+// (which can be 0). spanDiff may be nil for callers that do not need the
+// span (none today; kept defensive).
+//
 // Bases below opts.MinBaseQ are skipped on a per-base basis when SEQ/QUAL
 // information is available.
-func addReadDepth(rec *sam.Record, beg0, end0 int, opts DepthOptions, diff []int32) {
+func addReadDepth(rec *sam.Record, beg0, end0 int, opts DepthOptions, diff, spanDiff []int32) {
 	if rec.Pos <= 0 {
 		return
+	}
+	// markSpan records that [clipBeg, clipEnd) on the reference is spanned
+	// by this read (clamped to the requested interval).
+	markSpan := func(runBeg, runEnd int) {
+		if spanDiff == nil {
+			return
+		}
+		clipBeg := runBeg
+		if clipBeg < beg0 {
+			clipBeg = beg0
+		}
+		clipEnd := runEnd
+		if clipEnd > end0 {
+			clipEnd = end0
+		}
+		if clipEnd > clipBeg {
+			spanDiff[clipBeg-beg0]++
+			spanDiff[clipEnd-beg0]--
+		}
 	}
 	refPos := int(rec.Pos) - 1
 	queryPos := 0
@@ -232,6 +282,7 @@ func addReadDepth(rec *sam.Record, beg0, end0 int, opts DepthOptions, diff []int
 		case sam.CigarMatch, sam.CigarEqual, sam.CigarMismatch:
 			runBeg := refPos
 			runEnd := refPos + l
+			markSpan(runBeg, runEnd)
 			// Intersect with the requested interval before recording.
 			clipBeg := runBeg
 			if clipBeg < beg0 {
@@ -263,6 +314,10 @@ func addReadDepth(rec *sam.Record, beg0, end0 int, opts DepthOptions, diff []int
 		case sam.CigarInsertion, sam.CigarSoftClip:
 			queryPos += l
 		case sam.CigarDeletion, sam.CigarSkipped:
+			// Deletions and reference skips consume reference and thus extend
+			// the read's covered span (they print as depth 0), but add no
+			// depth.
+			markSpan(refPos, refPos+l)
 			refPos += l
 		case sam.CigarHardClip, sam.CigarPadding:
 			// Neither consumes ref nor query (in our accounting).

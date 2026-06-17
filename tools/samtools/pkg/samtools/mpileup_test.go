@@ -228,11 +228,58 @@ func TestMpileup_MinBaseQ_Drops(t *testing.T) {
 @SQ	SN:chr1	LN:30
 r1	0	chr1	10	60	3M	*	0	0	ACG	!!!
 `
-	// Phred qualities "!!!" are 0 each; MinBaseQ 10 should drop them all,
-	// yielding zero-depth output (which is omitted by default).
+	// Phred qualities "!!!" are 0 each; MinBaseQ 10 drops every base, so the
+	// printed depth is 0. But the read physically spans chr1:10..12, and
+	// upstream's pileup iterator yields those positions regardless of the
+	// base-quality filter (bam_plcmd.c:646 only lowers the printed cnt, never
+	// suppresses the row). So upstream emits a depth-0 row with '*' columns
+	// for each spanned position; our port must do the same.
 	out := runMpileupOnSAM(t, []string{sam}, MpileupOptions{MinBaseQ: 10}, nil, nil)
-	if out != "" {
-		t.Errorf("expected empty output (bases all below MinBaseQ): %q", out)
+	gotLines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	want := []string{
+		"chr1\t10\tN\t0\t*\t*",
+		"chr1\t11\tN\t0\t*\t*",
+		"chr1\t12\tN\t0\t*\t*",
+	}
+	if len(gotLines) != len(want) || (len(out) == 0) {
+		t.Fatalf("want %d in-span zero-depth rows, got %d:\n%s", len(want), len(gotLines), out)
+	}
+	for i, w := range want {
+		if gotLines[i] != w {
+			t.Errorf("line %d: got %q, want %q", i, gotLines[i], w)
+		}
+	}
+}
+
+// TestMpileup_InteriorZero_BaseQFilter reproduces the verified upstream
+// parity example: with the default -Q 13 base-quality filter, a position
+// whose only covering base fails the filter still prints a depth-0 row
+// because the read physically spans it. Upstream `samtools mpileup -f ref.fa`
+// prints `chr1\t8\tA\t0\t*\t*`; our port used to omit position 8 entirely.
+func TestMpileup_InteriorZero_BaseQFilter(t *testing.T) {
+	sam := `@HD	VN:1.6
+@SQ	SN:chr1	LN:30
+r1	0	chr1	6	60	5M	*	0	0	ACGTA	II+II
+`
+	// Base at chr1:8 has quality '+' = Phred 10; the rest are 'I' = Phred 40.
+	// With MinBaseQ 11 only chr1:8 fails, giving an interior depth-0 row that
+	// is still inside the read span chr1:6..10.
+	out := runMpileupOnSAM(t, []string{sam}, MpileupOptions{MinBaseQ: 11}, nil, nil)
+	gotLines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	want := []string{
+		"chr1\t6\tN\t1\t^]A\tI", // read start marker ^ + char(60+33)='] '
+		"chr1\t7\tN\t1\tC\tI",
+		"chr1\t8\tN\t0\t*\t*", // only base here is Phred 10 < 11 -> filtered, but in span
+		"chr1\t9\tN\t1\tT\tI",
+		"chr1\t10\tN\t1\tA$\tI", // read end marker $
+	}
+	if len(gotLines) != len(want) {
+		t.Fatalf("want %d rows, got %d:\n%s", len(want), len(gotLines), out)
+	}
+	for i, w := range want {
+		if gotLines[i] != w {
+			t.Errorf("line %d: got %q, want %q", i, gotLines[i], w)
+		}
 	}
 }
 

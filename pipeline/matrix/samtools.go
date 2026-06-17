@@ -169,20 +169,12 @@ func samtoolsDepthFamily() []Entry {
 		// depth -Q (min mapping quality) now matches upstream's letter assignment
 		// and filtering exactly and is byte-exact (the old -q/-Q swap is fixed).
 		mkSam("depth", "depth_mapq_filter", InputBAM, ByteExact, "-Q", "20", "{bam}"),
-		// depth -q (min BASE quality): documented Skip. The -q/-Q letter swap is
-		// fixed, but a residual gap remains — when a covered interior position's
-		// only base is filtered out by -q, upstream emits that position with
-		// depth 0 (e.g. `chr1 8 0`) whereas our port omits the row entirely.
-		// Same root cause as mpileup_pileup below (interior zero-depth emission
-		// after per-base quality filtering). Owned by the samtools agent.
-		Entry{
-			Tool: "samtools", Subcommand: "depth", UsesSubcommand: true,
-			Name: "depth_baseq_filter", Input: InputBAM, Compare: ByteExact,
-			Args: []string{"-q", "10", "{bam}"},
-			Skip: "samtools depth -q (min base quality): the -q/-Q swap is fixed and -Q is byte-exact, but when an interior covered " +
-				"position's only base is filtered out by -q, upstream emits it with depth 0 (`chr1 8 0`) while our port omits the row. " +
-				"Same interior-zero-depth root cause as mpileup. Owned by the samtools agent.",
-		},
+		// depth -q (min BASE quality): now byte-exact. When a covered interior
+		// position's only base is filtered out by -q, upstream emits that
+		// position with depth 0 (e.g. `chr1 8 0`); our port now does the same
+		// (the read still spans the position even when every base there fails
+		// the base-quality filter). The interior-zero-depth gap is fixed.
+		mkSam("depth", "depth_baseq_filter", InputBAM, ByteExact, "-q", "10", "{bam}"),
 	)
 	return depth
 }
@@ -207,21 +199,12 @@ func samtoolsDecodeText() []Entry {
 		// tview in text mode (-d T) renders an ASCII alignment view; byte-exact.
 		mkSam("tview", "tview_text", InputBAM, ByteExact, "-d", "T", "{bam}", "{fasta}"),
 
-		// mpileup: documented Skip. The non-zero-depth pileup rows are byte-exact
-		// (verified), but upstream additionally emits interior zero-depth rows —
-		// positions inside the covered span whose only base is filtered out (or
-		// genuinely uncovered), e.g. `chr1 8 A 0 * *` — which our port omits.
-		// Same interior-zero-depth root cause as depth_baseq_filter; the -a
-		// full-contig zero-row work did not cover this implicit interior case.
-		// A real port gap owned by the samtools agent.
-		{
-			Tool: "samtools", Subcommand: "mpileup", UsesSubcommand: true,
-			Name: "mpileup_pileup", Input: InputBAM, Compare: ByteExact,
-			Args: []string{"-f", "{fasta}", "{bam}"},
-			Skip: "samtools mpileup: our non-zero-depth pileup rows match upstream byte-for-byte, but upstream also emits interior " +
-				"zero-depth positions (covered span, only base filtered out or uncovered) such as `chr1 8 A 0 * *` that our port omits. " +
-				"Same interior-zero-depth root cause as depth -q. Real port gap owned by the samtools agent.",
-		},
+		// mpileup: now byte-exact. Upstream emits a row for every position any
+		// read physically spans (the pileup iterator yields it regardless of
+		// the -Q base-quality filter), including interior zero-depth positions
+		// whose only base is filtered out, e.g. `chr1 8 A 0 * *`. Our port now
+		// emits those rows too. The interior-zero-depth gap is fixed.
+		mkSam("mpileup", "mpileup_pileup", InputBAM, ByteExact, "-f", "{fasta}", "{bam}"),
 
 		// cat: documented Skip. cat concatenates BAMs into a BAM; our cat ignores
 		// -O sam and always emits BGZF BAM, which is not byte-comparable. The

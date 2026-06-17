@@ -138,6 +138,7 @@ func emitMpileupWindow(bw *bufio.Writer, chrom string, beg0, end0, refLen int,
 		// Gather depths per input.
 		depths := make([]int, nIn)
 		any := false
+		spanned := false
 		for i := 0; i < nIn; i++ {
 			d := liveDepth(events[i][col], opts.MinBaseQ)
 			if opts.MaxDepth > 0 && d > opts.MaxDepth {
@@ -147,6 +148,18 @@ func emitMpileupWindow(bw *bufio.Writer, chrom string, beg0, end0, refLen int,
 			if d > 0 {
 				any = true
 			}
+			// A position is "spanned" when at least one read physically
+			// overlaps it (any non-dropped pileup event), regardless of the
+			// base-quality filter. Upstream's pileup iterator yields exactly
+			// these positions: bam_mplp64_auto returns every position that
+			// some read covers (n_plp > 0), and the row is always printed —
+			// the per-base min-baseQ filter (bam_plcmd.c:646) only lowers the
+			// printed depth (cnt), it never suppresses the row. A position
+			// whose only covering base(s) fail -Q therefore prints depth 0
+			// with '*' columns, not nothing.
+			if hasSpanEvent(events[i][col]) {
+				spanned = true
+			}
 		}
 
 		// Decide whether to emit this position.
@@ -154,7 +167,7 @@ func emitMpileupWindow(bw *bufio.Writer, chrom string, beg0, end0, refLen int,
 		if posFilter != nil && !posFilter.contains(chrom, pos1) {
 			continue
 		}
-		if !any {
+		if !any && !spanned {
 			switch {
 			case opts.AllPositionsAllChroms:
 				// emit zero-depth row
@@ -224,6 +237,24 @@ func emitMpileupWindow(bw *bufio.Writer, chrom string, beg0, end0, refLen int,
 		bw.WriteByte('\n')
 	}
 	return nil
+}
+
+// hasSpanEvent reports whether any non-dropped pileup event covers this
+// position, i.e. at least one read physically overlaps it (an aligned base,
+// a deletion '*', or a reference-skip '<'/'>' placeholder). This is the
+// "position exists in the pileup" test, independent of the -Q base-quality
+// filter: upstream emits a row for every such position, printing depth 0
+// (and '*' columns) when every covering base is filtered out. Events
+// dropped by overlap removal (-x) do not keep the position alive on their
+// own — they were never part of the displayed pileup — but the surviving
+// half of the pair still does.
+func hasSpanEvent(evs []pileupEvent) bool {
+	for i := range evs {
+		if !evs[i].dropped {
+			return true
+		}
+	}
+	return false
 }
 
 // liveDepth returns the count of "live" (not filtered, base-quality OK)
