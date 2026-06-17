@@ -43,6 +43,7 @@ var relPaths = map[string][]string{
 	"bcftools": {"reference_code/bcftools/bcftools"},
 	"bgzip":    {"reference_code/htslib/bgzip"},
 	"tabix":    {"reference_code/htslib/tabix"},
+	"htsfile":  {"reference_code/htslib/htsfile"},
 	"bedtools": {"reference_code/bedtools/bin/bedtools"},
 	"seqtk":    {"reference_code/seqtk/seqtk"},
 	"sickle":   {"reference_code/sickle/sickle"},
@@ -60,6 +61,7 @@ var hint = map[string]string{
 	"bcftools": "git submodule update --init reference_code/bcftools && (cd reference_code/bcftools && make)",
 	"bgzip":    "git submodule update --init reference_code/htslib && (cd reference_code/htslib && make)",
 	"tabix":    "git submodule update --init reference_code/htslib && (cd reference_code/htslib && make)",
+	"htsfile":  "git submodule update --init reference_code/htslib && (cd reference_code/htslib && make)",
 	"bedtools": "git submodule update --init reference_code/bedtools && (cd reference_code/bedtools && make -j)",
 	"seqtk":    "git submodule update --init reference_code/seqtk && (cd reference_code/seqtk && make)",
 	"sickle":   "git submodule update --init reference_code/sickle && (cd reference_code/sickle && make)",
@@ -81,8 +83,8 @@ const MosdepthEnv = "MOSDEPTH_BIN"
 var mosdepthCacheNames = []string{"mosdepth_v0.3.14", "mosdepth"}
 
 // Binary returns the absolute path to the vendored upstream binary for key
-// (one of samtools, bcftools, bgzip, tabix, bedtools, seqtk, sickle, skewer,
-// fastp, vcftools, prinseq, mosdepth), or an actionable error.
+// (one of samtools, bcftools, bgzip, tabix, htsfile, bedtools, seqtk, sickle,
+// skewer, fastp, vcftools, prinseq, mosdepth), or an actionable error.
 //
 // mosdepth is special: it ships only as a linux/amd64 GitHub release asset, so
 // it is resolved from the MOSDEPTH_BIN environment variable or the temp-dir
