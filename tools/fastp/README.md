@@ -226,20 +226,32 @@ likewise `--json` is long-only. `-h`/`--help` prints usage and exits.
 
 - `-q, --qual-threshold INT` - Quality threshold (default: 15)
 - `--qual-percent INT` - Percent of bases meeting quality (default: 40)
+- `-Q, --disable_quality_filtering` - Disable quality filtering. Upstream gates
+  the entire quality-filter block on `qualfilter.enabled`, so this skips the
+  low-quality-base percentage limit, the average-quality requirement, **and the
+  N-base-count limit** (the N check lives inside the quality block in upstream
+  `filter.cpp`).
 
 ### Length Filtering
 
 - `-l, --min-length INT` - Minimum read length (default: 15)
 - `--max-length INT` - Maximum read length (0 = no limit)
+- `-L, --disable_length_filtering` - Disable length filtering. Skips both the
+  too-short (`length_required`) and too-long (`length_limit`) discard checks.
 
 ### Content Filtering
 
 - `--max-n-count INT` - Maximum N count (default: 5)
 - `--max-n-percent FLOAT` - Maximum N percentage (default: 20.0)
 
+Note: the N-base content check is part of upstream's **quality** filter, so
+`--disable_quality_filtering` (`-Q`) also turns it off.
+
 ### Poly-tail Trimming
 
-- `--trim-poly-g` - Enable poly-G tail trimming
+- `-g, --trim_poly_g` - Enable poly-G tail trimming
+- `-G, --disable_trim_poly_g` - Disable poly-G tail trimming (overrides
+  `--trim_poly_g`)
 - `--trim-poly-x` - Enable poly-X tail trimming
 - `--poly-g-min-len INT` - Minimum poly-G length (default: 10)
 
@@ -249,7 +261,15 @@ These options mirror upstream fastp's `--cut_front` / `--cut_tail` / `--cut_righ
 A window of `--cut-window-size` bases is slid along the read and its mean Phred
 quality is compared against `--cut-mean-quality`. If `--cut-window-size` is larger
 than the read, the whole read is treated as a single (short) window. These apply to
-single-end reads and to both reads of a pair, before the length filter.
+single-end reads and to both reads of a pair.
+
+**Ordering (load-bearing for parity):** the sliding-window cut runs **first** —
+before poly-G, adapter trimming, and poly-X — exactly as upstream fastp does
+(`seprocessor.cpp` runs `trimAndCut` before the adapter block). Running it after
+adapter trimming makes the window see an already-shortened read and shifts the
+window-boundary math, which diverges from upstream by ~1bp on any read where
+adapter/poly trimming fired. The port preserves the upstream order so `--cut_tail`
+is byte-exact even when combined with adapter trimming (parity Case 17).
 
 - `-5, --cut-front` - Slide a window from the 5' end; drop the leading base while
   the window's mean quality is below the threshold (equivalently: trim everything
@@ -440,7 +460,13 @@ This is a simplified Go implementation focusing on core preprocessing functional
   (The legacy `--merge-overlap` heuristic is retained as a separate flag.)
 - ✅ **`--adapter_fasta`** (trim against a FASTA list of adapters).
 - ✅ Separate **`--poly_x_min_len`** knob (independent of poly-G).
-- ✅ The explicit **`--disable_adapter_trimming`** (`-A`) flag.
+- ✅ The explicit **`--disable_adapter_trimming`** (`-A`),
+  **`--disable_quality_filtering`** (`-Q`), **`--disable_length_filtering`**
+  (`-L`), and **`--disable_trim_poly_g`** (`-G`) toggles — the complete set of
+  upstream `--disable_*` flags. Each gates the same block upstream gates
+  (quality filtering also covers the N-base limit; length filtering covers both
+  too-short and too-long); validated byte-exact in parity Case 20 and the
+  binary-free `TestUnitDisable*` unit tests.
 
 ### Parity validation of the trimming algorithms
 
@@ -454,8 +480,16 @@ appropriate to each:
   `TestUnitTrimPolyG`/`TestUnitTrimPolyX`).
 - **Sliding-window quality trimming** (`--cut_front`/`--cut_tail`/
   `--cut_right`): verbatim port of `filter.cpp::trimAndCut` (keeps the
-  leading high-Q bases of the offending window, skips boundary `N`s) —
-  validated **byte-exact** (parity Cases 13/14, `TestUnitSlidingWindowCut`).
+  leading high-Q bases of the offending window, applies the `t = t-w+1`
+  rewind on the passing cut_tail window, skips boundary `N`s) and applied in
+  upstream's order (the cut runs **before** poly-G/adapter/poly-X) —
+  validated **byte-exact** on the small fixtures (parity Cases 13/14,
+  `TestUnitSlidingWindowCut`) **and at scale** on 5000 varying-length reads
+  with low-Q tails, both with and without adapter trimming (parity Cases
+  17/18), plus the binary-free `TestUnitCutTailBoundary`. The at-scale cases
+  guard the window-boundary edge the parity pipeline surfaced (~1% of reads
+  off by ~1bp) that the small fixtures missed; cut_front/cut_right are
+  confirmed unregressed at scale by Case 19.
 - **Adapter auto-detection** (`--detect_adapter` / `--detect_adapter_for_pe`):
   verbatim port of upstream's kmer + nucleotide-tree evaluator. Because
   detection is a sampling-dependent heuristic, it is validated by a

@@ -765,6 +765,174 @@ func TestParity_Fastp_Case16_SEAutoDetectFires(t *testing.T) {
 		"filtering_result.passed_filter_reads", 0.01)
 }
 
+// Case 17 — cut_tail at scale, WITH adapter trimming enabled. This is the
+// regression test for the window-boundary divergence the parity pipeline saw
+// at scale: upstream runs the sliding-window cut FIRST (seprocessor.cpp:235)
+// and then trims the adapter, so any read where adapter trimming fires shifts
+// the cut window math unless the Go port applies the cut in the same order.
+// The se_cuttail_scale.fq fixture (5000 varying-length reads, low-Q tails,
+// ~40% adapter read-through) reliably hits the ~1% boundary edge the tiny
+// 15-read se_lqtail.fq never triggered. cut_tail is a deterministic transform
+// so the contract is BYTE-equality, not similarity.
+//
+// Quality/length filtering is disabled on BOTH sides so the comparison
+// isolates the trimming transform (and exercises the new --disable_*
+// flags). cut_tail/adapter parity, not filter survivorship, is the target.
+func TestParity_Fastp_Case17_SECutTailAtScale(t *testing.T) {
+	bin := ensureUpstream(t)
+	in := parityInput(t, "se_cuttail_scale.fq")
+	dir := t.TempDir()
+
+	upFq, _ := runUpstreamSE(t, bin, in, dir, []string{
+		"-a", "AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC",
+		"--cut_tail", "--cut_tail_window_size", "4", "--cut_tail_mean_quality", "20",
+		"--disable_quality_filtering", "--disable_length_filtering",
+		"--disable_trim_poly_g",
+	})
+
+	opts := DefaultProcessOptions()
+	opts.Adapter3 = "AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC"
+	opts.CutTail = true
+	opts.CutWindowSize = 4
+	opts.CutMeanQuality = 20
+	opts.DisableQualityFiltering = true
+	opts.DisableLengthFiltering = true
+	// Step 4 quality-trim is a non-upstream artifact; keep it off so the
+	// transform matches upstream exactly (upstream has no per-base end trim).
+	opts.QualThreshold = 0
+	goFq, _ := runGoFastpSE(t, in, opts)
+
+	mustEqualBytes(t, "case17 SE cut_tail-at-scale FASTQ", goFq, upFq)
+}
+
+// Case 18 — cut_tail at scale WITHOUT adapter trimming. Confirms the
+// sliding-window transform itself is byte-exact on the same large
+// varying-length fixture (a clean regression guard for slidingWindowCut's
+// cut_tail boundary independent of the ordering fix).
+func TestParity_Fastp_Case18_SECutTailNoAdapter(t *testing.T) {
+	bin := ensureUpstream(t)
+	in := parityInput(t, "se_cuttail_scale.fq")
+	dir := t.TempDir()
+
+	upFq, _ := runUpstreamSE(t, bin, in, dir, []string{
+		"--disable_adapter_trimming",
+		"--cut_tail", "--cut_tail_window_size", "4", "--cut_tail_mean_quality", "20",
+		"--disable_quality_filtering", "--disable_length_filtering",
+		"--disable_trim_poly_g",
+	})
+
+	opts := DefaultProcessOptions()
+	opts.DisableAdapterTrimming = true
+	opts.CutTail = true
+	opts.CutWindowSize = 4
+	opts.CutMeanQuality = 20
+	opts.DisableQualityFiltering = true
+	opts.DisableLengthFiltering = true
+	opts.QualThreshold = 0
+	goFq, _ := runGoFastpSE(t, in, opts)
+
+	mustEqualBytes(t, "case18 SE cut_tail-no-adapter FASTQ", goFq, upFq)
+}
+
+// Case 19 — cut_front / cut_right unregressed at scale. The ordering fix moved
+// the sliding-window cut ahead of adapter trimming; this guards that cut_front
+// and cut_right (which were already byte-exact) still are on the large fixture.
+func TestParity_Fastp_Case19_SECutFrontRightAtScale(t *testing.T) {
+	bin := ensureUpstream(t)
+	in := parityInput(t, "se_cuttail_scale.fq")
+	adapter := "AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC"
+
+	for _, mode := range []string{"cut_front", "cut_right"} {
+		mode := mode
+		t.Run(mode, func(t *testing.T) {
+			dir := t.TempDir()
+			upFq, _ := runUpstreamSE(t, bin, in, dir, []string{
+				"-a", adapter,
+				"--" + mode, "--" + mode + "_window_size", "4", "--" + mode + "_mean_quality", "20",
+				"--disable_quality_filtering", "--disable_length_filtering",
+				"--disable_trim_poly_g",
+			})
+			opts := DefaultProcessOptions()
+			opts.Adapter3 = adapter
+			opts.CutWindowSize = 4
+			opts.CutMeanQuality = 20
+			opts.DisableQualityFiltering = true
+			opts.DisableLengthFiltering = true
+			opts.QualThreshold = 0
+			if mode == "cut_front" {
+				opts.CutFront = true
+			} else {
+				opts.CutRight = true
+			}
+			goFq, _ := runGoFastpSE(t, in, opts)
+			mustEqualBytes(t, "case19 "+mode+" FASTQ", goFq, upFq)
+		})
+	}
+}
+
+// Case 20 — the new --disable_quality_filtering (-Q) /
+// --disable_length_filtering (-L) flags, alone and combined, are
+// byte-identical to upstream.
+//
+// Uses se_disablefilt.fq, whose reads are ALL uniformly high-quality (so the
+// port's quality end-trim is a no-op and survivors are byte-identical to their
+// input) but split into three groups: 10 clean reads, 10 short reads the
+// length filter drops, and 10 N-heavy reads the quality filter (via the
+// N-base limit, which upstream gates on qualfilter.enabled — filter.cpp:48)
+// drops. Each toggle therefore changes which reads survive, and the surviving
+// bytes match upstream exactly.
+func TestParity_Fastp_Case20_SEDisableFilters(t *testing.T) {
+	bin := ensureUpstream(t)
+	in := parityInput(t, "se_disablefilt.fq")
+
+	cases := []struct {
+		name    string
+		upFlags []string
+		setOpts func(*ProcessOptions)
+	}{
+		{
+			name:    "baseline",
+			upFlags: nil,
+			setOpts: func(o *ProcessOptions) {},
+		},
+		{
+			name:    "disable_quality",
+			upFlags: []string{"--disable_quality_filtering"},
+			setOpts: func(o *ProcessOptions) { o.DisableQualityFiltering = true },
+		},
+		{
+			name:    "disable_length",
+			upFlags: []string{"--disable_length_filtering"},
+			setOpts: func(o *ProcessOptions) { o.DisableLengthFiltering = true },
+		},
+		{
+			name:    "disable_both",
+			upFlags: []string{"--disable_quality_filtering", "--disable_length_filtering"},
+			setOpts: func(o *ProcessOptions) {
+				o.DisableQualityFiltering = true
+				o.DisableLengthFiltering = true
+			},
+		},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			// Disable adapter trimming so the ONLY variable is the filter
+			// toggle under test. poly-G is off by default in both.
+			up := append([]string{"--disable_adapter_trimming"}, c.upFlags...)
+			upFq, _ := runUpstreamSE(t, bin, in, dir, up)
+
+			opts := DefaultProcessOptions()
+			opts.DisableAdapterTrimming = true
+			c.setOpts(&opts)
+			goFq, _ := runGoFastpSE(t, in, opts)
+
+			mustEqualBytes(t, "case20 "+c.name+" FASTQ", goFq, upFq)
+		})
+	}
+}
+
 // adapterPrefixWithin reports whether a and b agree as a prefix up to a
 // tail difference of at most tol bases — i.e. the shorter is a prefix of the
 // longer and the length gap is <= tol. Used for the heuristic adapter-string

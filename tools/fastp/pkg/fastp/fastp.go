@@ -32,6 +32,28 @@ type ProcessOptions struct {
 	// auto-detection, and AdapterFasta) is skipped.
 	DisableAdapterTrimming bool
 
+	// DisableQualityFiltering maps to upstream --disable_quality_filtering
+	// (-Q). Upstream gates the whole quality-filter block on
+	// qualfilter.enabled (filter.cpp:43-50): the low-quality-base
+	// percentage limit, the average-quality requirement, AND the
+	// N-base-count limit. When this is set the Go port skips all three so
+	// every read survives the quality filter, matching upstream.
+	DisableQualityFiltering bool
+
+	// DisableLengthFiltering maps to upstream --disable_length_filtering
+	// (-L). Upstream gates the length-filter block on lengthFilter.enabled
+	// (filter.cpp:52-57): the length_required (too-short) check and the
+	// length_limit (too-long) check. When this is set the Go port skips
+	// both, matching upstream.
+	DisableLengthFiltering bool
+
+	// DisableTrimPolyG maps to upstream --disable_trim_poly_g (-G). When
+	// set it force-disables poly-G tail trimming even if TrimPolyG was
+	// requested (upstream errors if both --trim_poly_g and
+	// --disable_trim_poly_g are given; here it simply wins, mirroring the
+	// "disabled" outcome).
+	DisableTrimPolyG bool
+
 	// AdapterFasta holds adapter sequences loaded from --adapter_fasta.
 	// Every read (R1 and, in PE mode, R2) is trimmed against each of these
 	// sequences after any explicit/auto-detected adapter pass. Ordered by
@@ -1149,7 +1171,48 @@ func trimRecord(record *fastq.Record, opts ProcessOptions, stats *ProcessStats, 
 		record.Quality = qual
 	}
 
-	// Step 1: Trim adapters if specified. Suppressed entirely when
+	// Step 1: Sliding-window quality trimming (cut_front / cut_tail /
+	// cut_right) — upstream's Filter::trimAndCut.
+	//
+	// ORDER IS LOAD-BEARING: upstream runs trimAndCut FIRST, before poly-G,
+	// adapter trimming, and poly-X (seprocessor.cpp:235 / peprocessor.cpp).
+	// Running it after adapter trimming (as a previous version of this port
+	// did) makes the sliding-window see an already-shortened read, which
+	// shifts the window-boundary math (the `s+w<l-tail` bound and the
+	// last-partial-window handling) and diverges from upstream by ~1bp on
+	// any read where adapter/poly trimming fired. Keep this step first.
+	if opts.CutFront || opts.CutTail || opts.CutRight {
+		cutLo, cutHi := slidingWindowCut([]byte(seq[start:end]), qual[start:end], encoding, opts)
+		if cutLo != 0 || cutHi != end-start {
+			removed := (cutLo) + (end - start - cutHi)
+			start += cutLo
+			end = start + (cutHi - cutLo)
+			if removed > 0 {
+				stats.QualityCutReads++
+				stats.QualityCutBases += int64(removed)
+			}
+		}
+	}
+
+	// Step 2: Trim poly-G tails if enabled.
+	//
+	// ORDER: upstream applies poly-G AFTER the sliding-window cut but
+	// BEFORE adapter trimming (seprocessor.cpp:239 runs before the adapter
+	// block at :242). Uses trimPolyG, a verbatim port of upstream's
+	// PolyX::trimPolyG (reference_code/fastp/src/polyx.cpp:16-42). The
+	// upstream algorithm tolerates 1 mismatch per 8 bases scanned (capped
+	// at 5 total) and anchors the trim at the last-G position seen.
+	if opts.TrimPolyG && !opts.DisableTrimPolyG {
+		newEnd := trimPolyG(seq[start:end], opts.PolyGMinLen)
+		if newEnd < end-start {
+			polyLen := (end - start) - newEnd
+			end = start + newEnd
+			stats.PolyGTrimmedReads++
+			stats.PolyGTrimmedBases += int64(polyLen)
+		}
+	}
+
+	// Step 3: Trim adapters if specified. Suppressed entirely when
 	// --disable_adapter_trimming is set (upstream gates the whole adapter
 	// block on adapter.enabled == !disable_adapter_trimming).
 	if !opts.DisableAdapterTrimming {
@@ -1210,24 +1273,7 @@ func trimRecord(record *fastq.Record, opts ProcessOptions, stats *ProcessStats, 
 		}
 	}
 
-	// Step 2: Trim poly-G tails if enabled.
-	//
-	// Uses trimPolyG, a verbatim port of upstream's PolyX::trimPolyG
-	// (reference_code/fastp/src/polyx.cpp:16-42). The upstream algorithm
-	// tolerates 1 mismatch per 8 bases scanned (capped at 5 total) and
-	// anchors the trim at the last-G position seen, rather than requiring
-	// strictly-consecutive G's like the old Go countPolyTail did.
-	if opts.TrimPolyG {
-		newEnd := trimPolyG(seq[start:end], opts.PolyGMinLen)
-		if newEnd < end-start {
-			polyLen := (end - start) - newEnd
-			end = start + newEnd
-			stats.PolyGTrimmedReads++
-			stats.PolyGTrimmedBases += int64(polyLen)
-		}
-	}
-
-	// Step 3: Trim poly-X tails if enabled.
+	// Step 4: Trim poly-X tails if enabled.
 	//
 	// Uses trimPolyXUpstream, a verbatim port of upstream's PolyX::trimPolyX
 	// (reference_code/fastp/src/polyx.cpp:49-116): it tolerates 1 mismatch
@@ -1242,20 +1288,6 @@ func trimRecord(record *fastq.Record, opts ProcessOptions, stats *ProcessStats, 
 		newEnd, trimmed := trimPolyXUpstream(seq[start:end], polyXMin)
 		if trimmed > 0 {
 			end = start + newEnd
-		}
-	}
-
-	// Step 3.5: Sliding-window quality trimming (cut_front / cut_tail / cut_right)
-	if opts.CutFront || opts.CutTail || opts.CutRight {
-		cutLo, cutHi := slidingWindowCut([]byte(seq[start:end]), qual[start:end], encoding, opts)
-		if cutLo != 0 || cutHi != end-start {
-			removed := (cutLo) + (end - start - cutHi)
-			start += cutLo
-			end = start + (cutHi - cutLo)
-			if removed > 0 {
-				stats.QualityCutReads++
-				stats.QualityCutBases += int64(removed)
-			}
 		}
 	}
 
@@ -1284,44 +1316,57 @@ func filterRecord(record *fastq.Record, opts ProcessOptions, stats *ProcessStats
 	start := 0
 	end := len(seq)
 
-	// Check if read is too short after trimming
-	if end-start < opts.MinLength || end-start < opts.LengthRequired {
-		stats.TooShortReads++
-		return nil, false
-	}
+	// Length filtering (upstream filter.cpp:52-57, gated on
+	// lengthFilter.enabled). --disable_length_filtering (-L) skips the
+	// too-short and too-long checks. Note --length_limit truncation is a
+	// distinct trimming step (max_len in upstream's Read::resize path) and
+	// is intentionally NOT gated by the length filter toggle.
+	if !opts.DisableLengthFiltering {
+		// Check if read is too short after trimming
+		if end-start < opts.MinLength || end-start < opts.LengthRequired {
+			stats.TooShortReads++
+			return nil, false
+		}
 
-	// Check if read is too long
-	if opts.MaxLength > 0 && end-start > opts.MaxLength {
-		stats.TooLongReads++
-		return nil, false
+		// Check if read is too long
+		if opts.MaxLength > 0 && end-start > opts.MaxLength {
+			stats.TooLongReads++
+			return nil, false
+		}
 	}
 
 	if opts.LengthLimit > 0 && end-start > opts.LengthLimit {
 		end = start + opts.LengthLimit
 	}
 
-	// Step 5: Check N content
-	nCount := countNs(seq[start:end])
-	nPercent := 100.0 * float64(nCount) / float64(end-start)
+	// Quality filtering (upstream filter.cpp:43-50, gated on
+	// qualfilter.enabled). --disable_quality_filtering (-Q) skips the
+	// N-base-count limit AND the low-quality-base percentage limit (and
+	// the average-quality requirement, once ported).
+	if !opts.DisableQualityFiltering {
+		// Step 5: Check N content (nBaseLimit / N-percent).
+		nCount := countNs(seq[start:end])
+		nPercent := 100.0 * float64(nCount) / float64(end-start)
 
-	if nCount > opts.MaxNCount || nPercent > opts.MaxNPercent {
-		stats.TooManyNReads++
-		return nil, false
-	}
-
-	// Step 6: Check quality (percentage of bases meeting threshold)
-	if opts.QualPercent > 0 {
-		qualScores := getQualityScores(qual[start:end], encoding)
-		passCount := 0
-		for _, q := range qualScores {
-			if q >= opts.QualThreshold {
-				passCount++
-			}
-		}
-		passPercent := 100.0 * float64(passCount) / float64(len(qualScores))
-		if passPercent < float64(opts.QualPercent) {
-			stats.LowQualityReads++
+		if nCount > opts.MaxNCount || nPercent > opts.MaxNPercent {
+			stats.TooManyNReads++
 			return nil, false
+		}
+
+		// Step 6: Check quality (percentage of bases meeting threshold).
+		if opts.QualPercent > 0 {
+			qualScores := getQualityScores(qual[start:end], encoding)
+			passCount := 0
+			for _, q := range qualScores {
+				if q >= opts.QualThreshold {
+					passCount++
+				}
+			}
+			passPercent := 100.0 * float64(passCount) / float64(len(qualScores))
+			if passPercent < float64(opts.QualPercent) {
+				stats.LowQualityReads++
+				return nil, false
+			}
 		}
 	}
 
