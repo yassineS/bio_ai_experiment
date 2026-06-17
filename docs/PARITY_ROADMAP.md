@@ -1112,6 +1112,37 @@ has no missing subcommands**.
 Missing subcommands: none. All algorithmic, BEDPE, and converter
 subcommands are ported. Remaining bedtools work is option-tail polish.
 
+Parity-pipeline bug fixes (this wave): five byte-parity defects the parity
+pipeline surfaced were fixed and live-validated against the upstream
+binary:
+
+- **`bednuc`** — a duplicate `--seq` flag registration made the CLI panic
+  (`flag redefined: seq`) on every invocation; the redundant
+  registrations were removed. `bednuc` now runs and matches upstream
+  `bedtools nuc` (default, `-seq`, `-s`).
+- **`bed12tobed6`** — the score column was hardcoded to `0`; it now
+  carries the parent record's score onto each emitted BED6 block, and
+  `-n` numbering reverses for every non-`+` strand (not just `-`),
+  matching `bed12ToBed6.cpp`. See UPSTREAM_BUGS.md
+  (`bedtools-bed12tobed6-n-strand`).
+- **`bedexpand`** — a trailing comma in an expanded column no longer
+  emits a spurious empty final row; comma tokenization now matches C++
+  `getline` (leading/interior empties preserved, single terminating
+  empty dropped).
+- **`bedmakewindows`** — the `-i` default (`ID_NONE`/BED3) was wrong
+  (it produced a window-number column) and `-i src` over a genome file
+  emitted an empty name; the default now yields BED3 and genome
+  intervals annotate with the chromosome name. See UPSTREAM_BUGS.md
+  (`bedtools-makewindows-i-none`).
+- **`bedsplit`** — the default `-a size` heuristic re-sorted each
+  output bin back into input order; it now preserves the
+  size-descending insertion order, so the emitted shard files are
+  byte-identical to upstream `bedtools split -a size`.
+
+Each fix ships a live-binary parity test (`live_parity_test.go`) that
+`t.Fatalf`s when the upstream binary is absent, plus binary-free
+`TestUnit*` for changed helpers.
+
 `bedintersect` behavioral-flags wave: the previously
 recognized-but-unimplemented join/overlap output flags now run to
 byte-for-byte parity with the live upstream binary:
