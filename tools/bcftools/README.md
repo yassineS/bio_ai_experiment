@@ -3,10 +3,17 @@
 A pure-Go reimplementation of selected [bcftools](https://samtools.github.io/bcftools/)
 subcommands. The current implementation ships:
 
-- `bcftools view` — filter / project / convert VCF and BCF.
+- `bcftools view` — filter / project / convert VCF and BCF. Allele-count /
+  frequency selectors (`-c/-C/-q/-Q`) and the private filters (`-x/-X`)
+  recompute and append `INFO/AC` and `INFO/AN` like upstream's `calc_ac`
+  (suppressed by `-I/--no-update`), even when no sample subset is applied.
 - `bcftools query` — format-string output for VCF/BCF records.
 - `bcftools concat` — concatenate VCF/BCF files.
 - `bcftools norm` — left-align indels, split/join multi-allelics, atomize, dedup.
+  The `-m+` join groups biallelics at one position by variant type (or all for
+  `-m+any`), builds a common padded REF, and merges FORMAT/GT with upstream's
+  rule (a conflicting donor allele goes to the first free strand, so
+  `0/1`+`0/1` → `2/1`).
 - `bcftools call` — variant calling from per-position genotype likelihoods
   (consensus `-c` + full multi-allelic `-m`).
 - `bcftools index` — build a `.csi` (or `.tbi`) index for a BCF / VCF.gz.
@@ -48,7 +55,19 @@ subcommands. The current implementation ships:
   (`-O z`, with an optional `-O z<N>` compression level). Supports
   `--n-matches` (top-N per sample) and `--distinctive-sites`.
 - `bcftools roh` — runs-of-autozygosity detection via a 2-state HMM
-  (`HW` / `AZ`) over hard-GT input (`-G/--GTs-only`).
+  (`HW` / `AZ`) over hard-GT input (`-G/--GTs-only`). The ST/RG tables are
+  emitted chromosome-major then sample-major (header order), matching
+  upstream's per-chromosome synced-reader flush.
+- `bcftools merge` — combine multiple per-sample VCF/BCF files. Duplicate
+  sample names across inputs error unless `--force-samples` is given, which
+  de-dupes by prefixing the clashing name from input *i* with `<i+1>:`
+  (e.g. `A + A → A, 2:A`), matching upstream `vcfmerge.c`.
+- `bcftools concat` (with `-a/--allow-overlaps`) emits records at a shared
+  position in upstream's synced-reader order: grouped by REF>ALT, the groups
+  ordered by descending pre-dedup record count, ties by first-appearance.
+- `bcftools annotate -x` strips the matching `##FILTER`/`##INFO`/`##FORMAT`
+  header lines as well as the column values (bare `FILTER`/`INFO` drop all;
+  `FORMAT`/`FMT` keep GT; `FILTER/NAME` rewrites an emptied record to PASS).
 - `bcftools filter` — soft-filter records by include / exclude
   expression. Failing records keep their place in the output but
   have FILTER set to the `-s/--soft-filter NAME` (or appended via
@@ -58,7 +77,11 @@ subcommands. The current implementation ships:
   to a reference FASTA. Supports `-s/--samples`, `-H/--haplotype`
   (R/A/I/LR/LA/SR/SA + numeric), `-I/--iupac-codes`, `-m/--mask`
   with `--mask-with`, `--mark-ins / --mark-snv / --mark-del`,
-  `-p/--prefix`, `-a/--absent`, `-M/--missing`.
+  `-p/--prefix`, `-a/--absent`, `-M/--missing`. When the VCF carries
+  samples and neither `-H` nor an allele pick is given, het sites are
+  emitted as IUPAC ambiguity codes (upstream's `iupac_GTs` default),
+  folded across the `-s` sample or all samples; sites-only VCFs apply
+  the first ALT.
 - `bcftools polysomy` — estimate chromosomal copy number from BAF.
   Emits a per-sample × per-chromosome TSV
   (`sample / chrom / n_het / mean_baf / median_baf / cn_call`). The
