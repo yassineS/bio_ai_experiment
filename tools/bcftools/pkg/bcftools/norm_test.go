@@ -405,7 +405,10 @@ func TestParseMultiallelicMode(t *testing.T) {
 		{"-snps", MultiallelicMode{Active: true, Split: true, Snps: true}, false},
 		{"+indels", MultiallelicMode{Active: true, Split: false, Indels: true}, false},
 		{"-both", MultiallelicMode{Active: true, Split: true, Snps: true, Indels: true}, false},
-		{"+any", MultiallelicMode{Active: true, Split: false, Snps: true, Indels: true}, false},
+		// "+any" (COLLAPSE_ANY) sets Any so the joiner merges every variant
+		// type into one record, distinct from "+both" which buckets by type.
+		{"+any", MultiallelicMode{Active: true, Split: false, Snps: true, Indels: true, Any: true}, false},
+		{"-any", MultiallelicMode{Active: true, Split: true, Snps: true, Indels: true, Any: true}, false},
 		{"snps", MultiallelicMode{}, true},
 		{"-other", MultiallelicMode{}, true},
 	}
