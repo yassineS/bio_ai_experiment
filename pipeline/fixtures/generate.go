@@ -211,6 +211,18 @@ func Generate(opt Options) (*Manifest, error) {
 	}
 	_ = m.recordFile("bedpe", bedpePath, true)
 
+	// --- bedGraph (>=2 files for bedunionbedg) ---
+	bg1Path := filepath.Join(dir, "cov1.bedgraph")
+	bg2Path := filepath.Join(dir, "cov2.bedgraph")
+	if err := writeBedGraph(bg1Path, contigs, rng); err != nil {
+		return nil, err
+	}
+	if err := writeBedGraph(bg2Path, contigs, rng); err != nil {
+		return nil, err
+	}
+	_ = m.recordFile("bedgraph1", bg1Path, true)
+	_ = m.recordFile("bedgraph2", bg2Path, true)
+
 	// --- GFF3 (genes/mRNA/exon/CDS over the same contigs) ---
 	gffPath := filepath.Join(dir, "annotations.gff3")
 	if err := writeGFF(gffPath, contigs, p, rng); err != nil {

@@ -50,11 +50,15 @@ func bgzipMatrix() []Entry {
 			Args: []string{"-c", "{vcf_plain}"},
 		},
 		{
+			// bgzip -r writes a binary .gzi index alongside the file. Copy the
+			// bgzipped VCF into each side's out dir, reindex the copy, and
+			// byte-compare the sibling .gzi — our index is byte-identical to
+			// htslib's.
 			Tool: "bgzip", UpstreamTool: "bgzip", Name: "bgzip_reindex",
 			Input: InputVCF, Compare: ByteExact,
-			Args: []string{"-r", "{vcf}"},
-			Skip: "bgzip -r/-i writes a binary .gzi index alongside the file (not a stdout stream the runner diffs, and the binary index " +
-				"is not byte-comparable). Index correctness is owned by the bgzip per-tool suite.",
+			Args:        []string{"-r", "{out}.vcf.gz"},
+			CopyToOut:   map[string]string{"vcf": ".vcf.gz"},
+			OutputFiles: []string{".vcf.gz.gzi"},
 		},
 	}
 }

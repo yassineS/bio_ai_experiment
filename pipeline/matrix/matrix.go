@@ -132,6 +132,16 @@ type Entry struct {
 	// differences do not cause spurious divergence. This is the mechanism the
 	// vcftools and mosdepth matrices use; it pairs with Compare: DirContents.
 	OutputFiles []string
+
+	// CopyToOut copies fixture files into each side's per-invocation output
+	// directory BEFORE running, keyed by fixture token (e.g. "vcf") → the
+	// {out}-relative suffix to copy it to (e.g. ".vcf.gz"). It exists for tools
+	// that write their result ALONGSIDE the input (in-place index/edit), such
+	// as `bgzip -r` writing "<file>.gzi": copy {vcf} to "{out}.vcf.gz", run on
+	// that copy, then list the sibling artifact (".vcf.gz.gzi") in OutputFiles.
+	// Each side gets an isolated copy so the two runs never collide. Implies the
+	// output-prefix path (OutputFiles must be set).
+	CopyToOut map[string]string
 }
 
 // CompareModeOrDefault returns the entry's comparison mode, defaulting to

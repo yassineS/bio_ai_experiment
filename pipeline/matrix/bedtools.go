@@ -36,7 +36,7 @@ package matrix
 //                          upstream but a few multi-hit pairs emit in a
 //                          different chromsweep order (bedpairtopair is exact).
 //   - bedoverlap        — needs a joined input stream with -cols; no fixture.
-//   - bedunionbedg      — needs a multi-sample bedGraph fixture.
+//   - (bedunionbedg now runs over the {bedgraph1}/{bedgraph2} fixtures.)
 // ------------------------------------------------------------------------
 
 func init() {
@@ -505,9 +505,7 @@ func bedMultiFileTools() []Entry {
 	//     owns it. Documented Skip. (It matches byte-exact on a genomecov-
 	//     produced bedGraph, verified out-of-band.) ---
 	out = append(out,
-		btSkip("bedunionbedg", "unionbedg", "needs_bedgraph_fixture", InputBED,
-			"bedtools unionbedg consumes BedGraph files, which the pipeline corpus does not generate (only BED/BED12/genome). unionbedg matches byte-exact on a genomecov-produced bedGraph (verified out-of-band) and is covered by the per-tool suite.",
-			"-i", "{bed}", "{bed}"),
+		bt("bedunionbedg", "unionbedg", "base", InputBED, "-i", "{bedgraph1}", "{bedgraph2}"),
 	)
 
 	// --- multicov (interval file + BAM). Only one BAM fixture exists; we do NOT

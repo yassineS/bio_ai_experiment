@@ -19,7 +19,7 @@ import (
 // v3: GFF3 now emits valid CDS phases (whole-codon CDS, phase 0) so bcftools
 // csq does not drop transcripts; added a BEDPE fixture (pairs.bedpe) for the
 // paired-end bed tools.
-const manifestVersion = 3
+const manifestVersion = 4
 
 // Manifest records what was generated for one scale tier so the runner can
 // resolve fixture paths and decide whether a cached set is still valid.
