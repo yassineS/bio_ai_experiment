@@ -230,10 +230,11 @@ parity tests (114 passing, 47 documented skips).
   downstream callers that need a canonical case.
 - **bedsample** (`tools/bedsample/pkg/bedsample/parity_test.go`). 5 cases
   pass: requested count, deterministic seed, `-header` forwarding,
-  too-few-records error, and the "subset of input" invariant. We cannot
-  byte-match upstream's PRNG (different sampler), so seeded runs are
-  deterministic within `bedsample` but not against upstream. The two
-  skips are CLI-only diagnostics.
+  too-few-records error, and the "subset of input" invariant. Since the
+  `std::mt19937_64` port (`mt19937.go`) the seeded output is **byte-for-byte
+  identical to upstream** for a given seed — asserted directly against the
+  live upstream binary in `upstream_parity_test.go`. The two skips are
+  CLI-only diagnostics.
 - **bedspacing** (`tools/bedspacing/pkg/bedspacing/parity_test.go`). The
   single upstream test (`spacing.t01`) passes byte-for-byte. The port
   matches `reference_code/bedtools/src/spacingFile/spacingFile.cpp`'s

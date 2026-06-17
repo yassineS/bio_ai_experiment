@@ -28,11 +28,14 @@ Single linear pass with reservoir sampling: O(N) extra memory, O(total)
 time. Output preserves the input file's relative order of the sampled
 records.
 
-The PRNG is Go's `math/rand` seeded by `-seed`; this is reproducible across
-runs of the same binary but is **not byte-identical** to upstream's C++
-implementation, which uses a different sampler. With the same seed two
-`bedsample` runs produce identical output (mirrors upstream's `-seed`
-contract); cross-tool reproduction is not guaranteed.
+The PRNG is a faithful Go port of C++11 `std::mt19937_64` (`mt19937.go`) —
+the 64-bit Mersenne Twister upstream `bedtools sample` uses for its reservoir
+replacement decisions (the non-`USE_RAND` branch of
+`src/utils/general/Random.cpp`). Seeded by `-seed`, the sampled output is
+therefore **byte-for-byte identical to upstream for a given seed** (asserted
+against the live upstream binary in `upstream_parity_test.go`); with seed `0`
+it falls back to a time-based seed (reproducible only within a run, mirroring
+upstream's `-seed` contract).
 
 Requesting more records than the file contains is an error and produces the
 upstream-style message `Input file has fewer records than the requested
