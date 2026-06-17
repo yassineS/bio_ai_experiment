@@ -436,6 +436,30 @@ This is a simplified Go implementation focusing on core preprocessing functional
 - ✅ Separate **`--poly_x_min_len`** knob (independent of poly-G).
 - ✅ The explicit **`--disable_adapter_trimming`** (`-A`) flag.
 
+### Parity validation of the trimming algorithms
+
+The three trimming algorithms that are most sensitive to upstream's exact
+logic are validated against the upstream binary with the comparison
+appropriate to each:
+
+- **Poly-G / poly-X trimming** (`-g`/`-x`): verbatim port of
+  `polyx.cpp` (1 mismatch per 8 bases scanned, capped at 5, anchored on
+  the last poly base) — validated **byte-exact** (parity Case 12,
+  `TestUnitTrimPolyG`/`TestUnitTrimPolyX`).
+- **Sliding-window quality trimming** (`--cut_front`/`--cut_tail`/
+  `--cut_right`): verbatim port of `filter.cpp::trimAndCut` (keeps the
+  leading high-Q bases of the offending window, skips boundary `N`s) —
+  validated **byte-exact** (parity Cases 13/14, `TestUnitSlidingWindowCut`).
+- **Adapter auto-detection** (`--detect_adapter` / `--detect_adapter_for_pe`):
+  verbatim port of upstream's kmer + nucleotide-tree evaluator. Because
+  detection is a sampling-dependent heuristic, it is validated by a
+  documented **similarity bound** against the upstream binary (detected
+  adapter equals upstream's within a few bp; per-read trimmed-length
+  agreement >= 99% with no read off by > 2bp; aggregate metrics within
+  1%) rather than strict byte-equality (parity Case 16,
+  `TestUnitDetectAdapterSE`). In practice the recovered adapter and the
+  trimmed output are byte-identical to upstream.
+
 ### Documented residuals (not 1:1)
 
 - The **`merged_and_filtered`** JSON summary block (and a couple of minor

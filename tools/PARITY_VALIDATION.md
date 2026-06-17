@@ -1028,9 +1028,14 @@ gracefully if the binary has not been built.
 | 12 | SE poly-G trimming (`-g`) | PASS | Verbatim port of upstream `trimPolyG` (`polyx.cpp:16-42`). |
 | 13 | SE sliding-window `--cut_right` | PASS | Verbatim port of upstream `slidingWindowCut` (`filter.cpp:83-222`). |
 | 14 | SE sliding-window `--cut_front --cut_tail` | PASS | Same verbatim port as case 13. |
-| 15 | SE adapter auto-detect | PASS | Verbatim port of upstream `evalAdapterAndReadNum` + `NucleotideTree` (`evaluator.cpp:295-526`, `nucleotidetree.cpp`). With 20 reads, upstream's 10000-record gate returns "" and no adapter is trimmed; byte-parity output. |
+| 15 | SE adapter auto-detect (no-op below gate) | PASS | Verbatim port of upstream `evalAdapterAndReadNum` + `NucleotideTree` (`evaluator.cpp:295-526`, `nucleotidetree.cpp`). With 20 reads, upstream's 10000-record gate returns "" and no adapter is trimmed; byte-parity output (the no-op path is deterministic). |
+| 16 | SE adapter auto-detect (fires) | PASS | **Heuristic path — SIMILARITY BOUND, not byte-equality.** On `se_detect.fq` (12000 reads, above the gate) both upstream and the port recover the TruSeq adapter and trim. Validated by: detected adapter equals upstream's (prefix within 3bp); per-read trimmed-length agreement >= 99% with max delta <= 2bp and base identity >= 99.9%; adapter-trimmed reads/bases + passed-filter reads within 1% relative tolerance. Observed agreement after the `trimBySequence` fix is in fact byte-identical (lenAgreement 1.0, maxLenDelta 0, baseIdentity 1.0). |
 
-Totals: 16 cases, **16 PASS, 0 SKIP**. **1:1 parity achieved.**
+Totals: 17 cases, **17 PASS, 0 SKIP**. Deterministic transforms
+(poly-G/poly-X, sliding-window) are validated byte-exact; the genuinely
+heuristic SE adapter auto-detect is validated by the documented
+similarity bound above (and happens to be byte-identical). **Parity
+achieved.**
 
 ### Bugs surfaced and fixed in this PR
 
@@ -1065,37 +1070,44 @@ rather than masking with `t.Skip`:
   it. Added `ProcessStats.LowComplexityReads`, populated where the
   filter rejects a read, and wired into `report_json.go`.
 
-### Upstream divergences left as `t.Skip`
+### Three former divergences — now resolved
 
-These are tracked as **OUR-side bugs** (the Go port is wrong; upstream
-is right) in [`docs/PARITY_ROADMAP.md#fastp`](../docs/PARITY_ROADMAP.md#fastp);
-fixing them is more than a one-character change, so we documented
-them as skipped parity cases:
+All three previously-skipped divergences are closed, each with the
+comparison appropriate to the algorithm's nature (deterministic →
+byte-parity; heuristic → documented similarity bound). None is skipped.
 
-- **PolyG mismatch tolerance** — upstream's `trimPolyG` tolerates
-  1 mismatch per 8 bases scanned (capped at 5 total) and uses a
-  "last G position" anchor (`polyx.cpp::trimPolyG`). We strip only
-  strictly consecutive G's. On a poly-G read where the tail is
-  `...GTAGGGGCCC...GGGGGG` upstream trims further than we do.
-- **Sliding-window boundary** — three off-by-1..2 issues in
-  `slidingWindowCut`:
-  1. Upstream's `cut_right` keeps the high-quality prefix of the
-     offending window (`filter.cpp:172-178`) — we drop the whole
-     window.
-  2. Upstream's `cut_front` skips past trailing `N` bases at the
-     cut boundary (`filter.cpp:138-139`) — we don't.
-  3. The window-iteration bounds (`s+w < l-tail` vs `s+w <= l-tail`)
-     differ by one between us and upstream, producing 1-2bp drift on
-     short low-quality tails.
-
-  These are not upstream bugs — they're Go-side bugs in our
-  re-implementation. They will be fixed in a follow-up PR; the parity
-  tests are kept as `t.Skip` with a pointer so we don't lose track.
-- **SE adapter auto-detection algorithm gap** — upstream samples the
-  first 10000 reads and builds a kmer overlap-tree
-  (`evaluator.cpp::evalAdapterAndReadNum`). We use a simple substring
-  search against a small built-in adapter table. Different signal,
-  different outputs. Tracked as a roadmap item, not a bug.
+- **PolyG / PolyX mismatch tolerance (DETERMINISTIC → BYTE-PARITY).**
+  `trimPolyG` / `trimPolyXUpstream` are verbatim ports of
+  `polyx.cpp:16-116`: 1 mismatch per 8 bases scanned (capped at 5),
+  anchored on the last poly base. Validated byte-exact in Case 12 and
+  the binary-free `TestUnitTrimPolyG` / `TestUnitTrimPolyX` (the latter
+  reproduces upstream's `PolyX::test()` golden: input trims to `ATTTT`,
+  51 bases removed).
+- **Sliding-window boundary (DETERMINISTIC → BYTE-PARITY).**
+  `slidingWindowCut` mirrors `filter.cpp:83-222`: cut_right keeps the
+  high-Q prefix of the offending window, cut_front/cut_tail truncate at
+  the qualifying window start then skip boundary `N`s, and the loop
+  bound is strictly `s+w < l`. Validated byte-exact in Cases 13/14 and
+  the binary-free `TestUnitSlidingWindowCut` (which reproduces
+  upstream's `Filter::test()` golden for cut_front+cut_tail).
+- **SE adapter auto-detection (HEURISTIC / SAMPLING-DEPENDENT →
+  SIMILARITY BOUND).** The detector is a verbatim port of
+  `evaluator.cpp::evalAdapterAndReadNum` + `NucleotideTree`
+  (`nucleotidetree.cpp`), including the 10000-record gate. Because
+  detection is sampling-dependent the contract is the documented
+  similarity bound (see Case 16), not byte-equality. Building Case 16
+  surfaced — and fixed — a real bug: the single configured/detected 3'
+  adapter was being trimmed with a plain `strings.Index` substring
+  search, which misses partial adapter prefixes at the 3' read end (the
+  common read-through case) and tolerates no mismatch. It now routes
+  through the verbatim `AdapterTrimmer::trimBySequence`
+  (`adaptertrimmer.cpp:71-170`, `matchReq=4`, as `seprocessor.cpp:245`
+  does). Validated by the similarity bound in Case 16 (observed
+  byte-identical) and by the binary-free `TestUnitDetectAdapterSE`
+  (recovers TruSeq above the gate, returns "" below it and on random
+  reads). The reusable FASTQ-similarity helper lives in
+  `tools/fastp/pkg/fastp/similarity_test.go` and is itself unit-tested
+  by `TestUnitFastqSimilarityHelper`.
 
 ### Reproducing locally
 

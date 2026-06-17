@@ -34,15 +34,30 @@ package fastp
 //   - low_complexity_reads counter was missing from the JSON report.
 //     Added.
 //
-// Documented divergences (test t.Skip + entry in
-// docs/UPSTREAM_BUGS.md / tools/PARITY_VALIDATION.md):
-//   - poly-G trimming: upstream allows 1 mismatch per 8 bases scanned
-//     (max 5 total). Our Go port does a strict consecutive-G count.
-//   - sliding-window cut_right/cut_tail/cut_front: upstream's algorithm
-//     keeps the leading high-quality bases of the offending window and
-//     advances past 'N's; we cut the whole window. Off-by-1..2 bp.
-//   - adapter auto-detect (SE & PE): different kmer/overlap heuristics
-//     and a different default sample size.
+// Resolution of the three formerly-documented divergences (see
+// docs/UPSTREAM_BUGS.md / tools/PARITY_VALIDATION.md), validated with the
+// comparison appropriate to each algorithm's nature:
+//
+//   - poly-G / poly-X trimming (DETERMINISTIC -> BYTE-PARITY): the port now
+//     runs upstream's exact mismatch-tolerant 3' scan (1 mismatch per 8
+//     bases, capped at 5; anchor on the last poly base) from polyx.cpp.
+//     Validated byte-exact in Case 12 and TestUnitTrimPolyG/TestUnitTrimPolyX.
+//   - sliding-window cut_right/cut_tail/cut_front (DETERMINISTIC ->
+//     BYTE-PARITY): the port mirrors filter.cpp's trimAndCut, including the
+//     high-Q-prefix preservation inside the offending window and the
+//     trailing-N skip. Validated byte-exact in Cases 13/14 and
+//     TestUnitSlidingWindowCut.
+//   - adapter auto-detect (SE) (HEURISTIC / SAMPLING-DEPENDENT -> SIMILARITY
+//     BOUND): the port runs upstream's kmer + nucleotide-tree evaluator
+//     (evaluator.cpp / nucleotidetree.cpp) verbatim, but because detection
+//     is sampling-dependent the contract is a documented similarity bound,
+//     NOT byte-equality: detected adapter equals upstream's (or a prefix
+//     within a few bp); per-read trimmed-length agreement >= 99% with no
+//     read off by more than 2bp; aggregate adapter-trimmed reads/bases and
+//     passed-filter reads within 1%. Validated in Case 16 (similarity) and
+//     TestUnitDetectAdapterSE (binary-free). Cases 11b/15 remain byte-parity
+//     because those tiny fixtures sit below upstream's 10000-record gate so
+//     no adapter is detected (the no-op path is deterministic).
 
 import (
 	"bytes"
@@ -673,6 +688,133 @@ func TestParity_Fastp_Case15_SEAutoDetect(t *testing.T) {
 		"summary.before_filtering.total_reads",
 		"filtering_result.passed_filter_reads",
 	)
+}
+
+// Case 16 — SE adapter auto-detection that ACTUALLY FIRES (the heuristic
+// path). The se_detect.fq fixture has 12000 reads (above upstream's
+// evaluator gate of 10000 records, evaluator.cpp:344), so both upstream and
+// the Go port run the full kmer + nucleotide-tree detector and recover the
+// embedded Illumina TruSeq adapter.
+//
+// This is the genuinely heuristic / sampling-dependent path. Per the project
+// directive it is validated by a SIMILARITY BOUND against the upstream
+// binary, not byte-equality:
+//
+//   - detected adapter equals upstream's (or one is a prefix of the other
+//     within a few bp);
+//   - per-read trimmed-length agreement >= 99% with no read off by more than
+//     2bp, and base identity over overlapping bases >= 99.9%;
+//   - aggregate adapter-trimmed reads/bases and passed-filter reads within a
+//     1% relative tolerance.
+//
+// In practice the Go detector recovers the exact same adapter string as
+// upstream and the output is byte-identical, but the CONTRACT for this
+// heuristic path is the similarity bound documented above.
+func TestParity_Fastp_Case16_SEAutoDetectFires(t *testing.T) {
+	bin := ensureUpstream(t)
+	in := parityInput(t, "se_detect.fq")
+	dir := t.TempDir()
+
+	// Upstream default: -a defaults to "auto" so the evaluator runs.
+	upFq, upJSON := runUpstreamSE(t, bin, in, dir, nil)
+
+	opts := DefaultProcessOptions()
+	opts.DetectAdapterSE = true
+	goFq, goStats := runGoFastpSE(t, in, opts)
+	goJSON := jsonFromStats(t, goStats)
+
+	// (1) Detected adapter agreement (prefix within a few bp).
+	upAdapter, _ := lookupJSON(upJSON, "adapter_cutting.read1_adapter_sequence")
+	upAdapterStr, _ := upAdapter.(string)
+	goAdapterStr := goStats.DetectedAdapter
+	if upAdapterStr == "" {
+		t.Fatalf("case16: upstream did not detect an adapter on the 12000-read fixture; "+
+			"fixture/seed drift? upstream JSON adapter_cutting=%v", lookupOrNil(upJSON, "adapter_cutting"))
+	}
+	if !adapterPrefixWithin(goAdapterStr, upAdapterStr, 3) {
+		t.Fatalf("case16: detected adapter mismatch beyond 3bp: go=%q upstream=%q",
+			goAdapterStr, upAdapterStr)
+	}
+
+	// (2) Per-read similarity bound.
+	sim := compareFastqSimilarity(goFq, upFq)
+	t.Logf("case16 similarity: matched=%d onlyGo=%d onlyUp=%d lenAgreement=%.4f maxLenDelta=%d baseIdentity=%.6f",
+		sim.Matched, sim.OnlyA, sim.OnlyB, sim.LengthAgreement, sim.MaxLenDelta, sim.BaseIdentity)
+	if sim.Matched == 0 {
+		t.Fatalf("case16: no reads matched by ID between go and upstream output")
+	}
+	if sim.OnlyA != 0 || sim.OnlyB != 0 {
+		t.Fatalf("case16: read-id set differs (onlyGo=%d onlyUp=%d)", sim.OnlyA, sim.OnlyB)
+	}
+	if sim.LengthAgreement < 0.99 {
+		t.Fatalf("case16: per-read length agreement %.4f < 0.99", sim.LengthAgreement)
+	}
+	if sim.MaxLenDelta > 2 {
+		t.Fatalf("case16: a read trimmed-length differs by %dbp (> 2bp)", sim.MaxLenDelta)
+	}
+	if sim.BaseIdentity < 0.999 {
+		t.Fatalf("case16: base identity over overlap %.6f < 0.999", sim.BaseIdentity)
+	}
+
+	// (3) Aggregate-metric agreement within 1% relative tolerance.
+	assertWithinRelTol(t, "case16 adapter_trimmed_reads", upJSON, goJSON,
+		"adapter_cutting.adapter_trimmed_reads", 0.01)
+	assertWithinRelTol(t, "case16 adapter_trimmed_bases", upJSON, goJSON,
+		"adapter_cutting.adapter_trimmed_bases", 0.01)
+	assertWithinRelTol(t, "case16 passed_filter_reads", upJSON, goJSON,
+		"filtering_result.passed_filter_reads", 0.01)
+}
+
+// adapterPrefixWithin reports whether a and b agree as a prefix up to a
+// tail difference of at most tol bases — i.e. the shorter is a prefix of the
+// longer and the length gap is <= tol. Used for the heuristic adapter-string
+// similarity check.
+func adapterPrefixWithin(a, b string, tol int) bool {
+	if a == b {
+		return true
+	}
+	short, long := a, b
+	if len(short) > len(long) {
+		short, long = long, short
+	}
+	if long[:len(short)] != short {
+		return false
+	}
+	return len(long)-len(short) <= tol
+}
+
+// assertWithinRelTol fails unless the two JSON counters at path agree within
+// a relative tolerance relTol (e.g. 0.01 for 1%). When the upstream value is
+// zero it requires exact equality.
+func assertWithinRelTol(t *testing.T, label string, upJSON, goJSON map[string]any, path string, relTol float64) {
+	t.Helper()
+	up, upOK := lookupJSON(upJSON, path)
+	got, goOK := lookupJSON(goJSON, path)
+	if !upOK || !goOK {
+		t.Fatalf("%s: path %s missing (upstream=%v go=%v)", label, path, upOK, goOK)
+	}
+	upF, _ := toFloat(up)
+	goF, _ := toFloat(got)
+	if upF == 0 {
+		if goF != 0 {
+			t.Fatalf("%s: upstream=0 but go=%v", label, goF)
+		}
+		return
+	}
+	rel := (goF - upF) / upF
+	if rel < 0 {
+		rel = -rel
+	}
+	if rel > relTol {
+		t.Fatalf("%s: %s relative diff %.4f > tol %.4f (upstream=%v go=%v)",
+			label, path, rel, relTol, upF, goF)
+	}
+}
+
+// lookupOrNil is a small convenience for diagnostic messages.
+func lookupOrNil(m map[string]any, path string) any {
+	v, _ := lookupJSON(m, path)
+	return v
 }
 
 // jsonFromStats serialises a ProcessStats through WriteJSONReport so the
