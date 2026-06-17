@@ -204,6 +204,13 @@ func Generate(opt Options) (*Manifest, error) {
 	_ = m.recordFile("bed12", bed12Path, true)
 	_ = m.recordFile("genome", genomePath, true)
 
+	// --- BEDPE (paired-end intervals for bedpairtobed / bedpairtopair) ---
+	bedpePath := filepath.Join(dir, "pairs.bedpe")
+	if err := writeBEDPE(bedpePath, contigs, p, rng); err != nil {
+		return nil, err
+	}
+	_ = m.recordFile("bedpe", bedpePath, true)
+
 	// --- GFF3 (genes/mRNA/exon/CDS over the same contigs) ---
 	gffPath := filepath.Join(dir, "annotations.gff3")
 	if err := writeGFF(gffPath, contigs, p, rng); err != nil {
