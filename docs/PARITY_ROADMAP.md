@@ -1375,6 +1375,16 @@ Option-tail gaps on the wave-2 additions:
   ops (sum/mean/min/max/count) were already correct and are unchanged. New
   live-binary parity tests cover the equal-key collapse/distinct ordering across
   default, `-s`, `-S`, and `-d` paths.
+- `bedmap` — **order-sensitive op tie-break fixed** (this wave). For each A
+  interval the overlapping B values are now emitted in upstream's stream order —
+  `(chrom, start)` with B-file order preserved on ties (chromEnd is no longer a
+  tie-break) — so `-o collapse|distinct` match `bedtools map` byte-for-byte. Both
+  the B-load sort and the per-A match re-sort were corrected; each B record
+  carries its load-order index so the tree-query candidates can be restored to
+  input order on equal starts. Order-independent ops (sum/mean/min/max/count)
+  were already correct and are unchanged. New live-binary parity tests cover the
+  equal-key collapse/distinct ordering (incl. `-s`/`-S` strand subsets) with
+  sum/count guards against regressing the matching paths.
 - `bedsample` — **byte-for-byte parity with upstream's seeded sampler is
   now achieved** (this wave). The reservoir replacement uses an in-tree,
   stdlib-only Go port of `std::mt19937_64` (`mt19937.go`) — the exact

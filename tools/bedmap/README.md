@@ -45,6 +45,16 @@ When there are no overlapping B records:
 - `count` and `count_distinct` always emit `0`.
 - Every other op emits the `--null` placeholder (default `.`).
 
+### Value order for `collapse` / `distinct`
+
+For each A interval the overlapping B values are emitted in upstream's stream
+order: `(chrom, start)` with B-file (input) order preserved on ties. chromEnd is
+**not** a tie-break, so B records that share a `(chrom, start)` come out in the
+order they appear in the B file — matching `bedtools map` byte-for-byte. (An
+earlier port broke these ties on chromEnd ascending, reordering the
+collapsed/distinct values.) Order-independent ops (`sum`, `mean`, `min`, `max`,
+`count`, …) are unaffected.
+
 ## Database (`-b`) input formats
 
 The `-b` database format is auto-detected exactly as upstream
