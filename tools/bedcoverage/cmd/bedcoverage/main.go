@@ -43,7 +43,8 @@ Options:
   -S,      --opposite    Only count B features on the opposite strand
   -f NUM, --fraction-a   Min fraction of A that must overlap a B feature
   -F NUM, --fraction-b   Min fraction of B that must overlap A
-  -r,     --reciprocal   Require both -f and -F (default is AND already)
+  -r,     --reciprocal   Require reciprocal -f overlap (A AND B)
+  -e,     --either       Require -f OR -F (instead of the default AND)
   -h,     --help         Show this help
   -v,     --version      Show version
 `
@@ -98,7 +99,9 @@ func main() {
 	cliflag.Float64Var(fs, &fracB, "F", "fraction-b", 0, "Min fraction of B")
 
 	var reciprocal bool
-	cliflag.BoolVar(fs, &reciprocal, "r", "reciprocal", false, "Require both -f and -F")
+	cliflag.BoolVar(fs, &reciprocal, "r", "reciprocal", false, "Require reciprocal -f overlap (A AND B)")
+	var either bool
+	cliflag.BoolVar(fs, &either, "e", "either", false, "Require -f OR -F (instead of AND)")
 
 	var split bool
 	cliflag.BoolVar(fs, &split, "", "split", false, "Treat BED12 -b records as their blocks")
@@ -180,6 +183,7 @@ func main() {
 		FractionA:      fracA,
 		FractionB:      fracB,
 		Reciprocal:     reciprocal,
+		Either:         either,
 		Split:          split,
 	}
 	if _, err := bedcoverage.Coverage(rA, rB, w, opts); err != nil {

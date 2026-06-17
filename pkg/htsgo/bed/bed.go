@@ -32,6 +32,16 @@ type Record struct {
 	BlockSizes  []int    // Block sizes (optional, BED11+)
 	BlockStarts []int    // Block starts (optional, BED12+)
 	ExtraFields []string // Additional custom fields beyond BED12
+
+	// RawBlockSizes and RawBlockStarts retain the exact, unparsed text of the
+	// blockSizes (field 11) and blockStarts (field 12) columns as they appeared
+	// in the input — including or omitting the optional trailing comma. They let
+	// tools echo BED12 block columns verbatim (bedtools preserves whatever was
+	// read). They are populated only by the BED text Reader; records built from
+	// other sources (e.g. BAM alignments) leave them empty, and consumers should
+	// fall back to rendering BlockSizes/BlockStarts in that case.
+	RawBlockSizes  string
+	RawBlockStarts string
 }
 
 // Reader provides sequential access to BED records.
@@ -132,6 +142,7 @@ func (r *Reader) Read() (*Record, error) {
 		}
 
 		if len(fields) > 10 {
+			record.RawBlockSizes = fields[10]
 			sizes := strings.Split(strings.TrimSuffix(fields[10], ","), ",")
 			record.BlockSizes = make([]int, len(sizes))
 			for i, s := range sizes {
@@ -144,6 +155,7 @@ func (r *Reader) Read() (*Record, error) {
 		}
 
 		if len(fields) > 11 {
+			record.RawBlockStarts = fields[11]
 			starts := strings.Split(strings.TrimSuffix(fields[11], ","), ",")
 			record.BlockStarts = make([]int, len(starts))
 			for i, s := range starts {

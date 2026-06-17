@@ -43,7 +43,18 @@ gaps were closed and parity-validated against the vendored upstream binaries:
   is counted once per overlapped query block — byte-validated vs upstream 2.31.1
   across default/`--counts`/`--depth`/`--hist`/`--mean` and `-s`/`-S`
   (`TestUpstreamParity_SplitBlockedQuery{BED12,BAM}`, plus binary-free
-  `split_unit_test.go`); **GFF/VCF input** to `bedmerge`
+  `split_unit_test.go`). Two further `bedcoverage` divergences were closed
+  (2026-06): (1) under `--split` the overlap-fraction thresholds
+  `-f`/`-F`/`-r`/`-e` are now correctly **ignored** — upstream keeps the
+  always-populated `BlockMgr` overlapSet, not the fraction-filtered resultSet,
+  so any B overlapping any A block is counted whatever the fractions (the
+  non-`--split` path is unchanged); (2) BED12 `blockSizes`/`blockStarts` are
+  echoed **verbatim** (trailing comma preserved iff present) via new
+  `bed.Record.RawBlockSizes`/`RawBlockStarts` retained by the BED reader, with
+  BAM-derived records falling back to upstream's trailing-comma form. The `-e`
+  (either A OR B) flag was also added. Oracle tests
+  `TestUpstreamParity_{FractionUnderSplitIgnored,NonSplitFractionUnchanged,VerbatimBED12BlockEcho}`;
+  binary-free `frac_echo_unit_test.go`. **GFF/VCF input** to `bedmerge`
   and **GFF** to `bedmap`. `bedclosest` gained multi-database
   `-b … -names/-filenames/-mdb` and `-s`/`-S`/`-N`. Flag-mapping bugs fixed:
   `bedsubtract -N`, `bedmerge -S`/`--delim`, `bedjaccard -S`, `bedcomplement -L`.
