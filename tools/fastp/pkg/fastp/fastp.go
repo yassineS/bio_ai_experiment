@@ -1291,10 +1291,16 @@ func trimRecord(record *fastq.Record, opts ProcessOptions, stats *ProcessStats, 
 		}
 	}
 
-	// Step 4: Quality-based trimming
-	if opts.QualThreshold > 0 {
-		start, end = trimByQuality(qual[start:end], opts.QualThreshold, start, end, encoding)
-	}
+	// NOTE: there is deliberately NO standalone end quality-trim here. Upstream
+	// fastp's only quality-based trimming is the cut_front/cut_tail/cut_right
+	// sliding-window cut, handled in Step 1 above (gated on those flags, off by
+	// default). qualified_quality_phred (-q, default 15) is a FILTER threshold
+	// used by the quality-percentage filter in filterRecord — NOT a trim
+	// threshold. A previous standalone trimByQuality step here ran by default
+	// (QualThreshold defaults to 15) and trimmed low-quality 3' tails upstream
+	// leaves intact, which both shifted lengths and let too-many-N reads slip
+	// through the N filter (their N-laden tails were trimmed away). See upstream
+	// seprocessor.cpp:234-262, which has no such step.
 
 	// Return the trimmed window. Length/N/quality/complexity filtering is
 	// deferred to filterRecord so the merge path can interpose its overlap
@@ -1427,27 +1433,6 @@ func countNs(seq string) int {
 		}
 	}
 	return count
-}
-
-// trimByQuality trims low-quality regions from both ends.
-func trimByQuality(quality []byte, threshold int, start, end int, encoding fastq.QualityEncoding) (int, int) {
-	offset := 33
-	if encoding == fastq.Phred64 {
-		offset = 64
-	}
-
-	// Trim from 3' end
-	for end > start && int(quality[end-start-1])-offset < threshold {
-		end--
-	}
-
-	// Trim from 5' end
-	for start < end && int(quality[0])-offset < threshold {
-		start++
-		quality = quality[1:]
-	}
-
-	return start, end
 }
 
 // phredOffset returns the ASCII offset for the given quality encoding.

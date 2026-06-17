@@ -2110,17 +2110,26 @@ func (c *StatsCounters) writeRFS(bw *bufio.Writer) {
 // nbins consecutive GC-depth segments starting at grp. It is a faithful port
 // of upstream stats.c's gcd_percentile (stats.c:1491), including its
 // truncating float-to-int conversion and the k<=0 / k>=N edge clamps.
-func gcdPercentile(grp []gcDepth, nbins, p int) float64 {
-	n := float64(p) * float64(nbins+1) / 100.0
+// The arithmetic is done in float32 to match upstream byte-for-byte: upstream's
+// gcd_percentile is declared `float` and computes n/d in float, and the caller
+// scales by a `float avg_read_length` and the integer bin size, also in float,
+// only widening to double at the printf. Doing this in float64 instead lands
+// the result ~1 ULP off and flips the %.3f rounding on boundary values (the
+// same float-vs-double width issue as the errmod port).
+func gcdPercentile(grp []gcDepth, nbins, p int) float32 {
+	n := float32(p) * float32(nbins+1) / 100
 	k := int(n)
 	if k <= 0 {
-		return float64(grp[0].depth)
+		return float32(grp[0].depth)
 	}
 	if k >= nbins {
-		return float64(grp[nbins-1].depth)
+		return float32(grp[nbins-1].depth)
 	}
-	d := n - float64(k)
-	return float64(grp[k-1].depth) + d*(float64(grp[k].depth)-float64(grp[k-1].depth))
+	d := n - float32(k)
+	// grp[k].depth-grp[k-1].depth is computed in uint32 then widened, exactly as
+	// C does on the uint32 depth fields (the group is sorted by depth ascending,
+	// so the subtraction never underflows).
+	return float32(grp[k-1].depth) + d*float32(grp[k].depth-grp[k-1].depth)
 }
 
 // writeGCD emits the GC-depth distribution. It is only emitted for
@@ -2139,10 +2148,12 @@ func (c *StatsCounters) writeGCD(bw *bufio.Writer) {
 	}
 	fmt.Fprintln(bw, "# GC-depth. Use `grep ^GCD | cut -f 2-` to extract this part. The columns are: GC%, unique sequence percentiles, 10th, 25th, 50th, 75th and 90th depth percentile")
 	// avg_read_length mirrors stats.c:1586 — total length over the count of
-	// 1st + 2nd + other reads (i.e. Sequences).
-	avgReadLength := 0.0
+	// 1st + 2nd + other reads (i.e. Sequences). Upstream computes this as a
+	// `float` (32-bit) and uses it to scale the GCD percentiles in float, so we
+	// match that width here (see gcdPercentile's note).
+	var avgReadLength float32
 	if c.Sequences > 0 {
-		avgReadLength = float64(c.TotalLength) / float64(c.Sequences)
+		avgReadLength = float32(c.TotalLength) / float32(c.Sequences)
 	}
 	// Finalise the GC value of every segment below gcdIdx. The reference
 	// path scales the raw fraction by 100; the no-reference path averages
@@ -2176,14 +2187,16 @@ func (c *StatsCounters) writeGCD(bw *bufio.Writer) {
 		}
 		grp := c.gcd[igcd : igcd+nbins]
 		uniq := float64(igcd+nbins+1) * 100.0 / float64(c.gcdIdx+1)
-		scale := avgReadLength / float64(c.gcdBinSize)
+		// Scale each percentile by avg_read_length/bin_size in float32 (upstream
+		// computes `gcd_percentile(...) *avg_read_length/gcd_bin_size` in float),
+		// widening to double only for the %.3f format.
+		binSize := float32(c.gcdBinSize)
+		scaled := func(p int) float64 {
+			return float64(gcdPercentile(grp, nbins, p) * avgReadLength / binSize)
+		}
 		fmt.Fprintf(bw, "GCD\t%.1f\t%.3f\t%.3f\t%.3f\t%.3f\t%.3f\t%.3f\n",
 			gc, uniq,
-			gcdPercentile(grp, nbins, 10)*scale,
-			gcdPercentile(grp, nbins, 25)*scale,
-			gcdPercentile(grp, nbins, 50)*scale,
-			gcdPercentile(grp, nbins, 75)*scale,
-			gcdPercentile(grp, nbins, 90)*scale)
+			scaled(10), scaled(25), scaled(50), scaled(75), scaled(90))
 		igcd += nbins
 	}
 }

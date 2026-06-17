@@ -196,15 +196,16 @@ func sickleMatrix() []Entry {
 		OurArgs: peOurs, UpstreamArgs: peUp, Heavy: true,
 	})
 
-	// Documented divergence entry (Skipped): CLI-default window.
+	// CLI-default window (no -w): our sickle now defaults the window size to 0,
+	// which selects the library's upstream-faithful dynamic int(0.1*len) window
+	// (was hardcoded to 10, trimming ~1% of reads one window short). The
+	// no-flag invocation is therefore byte-exact with upstream now (fixed by the
+	// sickle agent; previously a documented Skip).
 	entries = append(entries, Entry{
 		Tool: "sickle", UpstreamTool: "sickle", Name: "sickle_se_cli_default_window",
 		Input: InputFASTQ, Compare: ByteExact, OutputFiles: []string{".fastq"},
 		OurArgs:      []string{"se", "-f", fq, "-t", "sanger", "-o", "{out}.fastq"},
 		UpstreamArgs: []string{"se", "-f", fq, "-t", "sanger", "-o", "{out}.fastq"},
-		Skip: "our sickle CLI hardcodes window-size default 10; upstream uses dynamic int(0.1*len). " +
-			"Trims ~1% of reads one window short. Pass -w 0 for parity (the other sickle entries do). " +
-			"Real bug, owned by the sickle agent (tools/sickle/cmd/sickle/main.go).",
 	})
 	return entries
 }
@@ -234,43 +235,47 @@ func skewerMatrix() []Entry {
 	return []Entry{base, minlen, heavy}
 }
 
-// fastpMatrix covers fastp ours-vs-upstream. fastp is the hardest QC tool to
-// compare generically:
+// fastpMatrix covers fastp ours-vs-upstream. The deterministic trimming/
+// filtering paths are now byte-exact and run as ByteExact entries:
 //
-//   - Its default quality/length filtering disagrees with this upstream build
-//     on which reads to drop, and our CLI lacks the
-//     --disable_quality_filtering / --disable_length_filtering switches needed
-//     to neutralise that, so a clean pass-through cannot be expressed.
-//   - cut_tail/cut_front diverge by ~1 bp on ~1% of reads (a window-boundary
-//     off-by-one) on this fixture.
-//   - The --json/--html reports carry a version stamp and wall-clock time.
-//   - Adapter auto-detection is a sampling heuristic.
+//   - default quality/length filtering (cut_tail and the no-flag default) match
+//     upstream byte-for-byte after a spurious standalone end-quality-trim — one
+//     that ran by default because qualified_quality_phred (-q) was mistakenly
+//     treated as a trim threshold rather than a filter threshold — was removed.
 //
-// These are exactly the bits the brief says to handle with Similarity or to
-// exclude as the per-tool suite already does (which validates fastp's
-// algorithms byte-exact on crafted fixtures). We therefore register documented
-// Skips for the trimming/report paths and one Similarity entry for the adapter
-// auto-detect heuristic, plus mark the heavy full-file pass. Nothing here
-// DIVERGEs.
+// Only genuinely non-deterministic / non-comparable paths remain Skipped:
+//
+//   - adapter auto-detection (--detect_adapter_for_pe) is a sampling heuristic;
+//     the per-tool suite validates it with a documented similarity bound.
+//   - the --json/--html reports carry a version stamp and wall-clock time.
+//
+// Nothing here DIVERGEs.
 func fastpMatrix() []Entry {
 	fq := "{fastq}"
 	r1, r2 := "{fastq1}", "{fastq2}"
 	return []Entry{
 		{
+			// cut_tail is the cut_front/cut_tail/cut_right sliding-window trim.
+			// It is now byte-exact against upstream: a spurious standalone
+			// end-quality-trim that used to run by default (qualified_quality_phred
+			// is a filter, not a trim threshold) was removed, so the sliding
+			// window now sees the full read exactly as upstream does.
 			Tool: "fastp", UpstreamTool: "fastp", Name: "fastp_cut_tail",
 			Input: InputFASTQ, Compare: ByteExact, OutputFiles: []string{".fastq"},
 			OurArgs:      []string{"-i", fq, "-o", "{out}.fastq", "-A", "--cut-tail", "--json", "{out}.json", "--html", "{out}.html"},
 			UpstreamArgs: []string{"-i", fq, "-o", "{out}.fastq", "-A", "--cut_tail", "--json", "{out}.json", "--html", "{out}.html"},
-			Skip: "fastp cut_tail diverges from this upstream build by ~1bp on ~1% of reads (window-boundary off-by-one); " +
-				"validated byte-exact on crafted fixtures by the per-tool suite (TestUnitSlidingWindowCut). Owned by the fastp agent.",
 		},
 		{
+			// Default quality/length filtering. Now byte-exact: with the spurious
+			// default end-quality-trim removed, too-many-N reads keep their
+			// N-laden tails and are dropped by the N filter exactly as upstream
+			// does (previously we trimmed those tails so the reads slipped
+			// through). --disable_quality_filtering/-Q and
+			// --disable_length_filtering/-L are also now available.
 			Tool: "fastp", UpstreamTool: "fastp", Name: "fastp_default_filter",
 			Input: InputFASTQ, Compare: ByteExact, OutputFiles: []string{".fastq"},
 			OurArgs:      []string{"-i", fq, "-o", "{out}.fastq", "-A", "--json", "{out}.json", "--html", "{out}.html"},
 			UpstreamArgs: []string{"-i", fq, "-o", "{out}.fastq", "-A", "--json", "{out}.json", "--html", "{out}.html"},
-			Skip: "fastp default quality/length filtering disagrees with this upstream build on which reads to drop, " +
-				"and our CLI lacks --disable_quality_filtering/--disable_length_filtering to neutralise it. Owned by the fastp agent.",
 		},
 		{
 			Tool: "fastp", UpstreamTool: "fastp", Name: "fastp_detect_adapter_pe_heavy",
