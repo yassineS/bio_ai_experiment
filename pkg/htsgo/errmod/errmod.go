@@ -18,6 +18,37 @@
 // mpileup` via `bam2bcf` and `samtools targetcut` via `gencns`) both
 // cap depth at 255 in their own output, and for pileups ≤255 deep —
 // the overwhelming common case — we are byte-equivalent to upstream.
+//
+// Floating-point faithfulness: the q-matrix output is computed to be
+// bit-for-bit identical to upstream errmod_cal for every ≤255-deep
+// pileup (verified against the vendored htslib errmod.c over tens of
+// thousands of random columns spanning the full quality range; see the
+// TestUnit* oracle goldens). Two upstream-fidelity details are load-
+// bearing and easy to get subtly wrong in Go:
+//
+//   - The per-genotype likelihood sum `tmp1` is a C `float`; upstream
+//     does `tmp1 += aux.bsum[k]` where `bsum[k]` is a double, so the
+//     running sum is re-rounded to single precision at every step. We
+//     accumulate in float32 with an explicit float64 add and float32
+//     store to reproduce that exactly (see Cal). Accumulating in float64
+//     and rounding once at the end shifts a small fraction of float32
+//     q entries by 1 ULP, which at a low het-LOD threshold flipped the
+//     het set — this was the documented errmod/gl2cns "LOD precision"
+//     divergence, now fixed.
+//   - The phred coefficient -10/ln(10) is computed as a runtime double
+//     division (phredScale) rather than a Go untyped constant, because
+//     an untyped-constant `-10.0 / math.Ln10` rounds in arbitrary
+//     precision and lands 1 ULP off the IEEE-754 double the C compiler
+//     folds for `-10. / M_LN10`. This keeps the double-precision beta
+//     table bit-identical to upstream.
+//
+// One residual, harmless boundary remains at the double level only: the
+// beta table's interior entries use libm exp/log1p, and Go's math.Exp
+// differs from glibc's exp by at most 1 ULP for a few arguments. That
+// sub-ULP double noise is far below float32 resolution and is fully
+// absorbed when the bsum terms are rounded into the float32 q output, so
+// it never reaches the result. It is a genuine libm transcendental
+// last-ULP property, not a fixable algorithmic difference.
 package errmod
 
 import (
@@ -30,14 +61,33 @@ const (
 	// Eta is the base-error inflation term used by cal_coef (errmod.c
 	// hard-codes ETA=0.03).
 	Eta = 0.03
-	// phredScale converts a natural log into a phred-scaled penalty
-	// (`-10/ln(10)` in errmod.c).
-	phredScale = -10.0 / math.Ln10
 	// MaxObs is the largest pile depth the precomputed tables support;
 	// deeper piles are deterministically truncated to this many
 	// observations (see the package doc for the divergence note).
 	MaxObs = 255
 )
+
+// phredScale converts a natural log into a phred-scaled penalty
+// (`-10. / M_LN10` in errmod.c). It is computed at runtime by
+// phredScaleCoef rather than as an untyped Go constant: Go evaluates an
+// untyped constant `-10.0 / math.Ln10` in arbitrary precision and then
+// rounds the final result, which lands 1 ULP away from the IEEE-754
+// `double` quotient the C compiler folds for `-10. / M_LN10` (C divides
+// two doubles and rounds once). That single-ULP coefficient difference
+// propagated through the whole beta table — every beta entry is
+// phredScale*(sum1-sum) — and was the root cause of the low-`-q` het-set
+// divergence. Computing the division on a non-constant float64 operand
+// forces the IEEE double round-once division, reproducing the upstream
+// constant bit-for-bit.
+var phredScale = -10.0 / ln10Var
+
+// ln10Var holds ln(10) in a package-level variable (not a constant) so
+// that the division -10.0/ln10Var that computes phredScale is evaluated
+// as a single IEEE-754 double division at runtime — the C compiler folds
+// `-10. / M_LN10` the same way (round-once double divide), whereas a Go
+// untyped-constant `-10.0 / math.Ln10` would round in arbitrary
+// precision and differ by 1 ULP.
+var ln10Var = math.Ln10
 
 // Errmod holds the precomputed MAQ error-model coefficient tables for
 // a fixed depth-correlation parameter. Construct it with Init and
@@ -196,17 +246,28 @@ func (em *Errmod) Cal(bases []uint16, m int, q []float32) {
 	for j := 0; j < m; j++ {
 		// Homozygous genotype (j,j): sum contributions from all other
 		// bases.
-		var tmp1 float64
+		//
+		// Width note: upstream declares `tmp1` as a C `float` and does
+		// `tmp1 += aux.bsum[k]`, where `bsum[k]` is a `double`. The C
+		// usual-arithmetic-conversion rules promote `tmp1` to double for
+		// the add and then round the result back to float32 on store, so
+		// the running sum is re-rounded to single precision at EVERY step.
+		// We mirror that exactly by keeping `tmp1` as float32 and rounding
+		// each partial sum back through float32; accumulating in float64
+		// and rounding once at the end (the previous behaviour) produced a
+		// slightly different LOD at the het-call margin under a low `-q`,
+		// which is exactly the documented errmod/gl2cns divergence.
+		var tmp1 float32
 		var tmp2 int
 		for k := 0; k < m; k++ {
 			if k == j {
 				continue
 			}
-			tmp1 += aux.bsum[k]
+			tmp1 = float32(float64(tmp1) + aux.bsum[k])
 			tmp2 += int(aux.c[k])
 		}
 		if tmp2 != 0 {
-			q[j*m+j] = float32(tmp1)
+			q[j*m+j] = tmp1
 		}
 		// Heterozygous genotypes (j,k) with k > j.
 		for k := j + 1; k < m; k++ {
@@ -217,10 +278,15 @@ func (em *Errmod) Cal(bases []uint16, m int, q []float32) {
 				if i == j || i == k {
 					continue
 				}
-				tmp1 += aux.bsum[i]
+				tmp1 = float32(float64(tmp1) + aux.bsum[i])
 				tmp2 += int(aux.c[i])
 			}
-			val := -4.343*em.lhet[cjk<<8|int(aux.c[k])] + tmp1
+			// Upstream: q[..] = -4.343 * em->lhet[..] + tmp1, evaluated in
+			// double (lhet is double, tmp1 a float promoted to double) and
+			// stored to the float32 output. The tmp2!=0 / ==0 branches in
+			// upstream are equivalent here: when tmp2==0 tmp1 is 0, so the
+			// single expression covers both.
+			val := -4.343*em.lhet[cjk<<8|int(aux.c[k])] + float64(tmp1)
 			q[j*m+k] = float32(val)
 			q[k*m+j] = float32(val)
 		}

@@ -3092,15 +3092,50 @@ the `-F`/`-A`/`-k`/`-Q`/`-D` flag matrix. Pinned by `TestLivePhase`
 > behind `UpstreamSchema=false`, used only by the in-process v1 unit
 > tests. It is NOT the CLI path and is not the upstream emit.
 
-**`phase` remaining gap (het CALLING at low LOD, not phasing).** When
-`-q` is lowered well below the default 37 (e.g. `-q 20`), the *set* of
-het sites called diverges from upstream: the `errmod`/`gl2cns`
-genotype-likelihood LOD differs at the margin, so a few low-confidence
-sites are included by one side and not the other. This is an
-errmod-precision matter in het *discovery*, independent of the
-phasing DP — once the het set matches (default LOD) the phasing output
-is identical. Tracked as a `bam2bcf`/`errmod`-style numeric-precision
-item, not a `phase`-algorithm gap.
+**`phase` het-CALLING at low LOD — the errmod/gl2cns LOD precision part
+is FIXED.** Earlier this was filed as an "errmod-precision" matter: when
+`-q` is lowered well below the default 37 the *set* of het sites called
+diverged from upstream, and the suspicion was that the `errmod`/`gl2cns`
+genotype-likelihood LOD differed at the margin. That suspicion was only
+half right, and the errmod half is now resolved:
+
+- **Root cause of the errmod-level divergence (FIXED).** Upstream
+  `errmod_cal` declares the per-genotype likelihood sum `tmp1` as a C
+  `float` and does `tmp1 += aux.bsum[k]` against a `double`, re-rounding
+  the running sum to single precision at every step. The Go port had been
+  accumulating in `float64` and rounding once at the end, which shifted a
+  small fraction of float32 `q` entries by 1 ULP — enough to flip a few
+  het calls at a low LOD threshold. The port now accumulates in `float32`
+  with an explicit `float32(float64(tmp1)+bsum[k])` step, exactly
+  mirroring upstream. (A second, latent 1-ULP source was also removed: the
+  `-10/ln(10)` phred coefficient is now a runtime `double` division so the
+  beta table is bit-identical to upstream rather than 1 ULP off from Go
+  constant folding.) With these two fixes the errmod q-matrix is
+  **bit-for-bit identical** to the vendored htslib `errmod.c` for every
+  ≤255-deep pileup across the full quality range (verified over tens of
+  thousands of random columns and pinned by the `TestUnit*` oracle
+  goldens in `pkg/htsgo/errmod`). `samtools phase` now matches upstream
+  byte-for-byte across a `-q` sweep from 1 to 37 on Phred-40 fixtures
+  (`TestLivePhaseLowQ`).
+- **Residual `phase`-specific gap (separate, NOT errmod).** A divergence
+  still exists, but *only* when reads carry MARGINAL base qualities at the
+  variant column AND a low `--min-BQ`/`-q` admits them: upstream calls het
+  sites that our `phase` pileup misses (it emits a singleton `M0` instead
+  of the expected phased `M1` block). This is **not** an errmod/gl2cns
+  precision issue — for those exact marginal columns the errmod+gl2cns LOD
+  is byte-identical to upstream (e.g. a 6-read G/T column at Q14-16 gives
+  `c=0006005b`, LOD 22, on both sides). The defect is upstream in the
+  phase block/fragment construction (`phase_emit.go` / `phase_pileup.go`):
+  which bases/reads reach errmod, and how vpos/cns blocks are formed for
+  low-depth marginal columns. Tracked as a `phase`-algorithm gap, not a
+  numeric-precision item.
+- **libm boundary note (informational).** At the *double* level the beta
+  table's interior entries use `exp`/`log1p`, and Go's `math.Exp` differs
+  from glibc's `exp` by at most 1 ULP for a handful of arguments. That
+  sub-ULP double noise is far below float32 resolution and is fully
+  absorbed when bsum terms round into the float32 `q` output, so it never
+  changes a result. It is a genuine libm transcendental last-ULP
+  property, not a fixable algorithmic difference; see `docs/UPSTREAM_BUGS.md`.
 
 **`targetcut` HMM consensus mode** (implemented). The Go port is now
 a faithful translation of upstream `cut_target.c`: per-position
