@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
@@ -71,25 +72,78 @@ func parseInfoTagList(s string) infoTagSet {
 
 // filterRecodeInfo applies the `--recode-INFO TAG` recode-column selector to
 // a recoded variant's INFO map. keepInfo (when non-empty) restricts INFO to
-// the listed tags. Mirrors upstream `parameters.cpp:319` (recode_INFO_to_keep).
+// the listed tags. Mirrors upstream `parameters.cpp:319` (recode_INFO_to_keep)
+// and the emit loop in `entry_getters.cpp:182` (get_INFO), which walks the
+// parsed INFO vector in SOURCE order and keeps the listed subset in that
+// order. We therefore filter the supplied `order` slice (the variant's
+// InfoOrder) rather than sorting, so the recoded INFO column matches upstream
+// byte-for-byte.
 //
-// Returns a fresh map; the caller is responsible for assigning it back.
-func filterRecodeInfo(info map[string]string, keepInfo infoTagSet) map[string]string {
+// Returns a fresh map plus the kept keys in source order; the caller assigns
+// both back onto the output variant (Info + InfoOrder).
+//
+// Flag-style INFO keys (stored by our parser with an empty value) need
+// care because upstream's two recode paths render them differently:
+//
+//   - --recode-INFO-all prints the raw INFO_str verbatim (vcf_entry.cpp:311),
+//     so a bare flag like SOMATIC stays bare. The caller handles that path
+//     directly (it does NOT call this function).
+//   - --recode-INFO TAG routes through get_INFO (entry_getters.cpp:182), which
+//     emits "KEY=" + INFO[ui].second. Because set_INFO (vcf_entry_setters.cpp:253)
+//     stores a bare flag's value as "1", the kept subset renders the flag as
+//     "KEY=1", NOT bare. We therefore promote empty values to "1" here so the
+//     writer matches upstream byte-for-byte.
+func filterRecodeInfo(info map[string]string, order []string, keepInfo infoTagSet) (map[string]string, []string) {
 	if len(keepInfo) == 0 {
 		out := make(map[string]string, len(info))
 		for k, v := range info {
 			out[k] = v
 		}
-		return out
+		return out, append([]string(nil), order...)
+	}
+	// promote mirrors upstream set_INFO: a bare flag (empty value in our
+	// parser) is materialised as "1" on the get_INFO (--recode-INFO) path.
+	promote := func(v string) string {
+		if v == "" {
+			return "1"
+		}
+		return v
 	}
 	out := make(map[string]string, len(keepInfo))
+	outOrder := make([]string, 0, len(keepInfo))
+	// Walk in source order, emitting only kept keys. This mirrors upstream's
+	// per-key membership test against INFO_to_keep while preserving the input
+	// ordering of the INFO column. Keys present in the map but absent from
+	// `order` (only possible for hand-built variants without InfoOrder) are
+	// appended afterwards in deterministic sorted order.
+	emitted := make(map[string]struct{}, len(keepInfo))
+	for _, k := range order {
+		if _, hit := keepInfo[k]; !hit {
+			continue
+		}
+		if _, dup := emitted[k]; dup {
+			continue
+		}
+		if v, ok := info[k]; ok {
+			out[k] = promote(v)
+			outOrder = append(outOrder, k)
+			emitted[k] = struct{}{}
+		}
+	}
+	var extras []string
 	for k, v := range info {
 		if _, hit := keepInfo[k]; !hit {
 			continue
 		}
-		out[k] = v
+		if _, done := emitted[k]; done {
+			continue
+		}
+		out[k] = promote(v)
+		extras = append(extras, k)
 	}
-	return out
+	sort.Strings(extras)
+	outOrder = append(outOrder, extras...)
+	return out, outOrder
 }
 
 // getInfoRunner streams variants and writes <prefix>.INFO with chosen INFO
