@@ -35,6 +35,8 @@ Options:
                            interval (do not split it).
   -f, --min-fraction NUM   Only subtract an individual B interval from A when
                            that overlap covers at least NUM (0..1) of A.
+  -r, --reciprocal         Require that the overlap cover at least -f of BOTH
+                           A and B (reciprocal overlap). Use solely with -f.
   -N, --removeSum          Drop A entirely when the union of all overlapping B
                            intervals covers more than -f of A (per-B fraction
                            filtering disabled); otherwise emit A unchanged.
@@ -82,6 +84,9 @@ func main() {
 
 	var minFraction float64
 	cliflag.Float64Var(fs, &minFraction, "f", "min-fraction", 0, "Min overlap fraction of A")
+
+	var reciprocal bool
+	cliflag.BoolVar(fs, &reciprocal, "r", "reciprocal", false, "Require -f of both A and B")
 
 	var removeSum bool
 	cliflag.BoolVar(fs, &removeSum, "N", "removeSum", false, "Drop A when the union of B overlaps covers more than -f of A")
@@ -134,6 +139,7 @@ func main() {
 	opts := bedsubtract.Options{
 		RemoveEntire:   removeEntire,
 		MinFraction:    minFraction,
+		Reciprocal:     reciprocal,
 		RemoveSum:      removeSum,
 		SameStrand:     sameStrand,
 		OppositeStrand: oppositeStrand,

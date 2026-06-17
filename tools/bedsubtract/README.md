@@ -29,6 +29,10 @@ bedsubtract -a <fileA.bed> -b <fileB.bed> [options]
 - `-A` - If any part of A overlaps B, drop the entire A interval
 - `-f, --min-fraction NUM` - Only subtract an individual B interval when that
   overlap covers at least NUM (0..1) of A
+- `-r, --reciprocal` - Require that the overlap cover at least `-f` of **both**
+  A and B (reciprocal overlap). Use solely with `-f`; matches upstream, which
+  sets the B-side overlap fraction equal to the A-side when `-f` and `-r` are
+  given. `-r` without `-f` behaves like plain subtraction.
 - `-N, --removeSum` - Drop A entirely when the union of all overlapping B
   intervals covers more than `-f` of A (per-B fraction filtering disabled);
   otherwise emit A unchanged. Requires `-f` in (0.0, 1.0]
@@ -48,6 +52,9 @@ bedsubtract -a genes.bed -b blacklist.bed -A > clean_genes.bed
 
 # Strand-aware subtraction
 bedsubtract -a a.bed -b b.bed -s > out.bed
+
+# Reciprocal: only subtract when the overlap covers >= 50% of both A and B
+bedsubtract -a a.bed -b b.bed -f 0.5 -r > out.bed
 
 # Stream A from stdin
 cat a.bed | bedsubtract -a - -b b.bed > out.bed

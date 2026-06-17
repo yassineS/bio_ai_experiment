@@ -85,6 +85,24 @@ gaps were closed and parity-validated against the vendored upstream binaries:
   and **GFF** to `bedmap`. `bedclosest` gained multi-database
   `-b … -names/-filenames/-mdb` and `-s`/`-S`/`-N`. Flag-mapping bugs fixed:
   `bedsubtract -N`, `bedmerge -S`/`--delim`, `bedjaccard -S`, `bedcomplement -L`.
+- **bedtools family — fisher/subtract/summary/annotate parity (2026-06-17).**
+  Four pipeline-found divergences closed and byte-validated vs upstream 2.31.1
+  (each tool gained a `live_parity_test.go` that runs the vendored binary and
+  `t.Fatalf`s if it is absent, plus binary-free `TestUnit*`): (1) **bedfisher**
+  was under-counting overlaps — the overlap counter binary-searched on `ChromEnd`
+  over a start-sorted B slice (invalid: `ChromEnd` is not monotonic there, so a
+  long early-starting B was skipped), which skewed n11/n12/n21/n22 and the
+  p-values; it now scans every B with `ChromStart < A.End` and tests the end
+  per record. Also `-m` now merges **both** inputs (A and B), matching upstream's
+  `FileRecordMergeMgr`. (2) **bedsubtract** gained the reciprocal `-r` flag
+  (require `-f` of both A and B). (3) **bedsummary** was rewritten to the exact
+  upstream 10-column output (chrom_length / chrom_frac_genome / frac_all_ivls /
+  frac_all_bp columns, genome-file row ordering, fixed-9 precision, the
+  per-data-row trailing tab, the `-1` default row, literal `1.0` on the `all`
+  row) and now requires `-g`. (4) **bedannotate** no longer prints a spurious
+  header without `-names` and now reproduces upstream's per-chromosome/per-UCSC-bin
+  record ordering (the `getBin` function was ported); `-names` is variadic and
+  the header pads the `#` with `bedType-1` tabs.
 - **bcftools.** `view -s` recomputes INFO/AC/AN (`-I` to suppress); `view -v/-V`
   type selectors; `query` position tokens (`%POS0/%END/%END0/%FIRST_ALT/%IS_TS`);
   three **BCF writer** encoding fixes (missing-value sentinels, GT-missing,

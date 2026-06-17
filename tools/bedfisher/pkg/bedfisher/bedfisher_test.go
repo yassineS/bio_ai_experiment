@@ -107,9 +107,38 @@ func TestMergeA(t *testing.T) {
 	if resNoM.QueryCount != 4 {
 		t.Errorf("without -m expected qc=4, got %d", resNoM.QueryCount)
 	}
-	resM, _ := runFisher(t, a, b, g, Options{MergeA: true})
+	resM, _ := runFisher(t, a, b, g, Options{MergeInputs: true})
 	if resM.QueryCount != 3 {
 		t.Errorf("with -m expected qc=3, got %d", resM.QueryCount)
+	}
+}
+
+// TestUnit_OverlapCount_NonMonotonicEnds is a binary-free regression for the
+// overlap-counting bug the parity pipeline found. B is sorted by start, but a
+// long early-starting B (5-100) extends past the start of A (50-60). The old
+// code binary-searched on ChromEnd over the start-sorted slice — invalid,
+// because ChromEnd is not monotonic — and skipped that pair, under-counting.
+// The correct count here is 2: A(50,60) overlaps both B(5,100) and B(55,65).
+func TestUnit_OverlapCount_NonMonotonicEnds(t *testing.T) {
+	a := "chr1\t50\t60\n"
+	b := "chr1\t5\t100\nchr1\t10\t12\nchr1\t55\t65\n"
+	g := "chr1\t1000\n"
+	res, _ := runFisher(t, a, b, g, Options{})
+	if res.OverlapPair != 2 {
+		t.Fatalf("expected 2 overlaps (long early B must still be counted), got %d", res.OverlapPair)
+	}
+}
+
+// TestUnit_OverlapCount_DuplicateAcrossA verifies a single B that overlaps
+// several (self-overlapping) A records is counted once per A — the same
+// intersection-pair accounting upstream's chromsweep uses.
+func TestUnit_OverlapCount_DuplicateAcrossA(t *testing.T) {
+	a := "chr1\t10\t30\nchr1\t20\t40\nchr1\t25\t50\n"
+	b := "chr1\t22\t28\n" // overlaps all three A records.
+	g := "chr1\t1000\n"
+	res, _ := runFisher(t, a, b, g, Options{})
+	if res.OverlapPair != 3 {
+		t.Fatalf("expected 3 overlap pairs (one per overlapping A), got %d", res.OverlapPair)
 	}
 }
 

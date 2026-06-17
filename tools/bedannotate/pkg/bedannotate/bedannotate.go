@@ -45,14 +45,53 @@ const (
 type Options struct {
 	// Mode selects the output shape. Default = ModeFraction.
 	Mode Mode
-	// Names is the header label for each B file. When empty, no header
-	// line is emitted. When supplied via the CLI, the caller fills this
-	// from -names / file basenames.
+	// Names holds the per-B header labels supplied via -names. A header line
+	// is emitted ONLY when this is non-empty, matching upstream's
+	// `if (_annoTitles.size() > 0) PrintHeader()`. The CLI must leave this nil
+	// when -names is absent (file basenames do NOT trigger a header).
 	Names []string
+	// BedType is the column count of the main (-i) file, used to pad the
+	// header's leading hash (upstream prints bedType-1 tabs after '#'). When
+	// zero it is inferred from the first A record's column count.
+	BedType int
 	// SameStrand: -s, require A.Strand == B.Strand.
 	SameStrand bool
 	// OppositeStrand: -S, require A.Strand != B.Strand.
 	OppositeStrand bool
+}
+
+// ucscBin replicates bedtools' getBin (src/utils/bedFile/bedFile.h): it maps a
+// [start, end) interval to a UCSC binning-scheme bin. The annotate output is
+// grouped per chromosome then ordered by ascending bin (and insertion order
+// within a bin), so reproducing this function is required for byte-for-byte
+// record ordering.
+func ucscBin(start, end int) int {
+	const (
+		binFirstShift = 14
+		binNextShift  = 3
+		binLevels     = 8
+	)
+	binOffsetsExtended := [binLevels]int{
+		262144 + 32678 + 4096 + 512 + 64 + 8 + 1,
+		32678 + 4096 + 512 + 64 + 8 + 1,
+		4096 + 512 + 64 + 8 + 1,
+		512 + 64 + 8 + 1,
+		64 + 8 + 1,
+		8 + 1,
+		1,
+		0,
+	}
+	end--
+	s := start >> binFirstShift
+	e := end >> binFirstShift
+	for i := 0; i < binLevels; i++ {
+		if s == e {
+			return binOffsetsExtended[i] + s
+		}
+		s >>= binNextShift
+		e >>= binNextShift
+	}
+	return 0
 }
 
 // Run reads A from aR and the N B files from bRs in order, indexes each B
@@ -73,18 +112,24 @@ func Run(aR io.Reader, bRs []io.Reader, out io.Writer, opts Options) (int, error
 		trees[i] = t
 	}
 
-	bw := bufio.NewWriter(out)
-	defer bw.Flush()
-
-	// Optional header line.
-	if len(opts.Names) > 0 {
-		writeHeader(bw, opts.Names, opts.Mode)
+	// Read every A record, preserving its raw columns and recording its UCSC
+	// bin. Upstream loads the main file into a map<chrom, map<bin, vector>> and
+	// reports in that order: chromosome (lexicographic), then ascending bin,
+	// then insertion order within a bin. We reproduce that exact ordering.
+	type aRecord struct {
+		rec    *bed.Record
+		fields []string
+		bin    int
+		seq    int // input order, used as the within-bin tiebreaker
 	}
+	byChromBin := map[string][]*aRecord{}
+	var chroms []string
+	bedType := 0
 
 	sc := bufio.NewScanner(aR)
 	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
-	count := 0
 	lineNo := 0
+	seq := 0
 	for sc.Scan() {
 		lineNo++
 		raw := sc.Text()
@@ -95,50 +140,90 @@ func Run(aR io.Reader, bRs []io.Reader, out io.Writer, opts Options) (int, error
 		}
 		fields := strings.Split(raw, "\t")
 		if len(fields) < 3 {
-			return count, fmt.Errorf("line %d: BED record needs >=3 columns: %q", lineNo, raw)
+			return 0, fmt.Errorf("line %d: BED record needs >=3 columns: %q", lineNo, raw)
 		}
 		rec, err := parseRecord(fields)
 		if err != nil {
-			return count, fmt.Errorf("line %d: %w", lineNo, err)
+			return 0, fmt.Errorf("line %d: %w", lineNo, err)
 		}
-		// Emit original columns first.
-		if _, err := bw.WriteString(strings.Join(fields, "\t")); err != nil {
-			return count, err
+		if bedType == 0 {
+			bedType = len(fields)
 		}
-		// Then per-B columns.
-		for i, t := range trees {
-			matches := selectOverlapping(rec, t[rec.Chrom], opts)
-			cnt := len(matches)
-			frac := coveredFraction(rec, matches)
-			switch opts.Mode {
-			case ModeCounts:
-				fmt.Fprintf(bw, "\t%d", cnt)
-			case ModeBoth:
-				fmt.Fprintf(bw, "\t%d\t%f", cnt, frac)
-			default:
-				fmt.Fprintf(bw, "\t%f", frac)
-			}
-			_ = i
+		if _, seen := byChromBin[rec.Chrom]; !seen {
+			chroms = append(chroms, rec.Chrom)
 		}
-		if err := bw.WriteByte('\n'); err != nil {
-			return count, err
-		}
-		count++
+		byChromBin[rec.Chrom] = append(byChromBin[rec.Chrom], &aRecord{
+			rec: rec, fields: fields, bin: ucscBin(rec.ChromStart, rec.ChromEnd), seq: seq,
+		})
+		seq++
 	}
 	if err := sc.Err(); err != nil {
-		return count, err
+		return 0, err
+	}
+
+	bw := bufio.NewWriter(out)
+	defer bw.Flush()
+
+	// Header line: emitted ONLY when explicit -names labels were given.
+	if len(opts.Names) > 0 {
+		ht := opts.BedType
+		if ht == 0 {
+			ht = bedType
+		}
+		if ht == 0 {
+			ht = 1
+		}
+		writeHeader(bw, opts.Names, opts.Mode, ht)
+	}
+
+	// Iterate chromosomes lexicographically.
+	sort.Strings(chroms)
+	count := 0
+	for _, chrom := range chroms {
+		recs := byChromBin[chrom]
+		// Stable order by (bin asc, input order). Upstream's std::map orders by
+		// bin; within a bin the vector keeps insertion (input) order.
+		sort.SliceStable(recs, func(i, j int) bool {
+			if recs[i].bin != recs[j].bin {
+				return recs[i].bin < recs[j].bin
+			}
+			return recs[i].seq < recs[j].seq
+		})
+		for _, ar := range recs {
+			if _, err := bw.WriteString(strings.Join(ar.fields, "\t")); err != nil {
+				return count, err
+			}
+			for _, t := range trees {
+				matches := selectOverlapping(ar.rec, t[ar.rec.Chrom], opts)
+				cnt := len(matches)
+				frac := coveredFraction(ar.rec, matches)
+				switch opts.Mode {
+				case ModeCounts:
+					fmt.Fprintf(bw, "\t%d", cnt)
+				case ModeBoth:
+					fmt.Fprintf(bw, "\t%d\t%f", cnt, frac)
+				default:
+					fmt.Fprintf(bw, "\t%f", frac)
+				}
+			}
+			if err := bw.WriteByte('\n'); err != nil {
+				return count, err
+			}
+			count++
+		}
 	}
 	return count, nil
 }
 
-// writeHeader emits the "#<TAB>...<TAB>name1<TAB>name2..." header line.
-// Upstream pads the leading hash with `bedType-1` empty tabs so the
-// labels line up with the first appended column; we don't know bedType
-// at header time without peeking, so we emit a single '#' and then the
-// labels, which matches what upstream does for `bedType=1` and is still
-// machine-parseable. With `-both`, each label is split into `_cnt`/`_pct`.
-func writeHeader(w *bufio.Writer, names []string, mode Mode) {
+// writeHeader emits the "#<TAB>...<TAB>name1<TAB>name2..." header line,
+// matching upstream's PrintHeader: a '#' followed by bedType-1 empty tabs (so
+// the first label aligns under the first appended column), then one tab plus
+// each label. With -both, each label is split into `_cnt`/`_pct`.
+func writeHeader(w *bufio.Writer, names []string, mode Mode, bedType int) {
 	w.WriteByte('#')
+	for i := 1; i < bedType; i++ {
+		w.WriteByte('\t')
+	}
 	if mode == ModeBoth {
 		for _, n := range names {
 			fmt.Fprintf(w, "\t%s_cnt\t%s_pct", n, n)
@@ -218,21 +303,28 @@ func selectOverlapping(a *bed.Record, t *bed.IntervalTree, opts Options) []*bed.
 	return out
 }
 
-// strandOK applies the -s / -S filters.
+// strandOK applies the -s / -S filters. Upstream annotate compares the strand
+// strings directly (strands_are_same = a.strand == b.strand) with no special
+// handling for missing strands, so two BED3 records (both with the default
+// strand) compare as same-strand. We replicate that raw comparison: normalise
+// the empty default to "." (the value upstream's BED parser uses) so BED3 vs
+// BED3 counts as same-strand under -s.
 func strandOK(a, b *bed.Record, opts Options) bool {
+	if !opts.SameStrand && !opts.OppositeStrand {
+		return true
+	}
+	sa, sb := a.Strand, b.Strand
+	if sa == "" {
+		sa = "."
+	}
+	if sb == "" {
+		sb = "."
+	}
+	same := sa == sb
 	if opts.SameStrand {
-		if a.Strand == "" || b.Strand == "" {
-			return false
-		}
-		return a.Strand == b.Strand
+		return same
 	}
-	if opts.OppositeStrand {
-		if a.Strand == "" || b.Strand == "" {
-			return false
-		}
-		return a.Strand != b.Strand
-	}
-	return true
+	return !same // OppositeStrand
 }
 
 // coveredFraction returns the fraction of A's length covered by at least
@@ -266,20 +358,4 @@ func coveredFraction(a *bed.Record, matches []*bed.Record) float64 {
 		}
 	}
 	return float64(n) / float64(lenA)
-}
-
-// DefaultNames derives a label per file from the trailing path component
-// of each filename, mirroring upstream's behaviour when -names is omitted
-// but a header is still desirable.
-func DefaultNames(paths []string) []string {
-	out := make([]string, len(paths))
-	for i, p := range paths {
-		// Strip everything up to and including the last '/'.
-		base := p
-		if idx := strings.LastIndex(p, "/"); idx >= 0 {
-			base = p[idx+1:]
-		}
-		out[i] = base
-	}
-	return out
 }

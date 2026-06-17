@@ -11,9 +11,14 @@ one or more secondary BED files (`--files`).
 - `--counts` emits the count of overlapping records per B.
 - `--both` interleaves count + fraction per B (2N columns total).
 - Strand filters: `-s` (same-strand only), `-S` (opposite-strand only).
-- Optional `--names` header (or basenames are used by default).
+  Strand comparison matches upstream's raw-string semantics: two records with
+  no strand (BED3, defaulting to `.`) count as same-strand under `-s`.
+- A `#` header line is emitted **only** when `-names` is given (matching
+  upstream — file basenames do NOT trigger a header).
+- Records are reported grouped by chromosome (lexicographic), then by UCSC
+  bin (matching upstream's `map<chrom, map<bin, ...>>` iteration order).
 - Interval-tree based overlap (`pkg/htsgo/bed.IntervalTree`) — one
-  tree per B file built once, then A is streamed.
+  tree per B file built once, then A is buffered, bin-sorted, and emitted.
 - Pure Go, no third-party dependencies.
 - Transparent gzip/BGZF input on every input and `-` for stdin on `-i`.
 
@@ -33,7 +38,9 @@ bedannotate -i <A.bed> --files <B1.bed> [<B2.bed> ...] [options]
 
 - `-i, --input FILE`     A intervals (required, `-` for stdin)
 - `--files FILE..`       One or more B files (variadic; stops at next flag)
-- `--names N1,N2,..`     Comma-separated header labels (default: basenames)
+- `--names N1 N2 ..`     Header labels (variadic, like upstream; a single
+                         comma-separated token `b1,b2` is also accepted). A
+                         header line is emitted only when this flag is given.
 - `--counts`             Emit per-B count of overlapping records
 - `--both`               Emit count and coverage fraction per B (interleaved)
 - `-s, --strand`         Same-strand overlaps only
@@ -48,36 +55,33 @@ bedannotate -i <A.bed> --files <B1.bed> [<B2.bed> ...] [options]
 chrom <TAB> start <TAB> end <TAB> ...A columns... <TAB> <col_per_B>...
 ```
 
-With `--names`, a leading `#` header line precedes the data:
+With `--names`, a leading `#` header line precedes the data. The `#` is padded
+with `bedType-1` tabs (so the first label aligns under the first appended
+column), exactly as upstream emits it — for a BED3 main file:
 
 ```text
-# <TAB> exons <TAB> introns
+#<TAB><TAB><TAB>exons<TAB>introns
 ```
 
 With `--both`, the header splits each name into `<name>_cnt` and
 `<name>_pct`.
 
-## Deviations from upstream
+## Parity
 
-- Upstream's leading-header padding aligns the `#` over A's bedType
-  column; we emit a single `#` followed by the per-B labels. The
-  parity test accepts the data rows as the source of truth and treats
-  the header padding as a cosmetic deviation.
-- Variadic `--files` is parsed by collecting positional values after
-  `-files` / `--files` up to the next `-`-prefixed token. This mirrors
-  upstream's parser.
+The fixtures under `testdata/parity/` have expected outputs generated directly
+from the upstream `bedtools annotate` binary, and `live_parity_test.go` runs the
+real vendored binary and asserts byte-for-byte equality over multi-file `-files`
+inputs (default / `-counts` / `-both -names`), a 500-interval/4-chromosome
+ordering stress, and the `-s` / `-S` strand cases. This locks in the two fixes
+the parity pipeline found: the port no longer emits a spurious header without
+`-names`, and it now reproduces upstream's per-chromosome/per-UCSC-bin record
+ordering (previously it emitted records in input order).
 
 ## Tests
 
 ```bash
 go test ./tools/bedannotate/...
 ```
-
-The parity fixtures under `testdata/parity/` are hand-computed. Upstream
-ships no `annotate/` test directory under
-`reference_code/bedtools/test/`, so the expected outputs were derived
-against the upstream algorithm in
-`reference_code/bedtools/src/annotateBed/annotateBed.cpp`.
 
 ## Performance
 

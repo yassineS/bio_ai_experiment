@@ -116,7 +116,7 @@ func run(argv []string, stdout, stderr *os.File) error {
 		Reciprocal:     reciprocal,
 		SameStrand:     same,
 		OppositeStrand: opposite,
-		MergeA:         mergeA,
+		MergeInputs:    mergeA,
 	}
 	if _, err := bedfisher.Run(rA, rB, gF, w, opts); err != nil {
 		return err

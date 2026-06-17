@@ -64,7 +64,7 @@ func TestParity_Fisher_T3(t *testing.T) {
 // fisher.t4 — same as t3 but with -m: the overlapping records in
 // a_merge.bed are pre-merged, dropping the query count from 4 to 3.
 func TestParity_Fisher_T4(t *testing.T) {
-	got := runFisherParity(t, "a_merge.bed", "b.bed", "t.60.genome", Options{MergeA: true})
+	got := runFisherParity(t, "a_merge.bed", "b.bed", "t.60.genome", Options{MergeInputs: true})
 	want := readFisherParity(t, "t4.expected.txt")
 	if !bytes.Equal(got, want) {
 		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
