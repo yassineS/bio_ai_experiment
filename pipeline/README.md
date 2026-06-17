@@ -171,7 +171,7 @@ The driver consumes `matrix.Default()`.
 | family | file | tools | how compared |
 |--------|------|-------|--------------|
 | htslib core | `smoke.go` | `samtools view`, `bcftools view`/`query` | byte-exact stdout |
-| bedtools | `smoke.go` | `bedintersect` (→ `bedtools intersect`) | byte-exact stdout |
+| bedtools | `smoke.go` + `bedtools.go` | all 41 bed\* tools (each maps to one `bedtools <sub>`) | byte-exact stdout (text tools) / byte-exact **output files** (`bedsplit`) |
 | QC / format | `qc.go` | `seqtk` (23 subcommands), `prinseq`, `sickle`, `skewer`, `fastp` | seqtk byte-exact stdout; prinseq/sickle byte-exact **output files**; skewer byte-exact stdout (per-side args); fastp documented Skips + one Similarity |
 | vcftools | `vcftools.go` | `vcftools` (freq/counts/depth/pi/TsTv/het/relatedness/recode/…) | byte-exact **output files** (the `<prefix>.<ext>` the mode writes) |
 | mosdepth | `mosdepth.go` | `mosdepth` (per-base, `--by`, thresholds, fast-mode, mapq) | byte-exact **output files** (decompressed `.bed.gz` + summary/dist) |
@@ -195,6 +195,49 @@ the matrix surfaced (so it is visible without breaking the run):
 - **fastp** — default filtering, the `cut_tail` window boundary, and the
   JSON/HTML report stamps make generic byte/similarity comparison impractical;
   the per-tool suite owns fastp's byte-exact algorithm validation.
+
+The **bedtools** matrix (`bedtools.go`) registers curated combinatorics for all
+41 bed\* tools over the shared `{bed}`/`{bed12}`/`{genome}`/`{fasta}`/`{bam}`
+fixtures (baseline + per-flag + curated Combos, never the power set). Most are
+byte-exact stdout; `bedsplit` uses the output-file path. The RNG tools
+(`bedsample`/`bedrandom`/`bedshuffle`) are byte-exact under a fixed `-seed` —
+our port reproduces upstream's MT19937 stream exactly. The matrix runs
+PASS/SKIP-only; its documented `Skip`s record *real* divergences (each names a
+concrete root cause + owner) flagged for follow-up by the bedtools agent:
+
+- **bednuc** — PANICS on every invocation: the `seq` long flag is registered
+  twice (`cliflag.BoolVar` then `fs.BoolVar`), so `flag.Var` aborts with "flag
+  redefined: seq". The whole tool is unrunnable.
+- **interval-sort tie-break** — equal-`(chrom,start)` records are ordered by end
+  ascending where upstream uses a stable sort preserving input order. Surfaces
+  in `bedsort` (default + `-sizeD`/score keys), `bedmap`/`bedmerge`
+  `-o collapse|distinct`, and `bedwindow` B-hit order. Order-independent ops
+  (mean/sum/min/max/count/…) are byte-exact and run; `-sizeA`/`-chrThenSizeA`
+  sorts are byte-exact.
+- **bedwindow (join)** — `-w` default is 0 vs upstream 1000, BED12 `-b` records
+  are truncated to 6 columns, plus the tie-break order above; the `-v`/`-c`
+  (A-only) outputs are byte-exact.
+- **bedfisher** — under-counts overlaps (13134 vs the true 14356 that both
+  `bedtools intersect` ports agree on), skewing the contingency table/p-values.
+- **bed12tobed6** — drops the BED12 score (emits 0) on each split record.
+- **bedexpand** — a trailing comma in the expanded column yields an extra empty
+  expansion row.
+- **bedmakewindows** — the default `-i none` is rejected by our own parser; `-i
+  src` emits an empty name column. `-i winnum`/`-i srcwinnum` are byte-exact.
+- **bedsummary** — different output table (missing chrom_length/frac columns)
+  and the CLI does not accept upstream's required `-g`.
+- **bedannotate** — prepends a `# <file>` header upstream omits and orders
+  records differently.
+- **bedsubtract** — no reciprocal `-r` flag (upstream has it); other flags pass.
+- **bedsplit** — the default `size` heuristic bin-packs differently; `-a simple`
+  is byte-exact.
+- **bedtobam** — raw BGZF stdout (block framing differs; decoded records are
+  identical, per project policy binary BGZF is never byte-compared).
+- **bedtag** — different model (upstream tags a BAM/writes BAM; ours is
+  BED-in/BED-out), not comparable.
+- **bedoverlap / bedunionbedg / bedpairtobed / bedpairtopair** — need a
+  pre-joined stream or BEDPE/BedGraph input the fixture corpus does not generate;
+  all match out-of-band on crafted inputs and are owned by the per-tool suites.
 
 ### Combinatorics expander (curated, NOT power set)
 
