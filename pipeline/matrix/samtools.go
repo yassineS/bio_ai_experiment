@@ -253,9 +253,16 @@ func samtoolsBinaryOutputSkips() []Entry {
 			"the degenerate self-merge (distinct-input merge is byte-exact when decoded). Owned by the samtools agent.",
 			"-f", "-", "{bam}", "{bam}"),
 		bamOut("reheader", "-c", "cat", "{bam}"),
-		skip("split", "", "samtools split writes one BGZF BAM per read group to a directory of files (not byte-comparable and not a single "+
-			"stdout/prefix the runner compares). Owned by the samtools agent.",
-			"-f", "%*_%!.bam", "{bam}"),
+		// split writes one BGZF BAM per read group. The fixture carries a single
+		// read group (rg1), so split emits out_rg1.bam under each side's out dir;
+		// the runner decodes both through samtools view (BAMDecoded) and compares
+		// the records, bypassing BGZF framing and the @PG provenance line.
+		{
+			Tool: "samtools", Subcommand: "split", UsesSubcommand: true,
+			Name: "samtools_split", Input: InputBAM, Compare: BAMDecoded,
+			Args:        []string{"-f", "{out}_%!.bam", "{bam}"},
+			OutputFiles: []string{"_rg1.bam"},
+		},
 		// import: FASTQ -> unaligned BAM. Decode both sides' BAM and compare.
 		{
 			Tool: "samtools", Subcommand: "import", UsesSubcommand: true,
