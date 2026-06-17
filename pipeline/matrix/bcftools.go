@@ -30,10 +30,11 @@ import (
 // -s, -c/-C/-q/-Q, -G, -I), query (-f formats, -i/-e, -l), norm (-m/-f/-d),
 // stats, filter, sort, head, annotate (-x), concat (-a), gtcheck, mpileup,
 // roh, consensus (default IUPAC), reheader (-s sample rename, BGZF-decoded),
-// and fill-tags / split-vep plugin smoke.
-// Documented Skips: call, csq, isec, merge — the residual deep-internals gaps
-// (QUAL precision, csq haplotype engine, isec shared-file directory layout,
-// merge maux/INFO-combine), spelled out per entry.
+// isec (-p Venn decomposition: the four 000N.vcf files + sites.txt, compared
+// via OutputFiles), and fill-tags / split-vep plugin smoke.
+// Documented Skips: call, csq, merge — the residual deep-internals gaps
+// (QUAL precision, csq haplotype engine, merge maux/INFO-combine), spelled out
+// per entry.
 
 func init() {
 	Register(bcftoolsViewMatrix()...)
@@ -289,11 +290,19 @@ func bcftoolsSkips() []Entry {
 				"depends on a neighbouring variant points at a different position (ours @12677 vs upstream @16827) and the packed FORMAT/BCSQ "+
 				"index differs. A deep csq haplotype-engine divergence; the per-tool suite covers the single-variant cases byte-exact.",
 			"--force", "-f", "{fasta}", "-g", "{gff}", "-p", "a", "{vcf_plain}"),
-		skip("isec", "isec",
-			"bcftools isec -p writes a DIRECTORY of 000N.vcf files (plus README/sites.txt), not a stdout stream the single-command runner "+
-				"can diff. Two real gaps remain: our port writes 0000/0001 (private) but not the 0002/0003 shared-record files upstream emits, "+
-				"and the -p directory layout is outside the runner's {out}-prefix OutputFiles model. Needs a directory-aware comparison.",
-			"-p", "{out}", "{vcf}", "{vcf}"),
+		// isec -p writes the four-way Venn decomposition (0000 private to input
+		// 1, 0001 private to input 2, 0002/0003 the shared records from each
+		// input) plus sites.txt into a directory. The four VCFs and sites.txt
+		// are byte-exact (provenance-stripped); README.txt embeds the per-run
+		// prefix/input paths (provenance), so it is left out of the comparison.
+		// The {out}-prefix names the directory, so the OutputFiles suffixes are
+		// the in-directory file names.
+		{
+			Tool: "bcftools", Subcommand: "isec", UsesSubcommand: true,
+			Name: "bcftools_isec", Input: InputVCF, Compare: ByteExact,
+			Args:        []string{"-p", "{out}", "{vcf}", "{vcf_multi}"},
+			OutputFiles: []string{"/0000.vcf", "/0001.vcf", "/0002.vcf", "/0003.vcf", "/sites.txt"},
+		},
 		// --force-samples sample renaming works, but two deeper merge-maux gaps
 		// remain on this fixture (which has intra-position duplicate records,
 		// e.g. rs795 AND rs796 both G>A at chr1:101511): (1) our bucketize

@@ -144,6 +144,65 @@ func TestIsecPrefixMode(t *testing.T) {
 	}
 }
 
+// TestIsecVennMode verifies the two-input, no-constraint Venn decomposition:
+// records private to input 1 -> 0000, private to input 2 -> 0001, shared
+// records -> 0002 (input-1 copy) and 0003 (input-2 copy), and one sites.txt
+// line per matched occurrence (including intra-position duplicates paired
+// across inputs).
+func TestIsecVennMode(t *testing.T) {
+	a := isecVCF(
+		"chr1\t100\trs1\tA\tT\t.\tPASS\t.\tGT\t0/1", // shared
+		"chr1\t150\trsA\tG\tC\t.\tPASS\t.\tGT\t0/1", // private to A
+		"chr1\t200\trs2\tA\tT\t.\tPASS\t.\tGT\t0/1", // duplicate key, shared
+		"chr1\t200\trs3\tA\tT\t.\tPASS\t.\tGT\t0/1", // duplicate key, shared
+	)
+	b := isecVCF(
+		"chr1\t100\trs1\tA\tT\t.\tPASS\t.\tGT\t0/1", // shared
+		"chr1\t180\trsB\tT\tA\t.\tPASS\t.\tGT\t0/1", // private to B
+		"chr1\t200\trs2\tA\tT\t.\tPASS\t.\tGT\t0/1", // pairs with A's first 200
+	)
+	paths := writeIsecInputs(t, []string{a, b})
+	prefixDir := t.TempDir()
+	if _, err := IsecFiles(paths, &bytes.Buffer{}, IsecOptions{Prefix: prefixDir}); err != nil {
+		t.Fatal(err)
+	}
+	read := func(name string) string {
+		b, err := os.ReadFile(filepath.Join(prefixDir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		return string(b)
+	}
+	for _, name := range []string{"0000.vcf", "0001.vcf", "0002.vcf", "0003.vcf", "sites.txt", "README.txt"} {
+		if _, err := os.Stat(filepath.Join(prefixDir, name)); err != nil {
+			t.Errorf("missing %s: %v", name, err)
+		}
+	}
+	if f0 := read("0000.vcf"); !strings.Contains(f0, "rsA") || strings.Contains(f0, "rs1") {
+		t.Errorf("0000.vcf (private to A) wrong:\n%s", f0)
+	}
+	if f1 := read("0001.vcf"); !strings.Contains(f1, "rsB") || strings.Contains(f1, "rs1") {
+		t.Errorf("0001.vcf (private to B) wrong:\n%s", f1)
+	}
+	// rs1 + the two 200 records: A's first 200 pairs with B's 200 (shared);
+	// A's second 200 has no B partner (private to A -> 0000).
+	if f2 := read("0002.vcf"); !strings.Contains(f2, "rs1") || !strings.Contains(f2, "rs2") {
+		t.Errorf("0002.vcf (shared, A copy) wrong:\n%s", f2)
+	}
+	if f3 := read("0003.vcf"); !strings.Contains(f3, "rs1") {
+		t.Errorf("0003.vcf (shared, B copy) wrong:\n%s", f3)
+	}
+	// The unpaired second chr1:200 record from A is private to A.
+	if f0 := read("0000.vcf"); !strings.Contains(f0, "rs3") {
+		t.Errorf("0000.vcf should hold the unpaired duplicate rs3:\n%s", f0)
+	}
+	// README uses upstream's "for records private to" / "shared by both" legend.
+	if rm := read("README.txt"); !strings.Contains(rm, "for records private to") ||
+		!strings.Contains(rm, "shared by both") || !strings.Contains(rm, "produced by vcfisec") {
+		t.Errorf("README.txt legend wrong:\n%s", rm)
+	}
+}
+
 func TestParseNfilesSpec(t *testing.T) {
 	type want struct {
 		mode byte
