@@ -106,6 +106,39 @@ func TestSizeBins_BalancesByLength(t *testing.T) {
 	}
 }
 
+// TestUnit_SizeBins_WithinBinOrderIsSizeDesc verifies (binary-free) that
+// records within a bin keep their insertion order — i.e. size-descending,
+// since records are processed largest-first. Upstream writes each split's
+// items in the order they were added, so we must NOT re-sort the bin back
+// into input order.
+func TestUnit_SizeBins_WithinBinOrderIsSizeDesc(t *testing.T) {
+	// Distinct lengths so the sort order is unambiguous. With n=1 every
+	// record lands in the single bin, exposing the within-bin order directly.
+	records := []record{
+		{length: 100, line: "r1"},
+		{length: 250, line: "r2"},
+		{length: 90, line: "r3"},
+		{length: 300, line: "r4"},
+	}
+	bins := sizeBins(records, 1)
+	if len(bins) != 1 {
+		t.Fatalf("want 1 bin, got %d", len(bins))
+	}
+	var gotLengths []int
+	for _, ix := range bins[0] {
+		gotLengths = append(gotLengths, records[ix].length)
+	}
+	want := []int{300, 250, 100, 90} // size-descending insertion order
+	if len(gotLengths) != len(want) {
+		t.Fatalf("bin size %d, want %d", len(gotLengths), len(want))
+	}
+	for i := range want {
+		if gotLengths[i] != want[i] {
+			t.Fatalf("within-bin order = %v, want %v (size-descending)", gotLengths, want)
+		}
+	}
+}
+
 func TestSplit_EndToEnd_Simple(t *testing.T) {
 	dir := t.TempDir()
 	prefix := filepath.Join(dir, "out")
