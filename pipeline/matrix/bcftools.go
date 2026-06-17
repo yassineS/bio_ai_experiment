@@ -1,6 +1,11 @@
 package matrix
 
-import "os"
+import (
+	"os"
+	"path/filepath"
+
+	"github.com/yassineS/bio_ai_experiment/pipeline/internal/upstream"
+)
 
 // This file registers the COMPREHENSIVE bcftools matrix, spanning the 24 ported
 // subcommands. The smoke matrix keeps a tiny view/query slice for the loop;
@@ -183,9 +188,10 @@ func bcftoolsTextOps() []Entry {
 
 // bcftoolsPlugins adds a couple of representative +plugin smoke entries. The
 // full plugin suite is exhaustively covered by the per-tool tests; these just
-// prove the plugin dispatch path under the matrix. They require BCFTOOLS_PLUGINS
-// to point at the upstream plugins dir (the per-tool tests set this; the matrix
-// inherits the caller's environment).
+// prove the plugin dispatch path under the matrix. Upstream needs
+// BCFTOOLS_PLUGINS pointed at its compiled .so plugins; the matrix sets it
+// automatically to the vendored reference_code/bcftools/plugins build when the
+// caller has not, so these run byte-exact out of the box.
 func bcftoolsPlugins() []Entry {
 	entries := []Entry{
 		mkBcf("+fill-tags", "plugin_fill_tags", InputVCFMulti, ByteExact, "{vcf_multi}", "--", "-t", "AF"),
@@ -194,15 +200,38 @@ func bcftoolsPlugins() []Entry {
 	// Upstream bcftools loads +plugins from a shared-object directory named by
 	// BCFTOOLS_PLUGINS; without it, upstream exits non-zero while our port (whose
 	// plugins are built in) succeeds, which would be a spurious exit-mismatch
-	// DIVERGE. When the env is unset we therefore Skip these with the reason,
-	// matching how the mosdepth matrix Skips on an unsupported platform.
+	// DIVERGE. The vendored bcftools build ships the compiled .so plugins under
+	// reference_code/bcftools/plugins, so point the env at them automatically
+	// when the caller has not already set it (our pure-Go port ignores the env).
+	if os.Getenv("BCFTOOLS_PLUGINS") == "" {
+		if dir := vendoredBcftoolsPluginsDir(); dir != "" {
+			os.Setenv("BCFTOOLS_PLUGINS", dir)
+		}
+	}
 	if os.Getenv("BCFTOOLS_PLUGINS") == "" {
 		for i := range entries {
-			entries[i].Skip = "bcftools +plugin entries require BCFTOOLS_PLUGINS to point at the upstream plugins dir; it is unset, so " +
-				"upstream cannot load the plugin (the per-tool tests set this env). Set BCFTOOLS_PLUGINS to run these."
+			entries[i].Skip = "bcftools +plugin entries require BCFTOOLS_PLUGINS to point at the upstream plugins dir; the vendored " +
+				"reference_code/bcftools/plugins build was not found and the env is unset. Build the bcftools submodule (its plugins) to run these."
 		}
 	}
 	return entries
+}
+
+// vendoredBcftoolsPluginsDir returns the absolute path to the compiled bcftools
+// plugin shared objects in the vendored upstream tree, or "" if that build is
+// not present. It lets the matrix point upstream's plugin loader at the plugins
+// that ship with the reference build without requiring the operator to export
+// BCFTOOLS_PLUGINS by hand.
+func vendoredBcftoolsPluginsDir() string {
+	root, err := upstream.RepoRoot()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Join(root, "reference_code", "bcftools", "plugins")
+	if fi, err := os.Stat(filepath.Join(dir, "fill-tags.so")); err == nil && !fi.IsDir() {
+		return dir
+	}
+	return ""
 }
 
 // bcftoolsSkips records the subcommands whose output our port does not yet match
