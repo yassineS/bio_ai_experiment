@@ -201,8 +201,13 @@ func TestDepthMinMAPQ(t *testing.T) {
 }
 
 func TestDepthMinBaseQ(t *testing.T) {
-	// r8 has Phred 0 quality everywhere (ASCII '!') — should be entirely
-	// filtered out with `-q 1` (the base-quality knob).
+	// r8 has Phred 0 quality everywhere (ASCII '!'). With `-q 1` (the base-
+	// quality knob) every base fails the filter, so the depth at chr1:400..404
+	// is 0. But those positions are still INSIDE r8's read span, so upstream
+	// samtools depth emits a row for each of them with depth 0 (see
+	// reference_code/samtools/bam2depth.c: the position prints while i is
+	// within the read's [pos, bam_endpos) span; the qual filter only zeroes
+	// the count). Our port must do the same.
 	got := runDepth(t, []string{depthSAM}, DepthOptions{
 		ExcludeFlags: 0x4,
 		MinBaseQ:     1,
@@ -210,8 +215,86 @@ func TestDepthMinBaseQ(t *testing.T) {
 	pos := parseDepthOut(got)
 	for p := 400; p <= 404; p++ {
 		key := "chr1:" + itoa(p)
-		if _, ok := pos[key]; ok {
-			t.Errorf("%s should be filtered by -Q 1 (r8 quality is 0)", key)
+		if d := pos[key]; len(d) != 1 || d[0] != "0" {
+			t.Errorf("%s with -q 1 (r8 quality is 0): got %v, want depth 0 (in-span zero)", key, d)
+		}
+	}
+	// Position 405 is one past r8's span (5M from POS 400 covers 400..404)
+	// and is covered by no other read, so it must NOT be emitted.
+	if _, ok := pos["chr1:405"]; ok {
+		t.Errorf("chr1:405 is outside r8's span and should not be emitted")
+	}
+	// r1 (chr1:10..14, full-quality 'IIIII') is unaffected by the filter.
+	if d := pos["chr1:10"]; len(d) != 1 || d[0] != "1" {
+		t.Errorf("chr1:10: got %v, want 1", d)
+	}
+}
+
+// TestDepthInteriorZeroBaseQFilter reproduces the verified upstream parity
+// example for `samtools depth -q 10`: a position whose only covering base
+// fails the base-quality filter is still emitted with depth 0 because it is
+// interior to the read's covered span, bracketed by passing positions on
+// either side. Upstream prints chr1\t8\t0 between chr1\t7\t1 and chr1\t9\t1;
+// our port used to skip position 8 entirely.
+func TestDepthInteriorZeroBaseQFilter(t *testing.T) {
+	// One read at chr1:6..10 (5M). The base at the 3rd position (chr1:8) has
+	// quality '+' = Phred 10; all others are 'I' = Phred 40. With -q 11 only
+	// the chr1:8 base fails, leaving an interior depth-0 hole at chr1:8 that
+	// is still inside the read span chr1:6..10.
+	sam := `@HD	VN:1.6
+@SQ	SN:chr1	LN:100
+r1	0	chr1	6	60	5M	*	0	0	ACGTA	II+II
+`
+	got := runDepth(t, []string{sam}, DepthOptions{
+		ExcludeFlags: 0x4,
+		MinBaseQ:     11,
+	})
+	pos := parseDepthOut(got)
+	want := map[string]string{
+		"chr1:6":  "1",
+		"chr1:7":  "1",
+		"chr1:8":  "0", // the only base here is Phred 10 < 11 -> filtered, but in span
+		"chr1:9":  "1",
+		"chr1:10": "1",
+	}
+	for k, w := range want {
+		if d := pos[k]; len(d) != 1 || d[0] != w {
+			t.Errorf("%s: got %v, want depth %s", k, d, w)
+		}
+	}
+	// Leading/trailing uncovered positions are NOT emitted (no -a).
+	if _, ok := pos["chr1:5"]; ok {
+		t.Errorf("chr1:5 (before the read span) should not be emitted")
+	}
+	if _, ok := pos["chr1:11"]; ok {
+		t.Errorf("chr1:11 (after the read span) should not be emitted")
+	}
+}
+
+// TestDepthInteriorZeroDeletion verifies a deletion (CIGAR D) inside a read
+// prints depth 0 at the deleted reference positions while flanking matches
+// print their real depth — they are all inside the read's covered span.
+func TestDepthInteriorZeroDeletion(t *testing.T) {
+	// CIGAR 2M2D2M at POS=20 spans chr1:20..25 (2 match, 2 deleted, 2 match).
+	// The deleted positions chr1:22,23 carry no base => depth 0, but they are
+	// interior to the read span so they are emitted.
+	sam := `@HD	VN:1.6
+@SQ	SN:chr1	LN:100
+r1	0	chr1	20	60	2M2D2M	*	0	0	ACGT	IIII
+`
+	got := runDepth(t, []string{sam}, DepthOptions{ExcludeFlags: 0x4})
+	pos := parseDepthOut(got)
+	want := map[string]string{
+		"chr1:20": "1",
+		"chr1:21": "1",
+		"chr1:22": "0", // deleted
+		"chr1:23": "0", // deleted
+		"chr1:24": "1",
+		"chr1:25": "1",
+	}
+	for k, w := range want {
+		if d := pos[k]; len(d) != 1 || d[0] != w {
+			t.Errorf("%s: got %v, want depth %s", k, d, w)
 		}
 	}
 }
