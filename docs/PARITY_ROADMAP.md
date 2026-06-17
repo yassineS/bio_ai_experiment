@@ -185,7 +185,14 @@ errored — now implemented and pinned to the canonical AWS worked example)
 and full **S3-compatible interop** — custom endpoints (`HTS_S3_HOST`),
 `HTS_S3_ADDRESS_STYLE` path/virtual, and the GCS S3-interop XML+HMAC path
 (`s3://` against `storage.googleapis.com`, V2 and V4) — so MinIO/Ceph/Wasabi/
-Backblaze/GCS all work (Azure Blob is a separate follow-up). CRAM `MD`/`NM`
+Backblaze/GCS all work. **Azure Blob Storage** is now supported too, as a
+Go-port extension beyond htslib (which has no native Azure backend):
+`az://account/container/blob` and recognised `*.blob.core.windows.net` HTTPS
+URLs, with SAS (`AZURE_STORAGE_SAS_TOKEN`), Shared Key (`AZURE_STORAGE_ACCOUNT`
++ `AZURE_STORAGE_KEY`, hand-rolled HMAC-SHA256 signed per ranged GET so the
+signature covers the `Range` header, pinned to an Azurite-dev-key known-answer
+vector), Azure-AD bearer (`AZURE_STORAGE_TOKEN`) and anonymous auth, plus an
+`AZURE_STORAGE_BLOB_ENDPOINT` override (see `pkg/htsgo/hfile/README.md`). CRAM `MD`/`NM`
 regeneration and the network REF_PATH
 fetch are **done**; `gtcheck` `-i/-e` filter expressions and the bedtools
 KeyListOps ops are **done**. The former "non-goals" are now all implemented:

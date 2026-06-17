@@ -1022,3 +1022,273 @@ func TestReadFileNonRangeServer(t *testing.T) {
 		t.Fatalf("ReadFile(non-range server): got %d bytes, want %d", len(got), len(body))
 	}
 }
+
+// --- Azure Blob backend tests (Go-port extension) ---------------------------
+
+// azureDevKey is the well-known Azurite development account key for the
+// devstoreaccount1 account. Using it makes the Shared Key known-answer vector
+// reproducible and recognisable; it is a public test key, not a secret.
+const azureDevKey = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
+
+// TestAzureSharedKeyKnownAnswer pins the Shared Key string-to-sign and the
+// resulting Authorization header for a fixed account/key/date/resource/Range to
+// exact values, so a regression in the canonicalization or signing is caught.
+func TestAzureSharedKeyKnownAnswer(t *testing.T) {
+	in := azureSharedKeyInput{
+		Method:                "GET",
+		Range:                 "bytes=128-191",
+		XMSDate:               "Wed, 17 Jun 2026 00:00:00 GMT",
+		XMSVersion:            "2021-08-06",
+		CanonicalizedResource: "/devstoreaccount1/mycontainer/path/to/object.bam",
+	}
+
+	wantSTS := "GET\n\n\n\n\n\n\n\n\n\n\nbytes=128-191\n" +
+		"x-ms-date:Wed, 17 Jun 2026 00:00:00 GMT\n" +
+		"x-ms-version:2021-08-06\n" +
+		"/devstoreaccount1/mycontainer/path/to/object.bam"
+	if got := azureSharedKeyStringToSign(in); got != wantSTS {
+		t.Fatalf("string-to-sign mismatch:\n got %q\nwant %q", got, wantSTS)
+	}
+
+	wantAuth := "SharedKey devstoreaccount1:rFiLV/YExacX7hHP2msLtGRi89EnNIol3Xvi0s5Vn/k="
+	got, err := azureSharedKeySign("devstoreaccount1", azureDevKey, in)
+	if err != nil {
+		t.Fatalf("azureSharedKeySign: %v", err)
+	}
+	if got != wantAuth {
+		t.Fatalf("Authorization mismatch:\n got %q\nwant %q", got, wantAuth)
+	}
+}
+
+// TestAzureSharedKeyBadKey verifies a non-base64 account key surfaces an error.
+func TestAzureSharedKeyBadKey(t *testing.T) {
+	_, err := azureSharedKeySign("acct", "not!base64!", azureSharedKeyInput{Method: "GET"})
+	if err == nil {
+		t.Fatal("expected error for invalid base64 account key")
+	}
+}
+
+// TestAzureParseURL checks az:// and *.blob.core.windows.net decomposition.
+func TestAzureParseURL(t *testing.T) {
+	cases := []struct {
+		in                  string
+		account, cont, blob string
+		query               string
+	}{
+		{"az://acct/cont/dir/blob.bam", "acct", "cont", "dir/blob.bam", ""},
+		{"az://acct/cont/blob?sig=abc&se=x", "acct", "cont", "blob", "sig=abc&se=x"},
+		{"https://acct.blob.core.windows.net/cont/dir/blob.bam", "acct", "cont", "dir/blob.bam", ""},
+		{"https://acct.blob.core.windows.net/cont/blob?sv=2021&sig=z", "acct", "cont", "blob", "sv=2021&sig=z"},
+	}
+	for _, c := range cases {
+		p, err := parseAzureURL(c.in)
+		if err != nil {
+			t.Fatalf("parseAzureURL(%q): %v", c.in, err)
+		}
+		if p.account != c.account || p.container != c.cont || p.blob != c.blob || p.query != c.query {
+			t.Fatalf("parseAzureURL(%q)=%+v, want %s/%s/%s q=%q", c.in, p, c.account, c.cont, c.blob, c.query)
+		}
+	}
+
+	// Recognition of Azure HTTPS hosts.
+	if !isAzureHTTPSURL("https://acct.blob.core.windows.net/c/b") {
+		t.Fatal("expected Azure host recognition")
+	}
+	if isAzureHTTPSURL("https://example.com/c/b") {
+		t.Fatal("non-Azure host should not be recognised")
+	}
+	if SchemeOf("az://a/c/b") != "az" {
+		t.Fatalf("SchemeOf az = %q", SchemeOf("az://a/c/b"))
+	}
+	if !IsRemote("az://a/c/b") {
+		t.Fatal("az:// should be remote")
+	}
+}
+
+// TestAzureSASURLRangedRead proves a SAS-style URL does ranged reads through the
+// plain HTTP path: the SAS travels in the query string and needs no env.
+func TestAzureSASURLRangedRead(t *testing.T) {
+	rs, srv := newRangeServer(payload)
+	defer srv.Close()
+	azureEndpointOverride = srv.URL
+	defer func() { azureEndpointOverride = "" }()
+	// Clear any Azure env so the SAS path is exercised in isolation.
+	t.Setenv("AZURE_STORAGE_ACCOUNT", "")
+	t.Setenv("AZURE_STORAGE_KEY", "")
+	t.Setenv("AZURE_STORAGE_TOKEN", "")
+	t.Setenv("AZURE_STORAGE_SAS_TOKEN", "")
+
+	h, err := Open("az://acct/cont/obj.bam?sv=2021-08-06&sig=FAKESIG&se=2030-01-01")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer h.Close()
+	buf := make([]byte, 32)
+	n, err := h.ReadAt(buf, 64)
+	if err != nil {
+		t.Fatalf("ReadAt: %v", err)
+	}
+	if !bytes.Equal(buf[:n], payload[64:64+32]) {
+		t.Fatal("Azure SAS bytes mismatch")
+	}
+	// SAS path: no Authorization header, signature is in the query string.
+	if rs.lastReq.Header.Get("Authorization") != "" {
+		t.Fatal("SAS URL should not carry an Authorization header")
+	}
+	if rs.lastReq.URL.Query().Get("sig") != "FAKESIG" {
+		t.Fatalf("SAS query missing: %q", rs.lastReq.URL.RawQuery)
+	}
+	if rs.lastReq.Header.Get("Range") != "bytes=64-95" {
+		t.Fatalf("Range=%q", rs.lastReq.Header.Get("Range"))
+	}
+}
+
+// TestAzureSASTokenEnv verifies AZURE_STORAGE_SAS_TOKEN is appended to az:// URLs
+// that lack an inline SAS.
+func TestAzureSASTokenEnv(t *testing.T) {
+	rs, srv := newRangeServer(payload)
+	defer srv.Close()
+	azureEndpointOverride = srv.URL
+	defer func() { azureEndpointOverride = "" }()
+	t.Setenv("AZURE_STORAGE_ACCOUNT", "")
+	t.Setenv("AZURE_STORAGE_KEY", "")
+	t.Setenv("AZURE_STORAGE_TOKEN", "")
+	t.Setenv("AZURE_STORAGE_SAS_TOKEN", "?sv=2021-08-06&sig=ENVSIG")
+
+	h, err := Open("az://acct/cont/obj")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer h.Close()
+	if _, err := h.ReadAt(make([]byte, 4), 0); err != nil {
+		t.Fatalf("ReadAt: %v", err)
+	}
+	if rs.lastReq.URL.Query().Get("sig") != "ENVSIG" {
+		t.Fatalf("env SAS not appended: %q", rs.lastReq.URL.RawQuery)
+	}
+	if rs.lastReq.Header.Get("Authorization") != "" {
+		t.Fatal("SAS env path should not set Authorization")
+	}
+}
+
+// TestAzureSharedKeyRangedRead exercises the Shared Key path end-to-end against
+// an httptest server under a pinned clock, asserting the Authorization header,
+// x-ms-date, x-ms-version, and that two different ranges produce two different
+// signatures (the Range is part of the signed string).
+func TestAzureSharedKeyRangedRead(t *testing.T) {
+	rs, srv := newRangeServer(payload)
+	defer srv.Close()
+	azureEndpointOverride = srv.URL
+	defer func() { azureEndpointOverride = "" }()
+
+	pinned := time.Date(2026, 6, 17, 0, 0, 0, 0, time.UTC)
+	nowFunc = func() time.Time { return pinned }
+	defer func() { nowFunc = time.Now }()
+
+	t.Setenv("AZURE_STORAGE_ACCOUNT", "devstoreaccount1")
+	t.Setenv("AZURE_STORAGE_KEY", azureDevKey)
+	t.Setenv("AZURE_STORAGE_TOKEN", "")
+	t.Setenv("AZURE_STORAGE_SAS_TOKEN", "")
+
+	h, err := Open("az://devstoreaccount1/mycontainer/path/to/object.bam")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer h.Close()
+
+	// First range.
+	if _, err := h.ReadAt(make([]byte, 64), 128); err != nil {
+		t.Fatalf("ReadAt: %v", err)
+	}
+	auth1 := rs.lastReq.Header.Get("Authorization")
+	if !strings.HasPrefix(auth1, "SharedKey devstoreaccount1:") {
+		t.Fatalf("Authorization=%q", auth1)
+	}
+	if rs.lastReq.Header.Get("x-ms-date") != "Wed, 17 Jun 2026 00:00:00 GMT" {
+		t.Fatalf("x-ms-date=%q", rs.lastReq.Header.Get("x-ms-date"))
+	}
+	if rs.lastReq.Header.Get("x-ms-version") != "2021-08-06" {
+		t.Fatalf("x-ms-version=%q", rs.lastReq.Header.Get("x-ms-version"))
+	}
+	if rs.lastReq.Header.Get("Range") != "bytes=128-191" {
+		t.Fatalf("Range=%q", rs.lastReq.Header.Get("Range"))
+	}
+	// The Range=128-191 signature must match the pinned known-answer vector.
+	wantAuth := "SharedKey devstoreaccount1:rFiLV/YExacX7hHP2msLtGRi89EnNIol3Xvi0s5Vn/k="
+	if auth1 != wantAuth {
+		t.Fatalf("Authorization (range 128-191):\n got %q\nwant %q", auth1, wantAuth)
+	}
+
+	// Second, different range -> different signature.
+	if _, err := h.ReadAt(make([]byte, 64), 256); err != nil {
+		t.Fatalf("ReadAt: %v", err)
+	}
+	auth2 := rs.lastReq.Header.Get("Authorization")
+	if rs.lastReq.Header.Get("Range") != "bytes=256-319" {
+		t.Fatalf("Range=%q", rs.lastReq.Header.Get("Range"))
+	}
+	if auth1 == auth2 {
+		t.Fatal("two different ranges produced identical signatures")
+	}
+}
+
+// TestAzureBearerToken exercises the Azure AD bearer-token path.
+func TestAzureBearerToken(t *testing.T) {
+	rs, srv := newRangeServer(payload)
+	defer srv.Close()
+	azureEndpointOverride = srv.URL
+	defer func() { azureEndpointOverride = "" }()
+	t.Setenv("AZURE_STORAGE_ACCOUNT", "")
+	t.Setenv("AZURE_STORAGE_KEY", "")
+	t.Setenv("AZURE_STORAGE_SAS_TOKEN", "")
+	t.Setenv("AZURE_STORAGE_TOKEN", "eyJ0okenAAD")
+
+	h, err := Open("az://acct/cont/obj")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer h.Close()
+	if _, err := h.ReadAt(make([]byte, 4), 0); err != nil {
+		t.Fatalf("ReadAt: %v", err)
+	}
+	if got := rs.lastReq.Header.Get("Authorization"); got != "Bearer eyJ0okenAAD" {
+		t.Fatalf("Authorization=%q", got)
+	}
+	if rs.lastReq.Header.Get("x-ms-version") != "2021-08-06" {
+		t.Fatalf("x-ms-version=%q", rs.lastReq.Header.Get("x-ms-version"))
+	}
+}
+
+// TestAzureAnonymous exercises the anonymous (public container) path: unsigned,
+// but still carrying x-ms-version. The direct *.blob.core.windows.net HTTPS URL
+// form is used to confirm host recognition routes through the Azure backend.
+func TestAzureAnonymous(t *testing.T) {
+	rs, srv := newRangeServer(payload)
+	defer srv.Close()
+	azureEndpointOverride = srv.URL
+	defer func() { azureEndpointOverride = "" }()
+	t.Setenv("AZURE_STORAGE_ACCOUNT", "")
+	t.Setenv("AZURE_STORAGE_KEY", "")
+	t.Setenv("AZURE_STORAGE_TOKEN", "")
+	t.Setenv("AZURE_STORAGE_SAS_TOKEN", "")
+
+	h, err := Open("https://public.blob.core.windows.net/cont/obj.bam")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer h.Close()
+	buf := make([]byte, 16)
+	n, err := h.ReadAt(buf, 0)
+	if err != nil {
+		t.Fatalf("ReadAt: %v", err)
+	}
+	if !bytes.Equal(buf[:n], payload[:16]) {
+		t.Fatal("Azure anonymous bytes mismatch")
+	}
+	if rs.lastReq.Header.Get("Authorization") != "" {
+		t.Fatal("anonymous Azure request should be unsigned")
+	}
+	if rs.lastReq.Header.Get("x-ms-version") != "2021-08-06" {
+		t.Fatalf("x-ms-version=%q", rs.lastReq.Header.Get("x-ms-version"))
+	}
+}
