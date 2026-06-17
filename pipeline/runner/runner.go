@@ -6,7 +6,9 @@ package runner
 
 import (
 	"bytes"
+	"compress/gzip"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -159,6 +161,38 @@ func RunEntry(cfg Config, e matrix.Entry) Result {
 		return res
 	}
 
+	// Decode binary stdout before comparing, for tools that emit BGZF/BAM whose
+	// framing is not byte-comparable but whose decoded content must match.
+	switch e.CompareModeOrDefault() {
+	case matrix.BGZFDecoded:
+		o, oerr := gunzipAll(ourOut)
+		u, uerr := gunzipAll(upOut)
+		if oerr != nil || uerr != nil {
+			res.Status = StatusError
+			res.Detail = fmt.Sprintf("BGZF decode failed: ours=%v upstream=%v", oerr, uerr)
+			return res
+		}
+		ourOut, upOut = o, u
+	case matrix.BAMDecoded:
+		// Decode BOTH sides with the upstream samtools (the canonical decoder),
+		// regardless of which tool produced the BAM (e.g. bedtobam's upstream is
+		// bedtools), so only the record content is compared.
+		samBin, serr := upstream.Binary("samtools")
+		if serr != nil {
+			res.Status = StatusError
+			res.Detail = "BAM decode needs the upstream samtools binary: " + serr.Error()
+			return res
+		}
+		o, oerr := decodeBAM(samBin, ourOut)
+		u, uerr := decodeBAM(samBin, upOut)
+		if oerr != nil || uerr != nil {
+			res.Status = StatusError
+			res.Detail = fmt.Sprintf("BAM decode failed: ours=%v upstream=%v", oerr, uerr)
+			return res
+		}
+		ourOut, upOut = o, u
+	}
+
 	var cmp CompareResult
 	switch {
 	case usesOutPrefix:
@@ -233,6 +267,39 @@ func timedRun(bin string, args []string) (stdout, stderr []byte, dur time.Durati
 	err = cmd.Run()
 	dur = time.Since(start)
 	return out.Bytes(), errb.Bytes(), dur, err
+}
+
+// gunzipAll decompresses a (possibly multi-member, e.g. BGZF) gzip stream in
+// full. BGZF is a series of concatenated gzip members, which compress/gzip
+// reads transparently via Reader.Multistream.
+func gunzipAll(b []byte) ([]byte, error) {
+	if len(b) == 0 {
+		return b, nil
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+	return io.ReadAll(zr)
+}
+
+// decodeBAM pipes BAM bytes through `samtools view -h -` and returns the SAM
+// text, so two BAMs with different BGZF framing can be compared by their
+// decoded records (the @PG/@CO provenance is stripped by CompareByteExact).
+func decodeBAM(samtoolsBin string, bam []byte) ([]byte, error) {
+	if len(bam) == 0 {
+		return bam, nil
+	}
+	cmd := exec.Command(samtoolsBin, "view", "-h", "-")
+	cmd.Stdin = bytes.NewReader(bam)
+	var out, errb bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("%v: %s", err, trunc(errb.String()))
+	}
+	return out.Bytes(), nil
 }
 
 // placeholderKeys are the manifest-backed fixture tokens resolvePlaceholders

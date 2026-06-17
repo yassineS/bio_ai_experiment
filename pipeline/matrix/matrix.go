@@ -52,6 +52,18 @@ const (
 	// an output directory, rather than a single stdout stream. Used by tools
 	// that emit multiple files (e.g. mosdepth, split outputs).
 	DirContents CompareMode = "DirContents"
+
+	// BGZFDecoded gunzips each side's stdout before a byte-exact compare. Use it
+	// for tools that emit a BGZF/gzip stream (e.g. `bgzip -c`): the compressed
+	// bytes differ (our klauspost deflate backend vs htslib framing) but the
+	// decompressed content must be identical.
+	BGZFDecoded CompareMode = "BGZFDecoded"
+
+	// BAMDecoded decodes each side's stdout BAM through the upstream `samtools
+	// view -h` before a provenance-stripped byte-exact compare. Use it for tools
+	// that emit BGZF BAM on stdout (e.g. `samtools cat`, `bedtobam`): the binary
+	// framing is not comparable, but the decoded SAM records must match.
+	BAMDecoded CompareMode = "BAMDecoded"
 )
 
 // Entry is one runnable parity case: a single invocation of our tool and the

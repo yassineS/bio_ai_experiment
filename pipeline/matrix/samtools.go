@@ -206,16 +206,12 @@ func samtoolsDecodeText() []Entry {
 		// emits those rows too. The interior-zero-depth gap is fixed.
 		mkSam("mpileup", "mpileup_pileup", InputBAM, ByteExact, "-f", "{fasta}", "{bam}"),
 
-		// cat: documented Skip. cat concatenates BAMs into a BAM; our cat ignores
-		// -O sam and always emits BGZF BAM, which is not byte-comparable. The
-		// decoded record stream is correct (verified via `view`), but that decode
-		// step cannot be expressed in the single-command runner.
+		// cat: concatenates BAMs into a BAM. The decoded record stream is
+		// compared (BAMDecoded) since the BGZF framing is not byte-comparable.
 		{
 			Tool: "samtools", Subcommand: "cat", UsesSubcommand: true,
-			Name: "cat_concat", Input: InputBAM, Compare: ByteExact,
+			Name: "cat_concat", Input: InputBAM, Compare: BAMDecoded,
 			Args: []string{"-o", "-", "{bam}", "{bam}"},
-			Skip: "samtools cat emits BGZF BAM (not byte-comparable: klauspost vs htslib block framing) and does not honour -O sam to " +
-				"produce decodable text in one command. The concatenated record stream is correct when decoded via `view`. Owned by the samtools agent.",
 		},
 	}
 }
@@ -234,27 +230,38 @@ func samtoolsBinaryOutputSkips() []Entry {
 			Args: argv, Skip: reason,
 		}
 	}
+	// bamOut builds an entry whose stdout is BGZF BAM; the runner decodes both
+	// sides through `samtools view -h` (BAMDecoded) and compares the SAM, so the
+	// klauspost-vs-htslib framing difference is bypassed and only the records
+	// are compared. Both sides emit BAM to stdout (no -O sam, which our port
+	// ignored anyway), so the decode is symmetric.
+	bamOut := func(name string, argv ...string) Entry {
+		return Entry{
+			Tool: "samtools", Subcommand: name, UsesSubcommand: true,
+			Name: "samtools_" + name, Input: InputBAM, Compare: BAMDecoded, Args: argv,
+		}
+	}
 	return []Entry{
-		skip("markdup", "", "samtools markdup ignores -O/--output-fmt and always writes BGZF BAM (not byte-comparable). The duplicate "+
-			"marking itself is byte-identical to upstream when decoded out-of-band; the output-format gap is owned by the samtools agent.",
-			"{bam}", "-O", "sam", "-"),
+		// markdup: duplicate marking is byte-identical once decoded.
+		bamOut("markdup", "{bam}", "-"),
 		skip("fixmate", "", "samtools fixmate ignores -O sam (writes BGZF BAM) and needs name-collated input, which cannot be produced "+
 			"in a single command. Owned by the samtools agent.",
 			"-O", "sam", "{bam}", "-"),
-		skip("addreplacerg", "", "samtools addreplacerg ignores -O sam (writes BGZF BAM) and, when decoded, our -r does not replace the "+
-			"existing RG tag (keeps the original RG) whereas upstream substitutes it. Real port gap owned by the samtools agent.",
-			"-O", "sam", "-r", `ID:x\tSM:y`, "{bam}", "-"),
-		skip("merge", "", "samtools merge ignores -O sam (writes BGZF BAM); the fixtures share sample/RG names so a meaningful merge of "+
-			"distinct inputs is not expressible. Owned by the samtools agent.",
-			"-O", "sam", "-f", "-", "{bam}", "{bam}"),
-		skip("reheader", "", "samtools reheader rewrites the header of a BAM in place and emits BGZF BAM (not byte-comparable); it has no "+
-			"single-command text-output form. Owned by the samtools agent.",
-			"-c", "cat", "{bam}"),
+		bamOut("addreplacerg", "-r", `ID:x\tSM:y`, "{bam}", "-"),
+		skip("merge", "", "samtools merge of the fixture with itself collides on read-group ID 'rg1': upstream disambiguates by renaming "+
+			"the duplicate RG (rg1 -> rg1-<hash>) in the merged header, which our port does not. A real RG-ID-collision gap, exposed only by "+
+			"the degenerate self-merge (distinct-input merge is byte-exact when decoded). Owned by the samtools agent.",
+			"-f", "-", "{bam}", "{bam}"),
+		bamOut("reheader", "-c", "cat", "{bam}"),
 		skip("split", "", "samtools split writes one BGZF BAM per read group to a directory of files (not byte-comparable and not a single "+
 			"stdout/prefix the runner compares). Owned by the samtools agent.",
 			"-f", "%*_%!.bam", "{bam}"),
-		skip("import", "", "samtools import (FASTQ -> unaligned BAM) ignores -O sam and writes BGZF BAM (not byte-comparable). Owned by the samtools agent.",
-			"-O", "sam", "{bam}"),
+		// import: FASTQ -> unaligned BAM. Decode both sides' BAM and compare.
+		{
+			Tool: "samtools", Subcommand: "import", UsesSubcommand: true,
+			Name: "samtools_import", Input: InputFASTQ, Compare: BAMDecoded,
+			Args: []string{"{fastq}"},
+		},
 		skip("phase", "", "samtools phase emits phased BGZF BAM(s) (not byte-comparable) and has no single-command decoded-text form. Owned by the samtools agent.",
 			"{bam}"),
 	}

@@ -43,11 +43,11 @@ func bgzipMatrix() []Entry {
 		// decode identically (see the README). The decode round-trip above is the
 		// parity check; the encode path's timing is the bench harness's job.
 		{
+			// bgzip -c emits BGZF whose block framing differs (klauspost vs
+			// htslib) but decompresses identically — compare the decoded stream.
 			Tool: "bgzip", UpstreamTool: "bgzip", Name: "bgzip_compress",
-			Input: InputVCFPlain, Compare: ByteExact,
+			Input: InputVCFPlain, Compare: BGZFDecoded,
 			Args: []string{"-c", "{vcf_plain}"},
-			Skip: "bgzip -c emits BGZF whose block framing differs between our klauspost deflate backend and htslib (both decode " +
-				"identically). Byte parity is intentionally not asserted on the compressed stream; the `bgzip -d -c` decode round-trip is the parity check.",
 		},
 		{
 			Tool: "bgzip", UpstreamTool: "bgzip", Name: "bgzip_reindex",
