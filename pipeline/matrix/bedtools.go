@@ -422,9 +422,15 @@ func bedFormatTools() []Entry {
 	// --- bedtobam: BGZF binary stdout, not byte-comparable (decoded records are
 	//     identical; see header). ---
 	out = append(out,
-		btSkip("bedtobam", "bedtobam", "binary_bgzf", InputBED,
-			"bedtobam writes raw BGZF BAM to stdout; BGZF block framing differs from htslib (our klauspost deflate backend) although the decoded records are byte-identical (verified out-of-band and by the per-tool suite). Binary BGZF is never byte-compared in this pipeline.",
-			"-i", "{bed}", "-g", "{genome}"),
+		// bedtobam writes BGZF BAM to stdout; the framing differs (klauspost vs
+		// htslib) but the records match — decode both via samtools view (the
+		// upstream tool here is bedtools, so the runner uses its own samtools
+		// binary to decode) and compare the SAM.
+		func() Entry {
+			e := bt("bedtobam", "bedtobam", "decoded", InputBED, "-i", "{bed}", "-g", "{genome}")
+			e.Compare = BAMDecoded
+			return e
+		}(),
 	)
 
 	// --- getfasta ---

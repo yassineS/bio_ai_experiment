@@ -278,9 +278,13 @@ func bcftoolsSkips() []Entry {
 		// convert --gvcf2vcf writes a full VCF to stdout and is byte-exact
 		// (provenance-stripped) against upstream — re-activated.
 		mkBcf("convert", "convert", InputVCFPlain, ByteExact, "--gvcf2vcf", "-f", "{fasta}", "{vcf_plain}"),
+		// reheader requires one of -h/-s/-f (it exits with usage otherwise), and
+		// emits a bgzipped VCF. A parity case needs a dedicated header- or
+		// samples-file fixture (one sample name per line); the BGZFDecoded
+		// comparison is ready for it once that fixture exists.
 		skip("reheader", "reheader",
-			"bcftools reheader rewrites a VCF/BCF header in place and (for BCF) emits binary; it has no single-command text-output parity "+
-				"form distinct from the per-tool suite's checks. Owned by the bcftools agent.",
+			"bcftools reheader needs a -h header file or -s samples file (one name per line) to do anything (it exits with usage "+
+				"otherwise); the corpus has no such fixture. The .vcf.gz output is BGZFDecodable once a samples/header fixture is added.",
 			"-s", "{vcf}", "{vcf}"),
 	}
 }
