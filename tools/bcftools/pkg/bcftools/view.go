@@ -92,6 +92,11 @@ type ViewOptions struct {
 	// bcftools view, AC and AN are recomputed from the kept genotypes (and
 	// added to the header/record when absent).
 	NoUpdate bool
+	// SuppressPASSFilter prevents openOutput from re-injecting the implicit
+	// ##FILTER=<ID=PASS> header line. It is set by `annotate -x FILTER`, which
+	// (like upstream remove_hdr_lines(BCF_HL_FLT)) removes every FILTER header
+	// line — PASS included — and they must not reappear at write time.
+	SuppressPASSFilter bool
 	// CalcAC mirrors upstream vcfview.c's calc_ac flag. It is set by the CLI
 	// when any of -c/-C/-q/-Q (allele count/frequency selectors) or -x/-X
 	// (private) is requested. When CalcAC is true and NoUpdate is false,
@@ -1125,7 +1130,9 @@ func ensurePASSFilter(hdr *vcf.Header) {
 // header) and keeping tabix/.csi offsets clean. We deliberately do not close
 // `out` itself — the caller still owns it.
 func openOutput(out io.Writer, opts ViewOptions, hdr *vcf.Header) (variantWriter, func(), error) {
-	ensurePASSFilter(hdr)
+	if !opts.SuppressPASSFilter {
+		ensurePASSFilter(hdr)
+	}
 	switch opts.OutputFormat {
 	case OutputVCFGz:
 		bw, err := newBGZFOutput(out, opts.CompressLevel, opts.Threads)
