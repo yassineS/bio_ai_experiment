@@ -66,14 +66,16 @@ func run(args []string) int {
 	)
 	cliflag.BoolVar(fs, &helpFlag, "h", "help", false, "show help")
 	cliflag.BoolVar(fs, &versionFlag, "v", "version", false, "show version")
-	// Upstream htsfile (htsfile.c getopt "cChHv") accepts -c/-C copy modes.
-	// The v1 scope is identification only, so these are accepted no-ops kept
-	// for backward compatibility — and so bundled clusters that include them
-	// still parse. The -H spelling is upstream's "print header" copy variant;
-	// we map it to the same accepted no-op (our -h remains help, registered
-	// above as the long --help short form).
-	cliflag.BoolVar(fs, &copyMode, "c", "", false, "Ignored: copy mode not implemented (legacy)")
-	cliflag.BoolVar(fs, &copyNoDecode, "C", "", false, "Ignored: copy mode not implemented (legacy)")
+	// -c/-C are accepted no-ops. Upstream htsfile -c ("--view") does NOT raw-
+	// decompress; it routes each file through htslib's format-aware reader and
+	// re-serialises (a viewed VCF gains the implicit ##FILTER=<ID=PASS> header
+	// and htslib's canonical header order; a FASTA is rewritten in htslib's
+	// normalized record form). Reproducing that per-format view writer is out of
+	// scope for this identification tool, so we accept the flags (so bundled
+	// clusters parse) without claiming view parity. Our -h/-v stay bound to
+	// help/version per the project CLI convention.
+	cliflag.BoolVar(fs, &copyMode, "c", "", false, "Ignored: htslib format-aware view mode not implemented (legacy)")
+	cliflag.BoolVar(fs, &copyNoDecode, "C", "", false, "Ignored: raw copy mode not implemented (legacy)")
 
 	// Route through cliflag.Parse so POSIX getopt-style short-flag bundling
 	// works the way upstream htsfile's getopt parser accepts it.
@@ -129,7 +131,9 @@ func runOne(path string) error {
 	if err != nil {
 		return err
 	}
-	_, werr := fmt.Fprintf(os.Stdout, "%s: %s\n", label, f.Describe())
+	// htslib's htsfile separates the path and description with a TAB (":\t"),
+	// not a space.
+	_, werr := fmt.Fprintf(os.Stdout, "%s:\t%s\n", label, f.Describe())
 	if werr != nil && werr != io.EOF {
 		return werr
 	}

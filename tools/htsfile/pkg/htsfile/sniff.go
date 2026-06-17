@@ -126,32 +126,58 @@ func (f *Format) Describe() string {
 	if f == nil {
 		return "unknown"
 	}
-	kind := payloadKind(f.Payload)
 	var b strings.Builder
 	b.WriteString(f.Payload.String())
 	if f.Version != "" {
 		b.WriteString(" version ")
 		b.WriteString(f.Version)
 	}
-	b.WriteByte(' ')
-	b.WriteString(f.Compression.String())
-	b.WriteByte(' ')
-	b.WriteString(kind)
+	// Compression word (hts_format_description). BGZF reads as the generic
+	// " compressed" for formats that are BGZF by definition (BAM/BCF/CSI/TBI)
+	// and " BGZF-compressed" otherwise; a plain binary container (BAM/BCF/CRAM)
+	// reads " uncompressed"; plain text formats get no compression word.
+	switch f.Compression {
+	case CompressionBGZF:
+		if f.Payload == PayloadBAM || f.Payload == PayloadBCF {
+			b.WriteString(" compressed")
+		} else {
+			b.WriteString(" BGZF-compressed")
+		}
+	case CompressionGzip:
+		b.WriteString(" gzip-compressed")
+	case CompressionPlain:
+		if f.Payload == PayloadBAM || f.Payload == PayloadBCF || f.Payload == PayloadCRAM {
+			b.WriteString(" uncompressed")
+		}
+	}
+	// Category word.
+	switch f.Payload {
+	case PayloadSAM, PayloadBAM, PayloadCRAM, PayloadFASTA, PayloadFASTQ:
+		b.WriteString(" sequence")
+	case PayloadVCF, PayloadBCF:
+		b.WriteString(" variant calling")
+	case PayloadBED:
+		b.WriteString(" genomic region")
+	}
+	// Trailing " text" for uncompressed text formats, " data" otherwise —
+	// matching hts_format_description's final switch.
+	if f.Compression == CompressionPlain && isTextFormat(f.Payload) {
+		b.WriteString(" text")
+	} else {
+		b.WriteString(" data")
+	}
 	return b.String()
 }
 
-func payloadKind(p Payload) string {
+// isTextFormat reports whether a plain (uncompressed) file of this payload is
+// described with a trailing " text" rather than " data" by hts_format_description
+// (the text_format/sam/vcf/bed/fasta/fastq/... cases).
+func isTextFormat(p Payload) bool {
 	switch p {
-	case PayloadSAM, PayloadBAM, PayloadCRAM, PayloadFASTA, PayloadFASTQ:
-		return "sequence data"
-	case PayloadVCF, PayloadBCF:
-		return "variant calling data"
-	case PayloadBED, PayloadGFF:
-		return "genomic interval data"
-	case PayloadText:
-		return "text"
+	case PayloadSAM, PayloadVCF, PayloadBED, PayloadFASTA, PayloadFASTQ, PayloadGFF, PayloadText:
+		return true
 	default:
-		return "data"
+		return false
 	}
 }
 
@@ -247,7 +273,9 @@ func classifyPayload(prefix []byte) *Format {
 
 	// Binary magic-byte formats first.
 	if bytes.HasPrefix(prefix, []byte("BAM\x01")) {
-		return &Format{Payload: PayloadBAM}
+		// htslib reports BAM as "version 1" (the format major version), even
+		// though the BAM\x01 magic carries no explicit version field.
+		return &Format{Payload: PayloadBAM, Version: "1"}
 	}
 	if bytes.HasPrefix(prefix, []byte("BCF\x02\x02")) {
 		return &Format{Payload: PayloadBCF, Version: "2.2"}
