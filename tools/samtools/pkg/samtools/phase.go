@@ -324,6 +324,15 @@ func Phase(in io.Reader, out io.Writer, opts PhaseOptions) (int, error) {
 	// applies that reset before its final flush (for all but the last ref), so
 	// the counter must start at 0 once here, not per reference.
 	runner.vposShift = 0
+	// One fragment hash for the WHOLE input, carried across references. Upstream
+	// runs a single continuous pileup with one `seqs` table; at a chromosome
+	// change it flushes the previous chr's trailing block then calls
+	// update_vpos(0x7fffffff) to delete every fragment (leaving the table full of
+	// tombstones at its current n_buckets) before the new chr's reads arrive.
+	// Re-creating the table per reference would reset n_buckets to 0 and grow it
+	// afresh, diverging the bucket layout — and therefore the unstable EV-line
+	// emit order — from the second chromosome on.
+	hash := newFragKhash()
 	for ri, ref := range refOrder {
 		recs := byRef[ref]
 		sort.SliceStable(recs, func(i, j int) bool { return recs[i].Pos < recs[j].Pos })
@@ -332,7 +341,7 @@ func Phase(in io.Reader, out io.Writer, opts PhaseOptions) (int, error) {
 		// on reads with confident haplotype evidence. Evidence-less
 		// reads use math/rand (seeded RNG) rather than upstream's
 		// drand48 — see PhaseOptions.RNGSeed.
-		n, err := runUpstreamPhase(runner, recs, ref, ri == len(refOrder)-1, bw, bamSplit, rng, opts)
+		n, err := runUpstreamPhase(runner, hash, recs, ref, ri == len(refOrder)-1, bw, bamSplit, rng, opts)
 		if err != nil {
 			return emitted, err
 		}

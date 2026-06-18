@@ -56,7 +56,7 @@ func refKhashKickout(keys []uint64) []uint64 {
 			key := kk[j]
 			setDelTrue(flags, j)
 			for {
-				i := uint32(key) & mask
+				i := khHash64(key) & mask
 				step := uint32(0)
 				for !isEmpty(nf, i) {
 					step++
@@ -89,7 +89,7 @@ func refKhashKickout(keys []uint64) []uint64 {
 			}
 		}
 		mask := nb - 1
-		x := uint32(key) & mask
+		x := khHash64(key) & mask
 		if !isEmpty(flags, x) {
 			step := uint32(0)
 			last := x

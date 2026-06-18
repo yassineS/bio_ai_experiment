@@ -52,6 +52,19 @@ type fragKhash struct {
 // newFragKhash returns an empty table; the first kh_put will allocate.
 func newFragKhash() *fragKhash { return &fragKhash{} }
 
+// khHash64 is khash.h's kh_int64_hash_func for 64-bit keys:
+//
+//	(khint32_t)((key)>>33 ^ (key) ^ (key)<<11)
+//
+// phase.c instantiates its fragment table with KHASH_MAP_INIT_INT64, so the
+// initial bucket of a key is this mixed hash masked by (nBuckets-1), NOT the
+// raw low 32 bits. Reproducing the exact mix is required for the bucket layout
+// — and therefore the unstable ks_introsort_rseq permutation that orders the
+// EV supporting-read lines — to match upstream samtools byte-for-byte.
+func khHash64(key uint64) uint32 {
+	return uint32((key >> 33) ^ key ^ (key << 11))
+}
+
 // kroundup32 mirrors the macro of the same name in htslib.
 func kroundup32(x uint32) uint32 {
 	x--
@@ -146,7 +159,7 @@ func (h *fragKhash) resize(newBuckets uint32) {
 		val := h.vals[j]
 		khFlagSetIsDelTrue(h.flags, j) // vacate old slot
 		for {
-			i := uint32(key) & newMask
+			i := khHash64(key) & newMask
 			step := uint32(0)
 			for !khFlagIsEmpty(newFlags, i) {
 				step++
@@ -193,7 +206,7 @@ func (h *fragKhash) put(key uint64) (uint32, bool) {
 		}
 	}
 	mask := h.nBuckets - 1
-	x := uint32(key) & mask
+	x := khHash64(key) & mask
 	step := uint32(0)
 	site := h.nBuckets
 	// Probe for either:
@@ -249,7 +262,7 @@ func (h *fragKhash) get(key uint64) (uint32, bool) {
 		return 0, false
 	}
 	mask := h.nBuckets - 1
-	x := uint32(key) & mask
+	x := khHash64(key) & mask
 	step := uint32(0)
 	last := x
 	for !khFlagIsEmpty(h.flags, x) && (khFlagIsDel(h.flags, x) || h.keys[x] != key) {
