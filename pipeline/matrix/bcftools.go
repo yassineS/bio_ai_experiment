@@ -290,10 +290,13 @@ func bcftoolsSkips() []Entry {
 				"the stdlib-only scope; a genuine near-terminal precision limit.",
 			"-m", "{vcf_pl}"),
 		skip("csq", "csq",
-			"bcftools csq --force: the GFF fixture is now valid (all 800 transcripts index on both sides) and the BCSQ consequence "+
-				"strings match — the residual is the COMPOUND-variant linkage: the '@<pos>' reference marking a variant whose consequence "+
-				"depends on a neighbouring variant points at a different position (ours @12677 vs upstream @16827) and the packed FORMAT/BCSQ "+
-				"index differs. A deep csq haplotype-engine divergence; the per-tool suite covers the single-variant cases byte-exact.",
+			"bcftools csq --force: the GFF fixture is valid (all 800 transcripts index on both sides) and most BCSQ consequence strings "+
+				"match, but the haplotype-aware engine still diverges on three fronts over this multi-gene fixture (267 of the records): "+
+				"(1) gene selection for an intron that falls inside two OVERLAPPING genes — upstream reports the earlier-starting gene "+
+				"(gene00012, 18780-) while we report the other (gene00013, 20380-), ~181 sites; (2) the packed FORMAT/BCSQ bitmask index "+
+				"(~85 sites); and (3) the '@<pos>' compound-variant linkage marker pointing at a different neighbour (~44 sites). Matching "+
+				"these needs bcftools' full transcript-ordering + haplotype + compound-linkage engine; the per-tool suite covers the "+
+				"single-variant cases byte-exact.",
 			"--force", "-f", "{fasta}", "-g", "{gff}", "-p", "a", "{vcf_plain}"),
 		// isec -p writes the four-way Venn decomposition (0000 private to input
 		// 1, 0001 private to input 2, 0002/0003 the shared records from each
