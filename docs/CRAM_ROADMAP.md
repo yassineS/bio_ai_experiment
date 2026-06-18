@@ -550,3 +550,63 @@ limitation here.
     feature stream upstream could never read back; covered by
     `TestUnitCigarBackRejected`. This is upstream behaviour matched, not
     a bug, so it is recorded here rather than in `docs/UPSTREAM_BUGS.md`.
+
+## 7. Reference-based read encoding — the path to CRAM ≤1× (scoped, not yet built)
+
+The writer today is **reference-free**: every M/=/X run becomes a base-stretch
+feature ('b', the `BB` series) carrying the literal read bases (see
+`writefeature.go`). That makes the file self-contained but stores the entire
+read sequence. On the medium bench fixture (300 k aligned reads, mean edit
+distance ~2.3/150 bp), `BB` is **45 MB** — the whole sequence — when only the
+~2 mismatches/read need storing. Consequences, all measured:
+
+- BAM→CRAM is ~×7.5 slower than upstream (was ×71 before the bzip2 fix, #416);
+  the residual is compressing the 45 MB `BB` + 45 MB `QS`.
+- Output is 43 MB vs upstream's 31 MB — the ratio gap is exactly the
+  unnecessary base storage.
+- Codec tuning cannot fix it: rANS over `BB` gets ×2.3 but *grows* the file,
+  because we are compressing bases that should not be stored at all.
+
+### What's already done (decode side)
+
+The **decoder is reference-ready**: `reconstruct.go` copies matched bases from
+the reference and resolves substitution features through `substMatrix`
+(`record.go`, `subst.go`); it reads upstream reference-based CRAM today. No
+decode work is needed.
+
+### Writer work required (the build)
+
+1. **Reference plumbing.** `RecordWriter` gains an optional per-contig
+   reference (`map[string][]byte` or a `faidx`-backed provider) via a new
+   `NewRecordWriterWithReference` / `SetReference`. Wire `samtools view -C -T`
+   to pass it (the `-T` FASTA is already resolved for the CRAM path).
+2. **New `BS` data series end-to-end.** Add `cidBS`, a series buffer, its
+   compression-header encoding-map entry, and its `blocks()` emission. (The
+   decoder already consumes `BS`.)
+3. **`SM` substitution matrix** in the preservation map. The default packing
+   (0x1B per row) suffices: with it the BS code is simply the index of the read
+   base in `substCandidates[refIdx]` (bases ACGTN with the ref base removed).
+   Emit `SM = {0x1B,0x1B,0x1B,0x1B,0x1B}` and encode codes against it.
+4. **Rewrite `encodeFeatures` M/=/X handling.** Walk the reference position
+   alongside the read: for each base, if `read == ref` emit **no** feature
+   (reconstructed from the reference); on mismatch emit a substitution feature
+   ('X', `featSubst`) at the read position carrying the BS code. Drop the
+   base-stretch 'b' path for mapped reads with a reference. Unmapped reads (no
+   reference span) keep the literal `BA`/`BB` path. Track `FN` (feature count)
+   and `FP` (feature positions, delta-encoded) accordingly.
+
+### Validation gates (each must pass before merge)
+
+- Round-trip: our decode of our CRAM reproduces every record (SEQ/CIGAR/QUAL/
+  tags) — the existing `samtools_view_cram_*` parity entries.
+- **Cross-tool**: upstream `samtools view -T ref` reads our CRAM byte-for-byte
+  on the decoded SAM (already a gate for the current writer).
+- Ratio: output ≈ upstream's (≈31 MB on the medium fixture, not 43 MB).
+- Speed: BAM→CRAM wall ratio → ≤~1× at medium/large.
+
+This is a ~200–400 LOC, correctness-critical change confined to the write path.
+It is the single remaining lever for CRAM ≤1×; codec choice is already settled
+(rANS for QS, gzip elsewhere — see `chooseBlockCompression`). Deliberately
+sequenced as its own focused PR rather than rushed: a silently-wrong CRAM
+encoder is a worse outcome than slow-but-correct, so it lands only behind the
+four gates above.
