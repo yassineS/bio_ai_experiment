@@ -30,8 +30,9 @@ package matrix
 //
 //   - bedtobam          — raw BGZF BAM to stdout; framing differs (klauspost vs
 //                         htslib) though decoded records match. Not byte-compared.
-//   - bedtag            — different model: upstream tags+writes BAM; our bedtag
-//                         is BED-in/BED-out. Not directly comparable.
+//   - bedtag            — bedtag now implements the upstream tagBam model
+//                         (-i BAM -files ...: YB aux tag from BED overlaps),
+//                         compared BAMDecoded.
 //   - bedpairtobed       — runs over the new {bedpe} fixture; same record SET as
 //                          upstream but a few multi-hit pairs emit in a
 //                          different chromsweep order (bedpairtopair is exact).
@@ -525,12 +526,15 @@ func bedMultiFileTools() []Entry {
 			"-i", "{bed}", "-files", "{bed}"),
 	)
 
-	// --- tag (different model: upstream tags a BAM/writes BAM; ours is BED in/out) ---
-	out = append(out,
-		btSkip("bedtag", "tag", "different_model", InputBAM,
-			"bedtools tag tags a BAM and writes BAM (binary); our bedtag is BED-in/BED-out (annotates A with overlapping B names). The CLIs and outputs are not comparable. Owned by the bedtools agent.",
-			"-i", "{bam}", "-files", "{bed}", "-labels", "x"),
-	)
+	// --- tag: bedtag now implements the upstream tagBam model (tag a BAM's
+	//     alignments with a YB aux tag from BED overlaps) when invoked with
+	//     -i <BAM> -files ...; both sides write BAM to stdout, decoded and
+	//     compared (BAMDecoded) so the framing/@PG provenance is bypassed. ---
+	out = append(out, Entry{
+		Tool: "bedtag", Subcommand: "tag", UpstreamTool: "bedtools", UsesSubcommand: false,
+		Name: "bedtag_tag", Input: InputBAM, Compare: BAMDecoded,
+		Args: []string{"-i", "{bam}", "-files", "{bed}", "-labels", "iv"},
+	})
 
 	// --- split: -a simple is byte-exact on the produced files; -a size diverges. ---
 	out = append(out,
