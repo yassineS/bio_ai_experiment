@@ -114,6 +114,15 @@ type Entry struct {
 	// Compare selects the comparison strategy. Defaults to ByteExact when empty.
 	Compare CompareMode
 
+	// Tolerance overrides the default relative numeric tolerance used by the
+	// Similarity comparison for THIS entry (0 means use the package default,
+	// 1e-6). It exists for paths whose only divergence is a glibc-version-
+	// dependent libm last-ULP rounding of a printed float — e.g. bcftools call
+	// QUAL, where every other field is byte-exact and the QUAL agrees to ~6
+	// significant figures. A small per-entry tolerance accepts that last-digit
+	// flip while staying far tighter than any real numeric bug.
+	Tolerance float64
+
 	// Heavy marks entries whose timing ratio is worth reporting; the runner
 	// always records wall-clock but only surfaces ratios for heavy entries.
 	Heavy bool
