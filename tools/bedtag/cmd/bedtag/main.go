@@ -6,16 +6,29 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 	"github.com/yassineS/bio_ai_experiment/tools/bedtag/pkg/bedtag"
 )
 
-const usage = `bedtag - Annotate A intervals with B's name column
+const usage = `bedtag - Annotate alignments/intervals from overlaps (Go port of bedtools tag).
 
-Usage:
+Upstream tagBam mode (BAM in, BAM out — selected by -files):
+  bedtag -i <BAM> -files F1 [F2 ...] (-labels L1 [L2 ...] | -names | -scores) [options]
+    -i FILE        Input BAM.
+    -files F...    Annotation BED/GFF/VCF files (space-separated).
+    -labels L...   Per-file label written to the tag on any overlap (default mode).
+    -names         Tag with the overlapping records' name fields instead.
+    -scores        Tag with the overlapping records' score fields instead.
+    -tag XY        Two-character aux tag to write (default YB).
+    -s | -S        Require same / opposite strand overlaps.
+    -f FLOAT       Min overlap as a fraction of the alignment (default 1e-9).
+
+BED-in/BED-out extension mode:
   bedtag -a A.bed -b B.bed[,B2.bed,...] [options]
 
 Options:
@@ -42,10 +55,32 @@ Output:
 const version = "0.1.0"
 
 func main() {
-	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
+	args := os.Args[1:]
+	// The upstream `bedtools tag` model — `-i <BAM> -files F1 .. -labels L1 ..`
+	// — is selected by the presence of -files (its variadic flags can't be
+	// expressed with the standard flag package, so it has a dedicated parser).
+	// Without -files we fall back to the BED-in/BED-out extension below.
+	if hasFlag(args, "-files") {
+		if err := runTagBAM(args, os.Stdout, os.Stderr); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	if err := run(args, os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// hasFlag reports whether token appears as an argument.
+func hasFlag(args []string, token string) bool {
+	for _, a := range args {
+		if a == token {
+			return true
+		}
+	}
+	return false
 }
 
 func run(args []string, stdout, stderr *os.File) error {
@@ -144,6 +179,121 @@ func run(args []string, stdout, stderr *os.File) error {
 		MinOverlap:    minOverlap,
 		FractionA:     fractionA,
 		FractionB:     fractionB,
+	})
+	return err
+}
+
+// runTagBAM implements the upstream `bedtools tag` (tagBam) model: tag a BAM's
+// alignments from overlaps with annotation files. Its -files / -labels flags
+// are variadic (space-separated), so the argv is scanned manually, mirroring
+// tagBamMain.cpp.
+func runTagBAM(args []string, stdout, stderr *os.File) error {
+	var (
+		bamFile   string
+		files     []string
+		labels    []string
+		tag       = "YB"
+		fraction  float64
+		useNames  bool
+		useScores bool
+		sameStr   bool
+		diffStr   bool
+	)
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-i":
+			if i+1 < len(args) {
+				bamFile = args[i+1]
+				i++
+			}
+		case "-files":
+			for i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				files = append(files, args[i+1])
+				i++
+			}
+		case "-labels":
+			for i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				labels = append(labels, args[i+1])
+				i++
+			}
+		case "-names":
+			useNames = true
+		case "-scores":
+			useScores = true
+		case "-s":
+			sameStr = true
+		case "-S":
+			diffStr = true
+		case "-f":
+			if i+1 < len(args) {
+				f, err := strconv.ParseFloat(args[i+1], 64)
+				if err != nil {
+					return fmt.Errorf("invalid -f %q: %w", args[i+1], err)
+				}
+				fraction = f
+				i++
+			}
+		case "-tag":
+			if i+1 < len(args) {
+				tag = args[i+1]
+				i++
+			}
+		case "-h", "--help":
+			fmt.Fprint(stdout, usage)
+			return nil
+		case "-v", "--version":
+			fmt.Fprintln(stdout, version)
+			return nil
+		}
+	}
+	if bamFile == "" {
+		return fmt.Errorf("error: bedtools tag requires -i <BAM>")
+	}
+	if len(files) == 0 {
+		return fmt.Errorf("error: bedtools tag requires -files")
+	}
+	if !useNames && !useScores && len(labels) == 0 {
+		return fmt.Errorf("error: need -labels or -names or -scores")
+	}
+
+	mode := bedtag.TagModeLabels
+	switch {
+	case useNames:
+		mode = bedtag.TagModeNames
+	case useScores:
+		mode = bedtag.TagModeScores
+	}
+
+	annoFiles := make([][]*bed.Record, len(files))
+	for i, p := range files {
+		br, err := iohelper.OpenReader(p)
+		if err != nil {
+			return fmt.Errorf("opening annotation file %s: %w", p, err)
+		}
+		recs, err := bed.NewReader(br).ReadAll()
+		_ = br.Close()
+		if err != nil {
+			return fmt.Errorf("reading annotation file %s: %w", p, err)
+		}
+		annoFiles[i] = recs
+	}
+
+	// BAM is BGZF; sam.NewBAMReader handles the block decompression itself, so
+	// open the file raw rather than through iohelper (which would gunzip it and
+	// hand the reader already-inflated bytes).
+	in, err := os.Open(bamFile)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	_, err = bedtag.TagBAM(in, annoFiles, stdout, bedtag.TagBAMOptions{
+		Tag:            tag,
+		Mode:           mode,
+		Labels:         labels,
+		SameStrand:     sameStr,
+		OppositeStrand: diffStr,
+		MinFraction:    fraction,
 	})
 	return err
 }
