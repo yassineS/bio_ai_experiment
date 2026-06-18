@@ -290,13 +290,15 @@ func bcftoolsSkips() []Entry {
 				"the stdlib-only scope; a genuine near-terminal precision limit.",
 			"-m", "{vcf_pl}"),
 		skip("csq", "csq",
-			"bcftools csq --force: the GFF fixture is valid (all 800 transcripts index on both sides) and most BCSQ consequence strings "+
-				"match, but the haplotype-aware engine still diverges on three fronts over this multi-gene fixture (267 of the records): "+
-				"(1) gene selection for an intron that falls inside two OVERLAPPING genes — upstream reports the earlier-starting gene "+
-				"(gene00012, 18780-) while we report the other (gene00013, 20380-), ~181 sites; (2) the packed FORMAT/BCSQ bitmask index "+
-				"(~85 sites); and (3) the '@<pos>' compound-variant linkage marker pointing at a different neighbour (~44 sites). Matching "+
-				"these needs bcftools' full transcript-ordering + haplotype + compound-linkage engine; the per-tool suite covers the "+
-				"single-variant cases byte-exact.",
+			"bcftools csq --force over the multi-gene fixture is byte-identical to upstream EXCEPT for 3 records, and that residual is an "+
+				"upstream bug we deliberately do not reproduce (fix-on-port). The haplotype-aware engine now matches upstream on the INFO/BCSQ "+
+				"consequence set and order, the FORMAT/BCSQ sample bitmask, intron gene selection for overlapping genes (regidx start-asc/end-desc "+
+				"order; csq_push keeps the first-staged intron), and splice-region ordering (test_splice walks idx_exon, not per-transcript). The "+
+				"only divergence: the '@<pos>' compound-linkage marker on variants 30690/30722/31112 (shared by gene00024's and gene00025's "+
+				"frameshift haplotypes) prints @33495 upstream vs @30420 for us. @30420 is CORRECT — the gene00024 anchor; @33495 is a recycled "+
+				"bcf1_t pointer (vbuf_push SWAPs record slots, so the flushed anchor's slot is reused by a later record before the silent member "+
+				"flushes). See docs/UPSTREAM_BUGS.md#bcftools-csq-prnup-recycled-pos. Reproducing it would mean modelling upstream's record-ring "+
+				"recycling to emit a knowingly-wrong position, against the fix-on-port mandate; this entry stays a documented terminal skip.",
 			"--force", "-f", "{fasta}", "-g", "{gff}", "-p", "a", "{vcf_plain}"),
 		// isec -p writes the four-way Venn decomposition (0000 private to input
 		// 1, 0001 private to input 2, 0002/0003 the shared records from each

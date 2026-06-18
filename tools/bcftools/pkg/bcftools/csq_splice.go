@@ -594,17 +594,12 @@ func (s *hapSplice) stageSplice() {
 	entry.typ.trid = s.ht.tr.ID
 	entry.typ.vcfIal = s.ial
 	entry.typ.gene = s.ht.tr.Gene
-	existed := s.eng.csqPush(entry, s.recV)
-	if s.eng.textMode {
-		// -O t: stage the splice consequence for text output, mirroring
-		// upstream csq_stage_splice -> csq_stage (FT_TAB_TEXT). The VCF
-		// path leaves FORMAT/BCSQ untouched for splice, so this branch is
-		// text-only.
-		if existed && s.eng.phase == phaseDropGT {
-			return
-		}
-		s.eng.stageSimpleText(entry, s.recV)
-	}
+	// csq_stage_splice -> csq_stage: deduplicate into INFO/BCSQ, then (VCF) set
+	// the per-sample FORMAT/BCSQ bit for every haplotype carrying this ALT, or
+	// (-O t) stage a text tuple. The shared pushSimple path does exactly this —
+	// the splice consequence participates in FORMAT/BCSQ like any other, so the
+	// VCF bitmask path must NOT be skipped.
+	s.eng.pushSimple(entry, s.recV)
 }
 
 // eqPrefix reports whether the first n bytes of a and b are equal,

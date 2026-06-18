@@ -706,27 +706,26 @@ func (e *hapEngine) testUTR(rec *hapRecord) bool {
 // Ports test_splice.
 func (e *hapEngine) testSplice(rec *hapRecord) bool {
 	hit := false
-	for _, t := range e.idx.ByChrom[rec.v.Chrom] {
-		if !t.Coding {
+	// Iterate exons globally in idx_exon order (start asc, end desc), not nested
+	// per transcript: upstream test_splice walks idx_exon, so two overlapping
+	// transcripts contribute their splice consequences in exon-position order.
+	for _, ref := range e.idx.SpliceExons[rec.v.Chrom] {
+		if !overlapsPad(rec.pos, rec.rlen, ref.Start-1-nSpliceRegionIntron, ref.End-1+nSpliceRegionIntron) {
 			continue
 		}
-		for _, ex := range t.Exons {
-			if !overlapsPad(rec.pos, rec.rlen, ex.Start-1-nSpliceRegionIntron, ex.End-1+nSpliceRegionIntron) {
+		t := ref.Tr
+		ht := e.getTranscriptForSplice(t)
+		for ial := 1; ial < len(rec.alt); ial++ {
+			if rec.alt[ial] == "" || rec.alt[ial][0] == '<' || rec.alt[ial] == "*" {
 				continue
 			}
-			ht := e.getTranscriptForSplice(t)
-			for ial := 1; ial < len(rec.alt); ial++ {
-				if rec.alt[ial] == "" || rec.alt[ial][0] == '<' || rec.alt[ial] == "*" {
-					continue
-				}
-				s := e.newHapSplice(ht, rec, ial)
-				s.checkAcceptor, s.checkDonor = true, true
-				s.checkRegBeg = t.Beg != ex.Start
-				s.checkRegEnd = t.End != ex.End
-				s.run(ex.Start-1, ex.End-1)
-				if s.csq != 0 {
-					hit = true
-				}
+			s := e.newHapSplice(ht, rec, ial)
+			s.checkAcceptor, s.checkDonor = true, true
+			s.checkRegBeg = t.Beg != ref.Start
+			s.checkRegEnd = t.End != ref.End
+			s.run(ref.Start-1, ref.End-1)
+			if s.csq != 0 {
+				hit = true
 			}
 		}
 	}
