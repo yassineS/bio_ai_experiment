@@ -1,0 +1,179 @@
+diff --git a/src/cpp/variant_file_format_convert.cpp b/src/cpp/variant_file_format_convert.cpp
+index d8f16b8..5dd91ff 100644
+--- a/src/cpp/variant_file_format_convert.cpp
++++ b/src/cpp/variant_file_format_convert.cpp
+@@ -26,7 +26,7 @@ void variant_file::output_as_plink(const parameters &params)
+ 			continue;
+ 
+ 		string new_tmp = params.temp_dir+"/vcftools.XXXXXX";
+-		char tmpname[new_tmp.size()];
++		char tmpname[new_tmp.size()+1];
+ 		strcpy(tmpname, new_tmp.c_str());
+ 
+ 		fd = mkstemp(tmpname);
+@@ -400,7 +400,7 @@ void variant_file::output_as_012_matrix(const parameters &params)
+ 		FAM << meta_data.indv[ui] << endl;
+ 
+ 		string new_tmp = params.temp_dir+"/vcftools.XXXXXX";
+-		char tmpname[new_tmp.size()];
++		char tmpname[new_tmp.size()+1];
+ 		strcpy(tmpname, new_tmp.c_str());
+ 
+ 		fd = mkstemp(tmpname);
+@@ -625,7 +625,7 @@ void variant_file::output_as_LDhat_phased(const parameters &params)
+ 	int ret = -1;
+ 
+ 	string new_tmp = params.temp_dir+"/vcftools.XXXXXX";
+-	char tmpname[new_tmp.size()];
++	char tmpname[new_tmp.size()+1];
+ 	strcpy(tmpname, new_tmp.c_str());
+ 
+ 	ret = mkstemp(tmpname);
+@@ -655,7 +655,7 @@ void variant_file::output_as_LDhat_phased(const parameters &params)
+ 		if (include_indv[ui] == false)
+ 			continue;
+ 
+-		char tmpname[new_tmp.size()];
++		char tmpname[new_tmp.size()+1];
+ 		strcpy(tmpname, new_tmp.c_str());
+ 		ret = mkstemp(tmpname);
+ 		ofstream *tmp_file = new ofstream(tmpname);
+@@ -677,7 +677,7 @@ void variant_file::output_as_LDhat_phased(const parameters &params)
+ 		tmp_files[2*ui] = tmp_file;
+ 		tmp_filenames[2*ui] = tmpname;
+ 
+-		char tmpname2[new_tmp.size()];
++		char tmpname2[new_tmp.size()+1];
+ 		strcpy(tmpname2, new_tmp.c_str());
+ 		ret = mkstemp(tmpname2);
+ 		ofstream *tmp_file2 = new ofstream(tmpname2);
+@@ -808,7 +808,7 @@ void variant_file::output_as_LDhat_unphased(const parameters &params)
+ 	int ret = -1;
+ 
+ 	string new_tmp = params.temp_dir+"/vcftools.XXXXXX";
+-	char tmpname[new_tmp.size()];
++	char tmpname[new_tmp.size()+1];
+ 	strcpy(tmpname, new_tmp.c_str());
+ 
+ 	ret = mkstemp(tmpname);
+@@ -838,7 +838,7 @@ void variant_file::output_as_LDhat_unphased(const parameters &params)
+ 		if (include_indv[ui] == false)
+ 			continue;
+ 
+-		char tmpname[new_tmp.size()];
++		char tmpname[new_tmp.size()+1];
+ 		strcpy(tmpname, new_tmp.c_str());
+ 
+ 		ret = mkstemp(tmpname);
+@@ -992,7 +992,7 @@ void variant_file::output_as_LDhelmet(const parameters &params)
+ 	int ret = -1;
+ 
+ 	string new_tmp = params.temp_dir+"/vcftools.XXXXXX";
+-	char tmpname[new_tmp.size()];
++	char tmpname[new_tmp.size()+1];
+ 	strcpy(tmpname, new_tmp.c_str());
+ 
+ 	ret = mkstemp(tmpname);
+@@ -1023,7 +1023,7 @@ void variant_file::output_as_LDhelmet(const parameters &params)
+ 		if (include_indv[ui] == false)
+ 			continue;
+ 
+-		char tmpname[new_tmp.size()];
++		char tmpname[new_tmp.size()+1];
+ 		strcpy(tmpname, new_tmp.c_str());
+ 		ret = mkstemp(tmpname);
+ 		ofstream *tmp_file = new ofstream(tmpname);
+@@ -1045,7 +1045,7 @@ void variant_file::output_as_LDhelmet(const parameters &params)
+ 		tmp_files[2*ui] = tmp_file;
+ 		tmp_filenames[2*ui] = tmpname;
+ 
+-		char tmpname2[new_tmp.size()];
++		char tmpname2[new_tmp.size()+1];
+ 		strcpy(tmpname2, new_tmp.c_str());
+ 		ret = mkstemp(tmpname2);
+ 		ofstream *tmp_file2 = new ofstream(tmpname2);
+diff --git a/src/cpp/variant_file_output.cpp b/src/cpp/variant_file_output.cpp
+index 4fd32ba..28a5589 100644
+--- a/src/cpp/variant_file_output.cpp
++++ b/src/cpp/variant_file_output.cpp
+@@ -1439,7 +1439,7 @@ void variant_file::output_haplotype_r2(const parameters &params)
+ 	entry *e = get_entry_object();
+ 
+ 	string new_tmp = params.temp_dir+"/vcftools.XXXXXX";
+-	char tmpname[new_tmp.size()];
++	char tmpname[new_tmp.size()+1];
+ 	strcpy(tmpname, new_tmp.c_str());
+ 
+ 	ret = mkstemp(tmpname);
+@@ -1616,7 +1616,7 @@ void variant_file::output_genotype_r2(const parameters &params)
+ 	vector<char> out_line, tmp_int;
+ 
+ 	string new_tmp = params.temp_dir+"/vcftools.XXXXXX";
+-	char tmpname[new_tmp.size()];
++	char tmpname[new_tmp.size()+1];
+ 	strcpy(tmpname, new_tmp.c_str());
+ 
+ 	ret = mkstemp(tmpname);
+@@ -1790,7 +1790,7 @@ void variant_file::output_genotype_chisq(const parameters &params, double min_pv
+ 	vector<char> out_line, tmp_int;
+ 
+ 	string new_tmp = params.temp_dir+"/vcftools.XXXXXX";
+-	char tmpname[new_tmp.size()];
++	char tmpname[new_tmp.size()+1];
+ 	strcpy(tmpname, new_tmp.c_str());
+ 
+ 	ret = mkstemp(tmpname);
+@@ -1955,7 +1955,7 @@ void variant_file::output_interchromosomal_genotype_r2(const parameters &params)
+ 	vector<char> out_line, tmp_int;
+ 
+ 	string new_tmp = params.temp_dir+"/vcftools.XXXXXX";
+-	char tmpname[new_tmp.size()];
++	char tmpname[new_tmp.size()+1];
+ 	strcpy(tmpname, new_tmp.c_str());
+ 
+ 	ret = mkstemp(tmpname);
+@@ -2112,7 +2112,7 @@ void variant_file::output_interchromosomal_haplotype_r2(const parameters &params
+ 	vector<char> out_line, tmp_int;
+ 
+ 	string new_tmp = params.temp_dir+"/vcftools.XXXXXX";
+-	char tmpname[new_tmp.size()];
++	char tmpname[new_tmp.size()+1];
+ 	strcpy(tmpname, new_tmp.c_str());
+ 
+ 	ret = mkstemp(tmpname);
+@@ -2317,7 +2317,7 @@ void variant_file::output_haplotype_r2_of_SNP_list_vs_all_others(const parameter
+ 	entry *e = get_entry_object();
+ 
+ 	string new_tmp = params.temp_dir+"/vcftools.XXXXXX";
+-	char tmpname[new_tmp.size()];
++	char tmpname[new_tmp.size()+1];
+ 	strcpy(tmpname, new_tmp.c_str());
+ 
+ 	ret = mkstemp(tmpname);
+@@ -2326,7 +2326,7 @@ void variant_file::output_haplotype_r2_of_SNP_list_vs_all_others(const parameter
+ 	::close(ret);
+ 	ofstream fd(tmpname, std::ios::out | std::ios::binary);
+ 
+-	char tmpname2[new_tmp.size()];
++	char tmpname2[new_tmp.size()+1];
+ 	strcpy(tmpname2, new_tmp.c_str());
+ 
+ 	ret = mkstemp(tmpname2);
+@@ -2558,7 +2558,7 @@ void variant_file::output_genotype_r2_of_SNP_list_vs_all_others(const parameters
+ 	entry *e = get_entry_object();
+ 
+ 	string new_tmp = params.temp_dir+"/vcftools.XXXXXX";
+-	char tmpname[new_tmp.size()];
++	char tmpname[new_tmp.size()+1];
+ 	strcpy(tmpname, new_tmp.c_str());
+ 
+ 	ret = mkstemp(tmpname);
+@@ -2567,7 +2567,7 @@ void variant_file::output_genotype_r2_of_SNP_list_vs_all_others(const parameters
+ 	::close(ret);
+ 	ofstream fd(tmpname, std::ios::out | std::ios::binary);
+ 
+-	char tmpname2[new_tmp.size()];
++	char tmpname2[new_tmp.size()+1];
+ 	strcpy(tmpname2, new_tmp.c_str());
+ 
+ 	ret = mkstemp(tmpname2);

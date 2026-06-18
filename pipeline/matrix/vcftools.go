@@ -13,13 +13,14 @@ package matrix
 // not, and the log is non-reproducible anyway, so it is never listed in
 // OutputFiles.
 //
-// Several modes in THIS upstream build (vcftools 0.1.14 compiled against a
-// modern glibc with _FORTIFY_SOURCE) abort with a buffer-overflow on the
-// pairwise-LD (--geno-r2/--hap-r2) and 012-matrix (--012) writers, even on a
-// trivially clean VCF. Those three are real upstream crashes (our port produces
-// correct output), so they are Skipped with the reason recorded rather than
-// producing a spurious exit-mismatch DIVERGE. --LROH runs cleanly when given the
-// required --chr and is byte-exact (its forward-backward HMM is ported).
+// vcftools 0.1.14 has a temp-file off-by-one VLA that a modern glibc
+// (_FORTIFY_SOURCE on at -O2) aborts on, so the pairwise-LD (--geno-r2/--hap-r2)
+// and 012-matrix (--012) writers crash before producing output. The vendored
+// build applies reference_code/patches/vcftools-tmpfile-vla-off-by-one.patch,
+// after which: --012 is byte-exact (closed); --geno-r2 emits the same pairs in a
+// different order plus a few near-zero r^2 residuals (our-side fix pending);
+// --hap-r2 needs a phased fixture (the unphased multi-sample VCF yields no LD
+// sites). --LROH runs cleanly with the required --chr and is byte-exact.
 
 func init() {
 	Register(vcftoolsMatrix()...)
@@ -100,14 +101,24 @@ func vcftoolsMatrix() []Entry {
 	}
 	entries = append(entries,
 		crash("geno_r2", ".geno.ld",
-			"upstream vcftools --geno-r2 aborts with a glibc buffer-overflow on this build (even on a clean 3-sample VCF); our port produces correct output. Upstream bug.",
+			"upstream vcftools --geno-r2 needs the vendored binary's temp-file off-by-one patched to run (see reference_code/patches). With that, "+
+				"it emits the same 7,996,827 pairs and r^2 values as our port, but in a different ORDER (upstream loops outer over the first SNP; "+
+				"we emit each pair as the second SNP is read) and a few r^2 that upstream computes as exactly 0 we get as ~3e-32 roundoff. Our-side "+
+				"ordering + near-zero-residual fix pending.",
 			"--geno-r2"),
 		crash("hap_r2", ".hap.ld",
-			"upstream vcftools --hap-r2 aborts with a glibc buffer-overflow on this build; our port produces correct output. Upstream bug.",
+			"upstream vcftools --hap-r2 needs PHASED genotypes; the multi-sample fixture is unphased, so upstream errors 'Insufficient sites "+
+				"remained after filtering' and emits no LD. Needs a phased fixture to exercise (and the temp-file patch to run).",
 			"--hap-r2"),
-		crash("matrix012", ".012",
-			"upstream vcftools --012 aborts with a glibc buffer-overflow in the 012-matrix writer on this build (even on a clean VCF); our port produces correct output. Upstream bug.",
-			"--012"),
+		// --012: with the vendored binary's temp-file off-by-one patched (see
+		// reference_code/patches), upstream writes the .012 matrix plus the
+		// .012.indv (sample list) and .012.pos (CHROM/POS list) sidecars; all
+		// three are byte-exact against our port.
+		func() Entry {
+			e := multiS("matrix012", ".012", "--012")
+			e.OutputFiles = []string{".012", ".012.indv", ".012.pos"}
+			return e
+		}(),
 		// --LROH detects runs of homozygosity via the Boyko/Auton forward-
 		// backward HMM. Upstream requires a single --chr, so the entry passes
 		// --chr chr1; our port reproduces the 8-column report (including the
