@@ -67,7 +67,7 @@ var hint = map[string]string{
 	"sickle":   "git submodule update --init reference_code/sickle && (cd reference_code/sickle && make)",
 	"skewer":   "git submodule update --init reference_code/skewer && (cd reference_code/skewer && make)",
 	"fastp":    "git submodule update --init reference_code/fastp && (cd reference_code/fastp && make)",
-	"vcftools": "git submodule update --init reference_code/vcftools && (cd reference_code/vcftools && ./autogen.sh && ./configure && make)",
+	"vcftools": "git submodule update --init reference_code/vcftools && (cd reference_code/vcftools && git apply ../patches/vcftools-tmpfile-vla-off-by-one.patch && ./autogen.sh && ./configure && make)",
 	"prinseq":  "git submodule update --init reference_code/prinseq (prinseq-lite.pl is a Perl script; ensure `perl` is on PATH)",
 }
 
