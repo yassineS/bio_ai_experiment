@@ -195,8 +195,14 @@ func computeGenoR2(a, b *ldSite) (int, float64, bool) {
 		if ga < 0 || gb < 0 {
 			continue
 		}
-		fa := float64(ga)
-		fb := float64(gb)
+		// Encode as the REFERENCE-allele count (0/0->2, 0/1->1, 1/1->0), exactly
+		// as upstream calc_geno_r2 does (sx/sy). r^2 is invariant to the
+		// 2-x reflection, but reproducing upstream's encoding makes the
+		// floating-point sums — and the XY - X*Y cancellation that yields an
+		// exact 0 for uncorrelated sites — bit-identical. genoCounts holds the
+		// ALT-allele count, so the reference count is 2-count.
+		fa := float64(2 - ga)
+		fb := float64(2 - gb)
 		sumA += fa
 		sumB += fb
 		sumAB += fa * fb
@@ -418,91 +424,95 @@ func (r *ldRunner) addVariant(v *vcf.Variant) {
 		return
 	}
 	if site.chrom != r.chrom {
+		// Emit the just-completed chromosome's pairs, then start the next.
+		r.flushChrom()
 		r.window = r.window[:0]
 		r.chromIdx = 0
 		r.chrom = site.chrom
 	}
 	r.chromIdx++
 	site.chromIdx = r.chromIdx
-
-	for _, prev := range r.window {
-		if !withinLDWindow(prev, site, r.params) {
-			continue
-		}
-		if r.wantGeno {
-			if ldPositionAllowed(prev, site, r.genoPos, r.params.GenoR2Positions != "") {
-				n, r2, ok := computeGenoR2(prev, site)
-				if ok && r2 >= r.params.MinR2 {
-					r.genoW.writeLine(fmt.Sprintf("%s\t%d\t%d\t%d\t%s\n",
-						prev.chrom, prev.pos, site.pos, n, formatCppDefault(r2)))
-				}
-			}
-		}
-		if r.wantHap {
-			if ldPositionAllowed(prev, site, r.hapPos, r.params.HapR2Positions != "") {
-				n, r2, D, Dp, ok := computeHapR2(prev, site)
-				if ok && r2 >= r.params.MinR2 {
-					r.hapW.writeLine(fmt.Sprintf("%s\t%d\t%d\t%d\t%s\t%s\t%s\n",
-						prev.chrom, prev.pos, site.pos, n,
-						formatCppDefault(r2), formatCppDefault(D), formatCppDefault(Dp)))
-				}
-			}
-		}
-	}
-
-	r.window = append(r.window, site)
-	r.pruneWindow(site)
-}
-
-// pruneWindow drops sites from the front of the window when *both* configured
-// maximum-distance constraints have been exceeded relative to the latest
-// site. Future sites can only be further along the chromosome so once a site
-// drops out of every window it stays out.
-func (r *ldRunner) pruneWindow(latest *ldSite) {
+	// Emit and drop every front-of-window site that can no longer pair with this
+	// or any later site (its max window is already exceeded), keeping memory
+	// bounded for windowed runs while preserving the outer-first-SNP order.
 	cut := 0
-	for cut < len(r.window) {
-		prev := r.window[cut]
-		snpDist := latest.chromIdx - prev.chromIdx
-		bpDist := latest.pos - prev.pos
-		if bpDist < 0 {
-			bpDist = -bpDist
-		}
-		// A prev site is irrelevant for all future pairs iff at least one
-		// configured maximum is already exceeded. Use the AND of "exceeded"
-		// flags so that with neither maximum set we never prune (keep all,
-		// matching unbounded default).
-		exceededSNP := r.params.LDWindow > 0 && snpDist >= r.params.LDWindow
-		exceededBp := r.params.LDWindowBp > 0 && bpDist >= r.params.LDWindowBp
-		neitherSet := r.params.LDWindow == 0 && r.params.LDWindowBp == 0
-		if neitherSet {
-			break
-		}
-		if !exceededSNP && !exceededBp {
-			break
-		}
-		// If only one window is configured, "exceeded" of that one is enough.
-		// If both are configured, require the *less* restrictive (or rather:
-		// either) to be exceeded to be safe — we only prune when the prev
-		// can never re-enter via the other window either.
-		if r.params.LDWindow > 0 && r.params.LDWindowBp > 0 {
-			if !(exceededSNP && exceededBp) {
-				break
-			}
-		}
+	for cut < len(r.window) && r.maxWindowExceeded(r.window[cut], site) {
+		r.emitSitePairs(cut)
 		cut++
 	}
-	if cut == 0 {
-		return
+	if cut > 0 {
+		r.window = append(r.window[:0], r.window[cut:]...)
 	}
-	r.window = append(r.window[:0], r.window[cut:]...)
+	r.window = append(r.window, site)
 }
 
-// close flushes and closes all open LD output files. Returns the first error
-// encountered.
+// maxWindowExceeded reports whether `latest` is past `f`'s maximum LD window, so
+// neither `latest` nor any later site can pair with `f`. With no maximum window
+// configured it is always false (the unbounded default buffers the whole
+// chromosome and emits at flushChrom).
+func (r *ldRunner) maxWindowExceeded(f, latest *ldSite) bool {
+	if f.chrom != latest.chrom {
+		return true
+	}
+	snp := latest.chromIdx - f.chromIdx
+	bp := latest.pos - f.pos
+	if bp < 0 {
+		bp = -bp
+	}
+	if r.params.LDWindow > 0 && snp > r.params.LDWindow {
+		return true
+	}
+	if r.params.LDWindowBp > 0 && bp > r.params.LDWindowBp {
+		return true
+	}
+	return false
+}
+
+// emitSitePairs writes the in-window pairs whose FIRST site is window[i] and
+// second site is each later buffered site — the inner loop of upstream
+// vcftools' output_genotype_r2 (outer over the first site, inner over each
+// later one). Our previous streaming emit grouped pairs by the second site,
+// which produced the same set in a different order.
+func (r *ldRunner) emitSitePairs(i int) {
+	a := r.window[i]
+	for j := i + 1; j < len(r.window); j++ {
+		b := r.window[j]
+		if !withinLDWindow(a, b, r.params) {
+			continue
+		}
+		if r.wantGeno && ldPositionAllowed(a, b, r.genoPos, r.params.GenoR2Positions != "") {
+			n, r2, ok := computeGenoR2(a, b)
+			if ok && r2 >= r.params.MinR2 {
+				r.genoW.writeLine(fmt.Sprintf("%s\t%d\t%d\t%d\t%s\n",
+					a.chrom, a.pos, b.pos, n, formatCppDefault(r2)))
+			}
+		}
+		if r.wantHap && ldPositionAllowed(a, b, r.hapPos, r.params.HapR2Positions != "") {
+			n, r2, D, Dp, ok := computeHapR2(a, b)
+			if ok && r2 >= r.params.MinR2 {
+				r.hapW.writeLine(fmt.Sprintf("%s\t%d\t%d\t%d\t%s\t%s\t%s\n",
+					a.chrom, a.pos, b.pos, n,
+					formatCppDefault(r2), formatCppDefault(D), formatCppDefault(Dp)))
+			}
+		}
+	}
+}
+
+// flushChrom emits the pairs for every site remaining in the window (those whose
+// max window was never exceeded), in outer-first-SNP order.
+func (r *ldRunner) flushChrom() {
+	for i := range r.window {
+		r.emitSitePairs(i)
+	}
+}
+
+// close emits the final chromosome's pairs, then flushes and closes all open LD
+// output files. Returns the first error encountered.
 func (r *ldRunner) close() error {
 	if r == nil {
 		return nil
 	}
+	r.flushChrom()
 	var firstErr error
 	if err := r.genoW.close(); err != nil {
 		firstErr = err
