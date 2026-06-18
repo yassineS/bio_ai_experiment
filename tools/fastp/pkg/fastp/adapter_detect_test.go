@@ -51,6 +51,27 @@ func TestDetectAdapterSEPicksTruSeq(t *testing.T) {
 	}
 }
 
+// TestDetectAdaptersForPE verifies the --detect_adapter_for_pe path detects
+// each mate's adapter by running the single-file evaluator on read1 and read2
+// independently (upstream main.cpp:447-480), not pairwise.
+func TestDetectAdaptersForPE(t *testing.T) {
+	pairs := make([][2]*fastq.Record, 0, 12000)
+	for i := 0; i < 12000; i++ {
+		ins1 := strings.Repeat("ACGTACGT", 4) + string("ACGT"[i%4])
+		ins2 := strings.Repeat("TGCATGCA", 4) + string("ACGT"[(i+1)%4])
+		r1 := makeSERead("r", ins1+truseqAdapter, 'I')
+		r2 := makeSERead("r", ins2+truseqAdapter, 'I')
+		pairs = append(pairs, [2]*fastq.Record{r1, r2})
+	}
+	a1, a2 := DetectAdaptersForPE(pairs)
+	if a1 == "" || a2 == "" {
+		t.Fatalf("DetectAdaptersForPE = (%q, %q); expected both detected", a1, a2)
+	}
+	if !strings.HasPrefix(a1, truseqAdapter[:10]) || !strings.HasPrefix(a2, truseqAdapter[:10]) {
+		t.Errorf("DetectAdaptersForPE = (%q, %q); expected TruSeq-like prefixes", a1, a2)
+	}
+}
+
 func TestDetectAdapterSEBelowMinRecordsReturnsEmpty(t *testing.T) {
 	// Upstream evaluator.cpp:344 requires records >= 10000 before
 	// detection runs. With fewer reads we must return "" — this is the

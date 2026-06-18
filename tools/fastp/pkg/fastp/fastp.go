@@ -574,17 +574,18 @@ func ProcessPairedEndMerge(input1, input2 io.Reader, output1, output2, mergeOutp
 		for i, p := range detectBuffer {
 			pairs[i] = [2]*fastq.Record{p.r1, p.r2}
 		}
-		r1Adapter, r2Adapter := DetectAdaptersFromPairs(pairs)
+		r1Adapter, r2Adapter := DetectAdaptersForPE(pairs)
 		stats.DetectedAdapterR1 = r1Adapter
 		stats.DetectedAdapterR2 = r2Adapter
 		if r1Adapter != "" {
 			stats.DetectedAdapter = r1Adapter
 		}
+		// Both detected adapters are 3' adapters (upstream's
+		// read1/read2_adapter_sequence). Our PE pipeline trims both mates with
+		// opts.Adapter3; for standard Illumina chemistry the read1 and read2
+		// adapters are identical, so the read1 adapter drives the 3' trim.
 		if opts.Adapter3 == "" && r1Adapter != "" {
 			opts.Adapter3 = r1Adapter
-		}
-		if opts.Adapter5 == "" && r2Adapter != "" {
-			opts.Adapter5 = r2Adapter
 		}
 	}
 
@@ -870,17 +871,18 @@ func ProcessPairedEndSplit(input1, input2 io.Reader, outputBase1, outputBase2 st
 		for i := 0; i < sample; i++ {
 			pairs[i] = [2]*fastq.Record{records1[i], records2[i]}
 		}
-		r1Adapter, r2Adapter := DetectAdaptersFromPairs(pairs)
+		r1Adapter, r2Adapter := DetectAdaptersForPE(pairs)
 		stats.DetectedAdapterR1 = r1Adapter
 		stats.DetectedAdapterR2 = r2Adapter
 		if r1Adapter != "" {
 			stats.DetectedAdapter = r1Adapter
 		}
+		// Both detected adapters are 3' adapters (upstream's
+		// read1/read2_adapter_sequence). Our PE pipeline trims both mates with
+		// opts.Adapter3; for standard Illumina chemistry the read1 and read2
+		// adapters are identical, so the read1 adapter drives the 3' trim.
 		if opts.Adapter3 == "" && r1Adapter != "" {
 			opts.Adapter3 = r1Adapter
-		}
-		if opts.Adapter5 == "" && r2Adapter != "" {
-			opts.Adapter5 = r2Adapter
 		}
 	}
 	if opts.OverrepAnalysis {

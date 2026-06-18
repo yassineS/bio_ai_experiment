@@ -122,6 +122,23 @@ func DetectAdapterPE(r1, r2 *fastq.Record) string {
 	return s1[tailStart:]
 }
 
+// DetectAdaptersForPE detects the read1 and read2 adapters for
+// --detect_adapter_for_pe. Upstream fastp (main.cpp:447-480) does NOT detect
+// the PE adapter pairwise: it runs the same single-file evaluator
+// (evalAdapterAndReadNum) independently on the read1 file and the read2 file,
+// exactly as for SE auto-detection. We mirror that by running DetectAdapterSE
+// over each mate's reads separately, which matches upstream's
+// read1_adapter_sequence / read2_adapter_sequence.
+func DetectAdaptersForPE(pairs [][2]*fastq.Record) (r1Adapter, r2Adapter string) {
+	r1 := make([]*fastq.Record, len(pairs))
+	r2 := make([]*fastq.Record, len(pairs))
+	for i, p := range pairs {
+		r1[i] = p[0]
+		r2[i] = p[1]
+	}
+	return DetectAdapterSE(r1), DetectAdapterSE(r2)
+}
+
 // DetectAdaptersFromPairs runs DetectAdapterPE on each pair, then
 // returns the most-common detected R1 adapter and (mirrored) R2 adapter.
 // The returned strings are "" if no clear consensus emerges.
@@ -129,6 +146,9 @@ func DetectAdapterPE(r1, r2 *fastq.Record) string {
 // The R2 adapter is derived by taking R2's 3' unaligned tail in the same
 // way (i.e. running the algorithm symmetrically): for each pair we
 // reverse-complement R1 and check against R2.
+//
+// Deprecated: upstream detects PE adapters per-file, not pairwise; use
+// DetectAdaptersForPE. Retained for the existing unit tests.
 func DetectAdaptersFromPairs(pairs [][2]*fastq.Record) (r1Adapter, r2Adapter string) {
 	r1Candidates := map[string]int{}
 	r2Candidates := map[string]int{}
