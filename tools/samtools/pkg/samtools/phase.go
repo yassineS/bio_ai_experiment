@@ -318,7 +318,13 @@ func Phase(in io.Reader, out io.Writer, opts PhaseOptions) (int, error) {
 	}
 
 	emitted := 0
-	for _, ref := range refOrder {
+	// vposShift (the global het index) is carried across references: upstream
+	// runs one continuous pileup and only resets at a tid change, just before
+	// flushing the previous chromosome's trailing buffer. runUpstreamPhase
+	// applies that reset before its final flush (for all but the last ref), so
+	// the counter must start at 0 once here, not per reference.
+	runner.vposShift = 0
+	for ri, ref := range refOrder {
 		recs := byRef[ref]
 		sort.SliceStable(recs, func(i, j int) bool { return recs[i].Pos < recs[j].Pos })
 		// runUpstreamPhase interleaves phaseEmit with dump_aln when
@@ -326,7 +332,7 @@ func Phase(in io.Reader, out io.Writer, opts PhaseOptions) (int, error) {
 		// on reads with confident haplotype evidence. Evidence-less
 		// reads use math/rand (seeded RNG) rather than upstream's
 		// drand48 — see PhaseOptions.RNGSeed.
-		n, err := runUpstreamPhase(runner, recs, ref, bw, bamSplit, rng, opts)
+		n, err := runUpstreamPhase(runner, recs, ref, ri == len(refOrder)-1, bw, bamSplit, rng, opts)
 		if err != nil {
 			return emitted, err
 		}

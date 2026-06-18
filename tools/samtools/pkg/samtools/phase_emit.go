@@ -47,14 +47,19 @@ type upstreamPhaseRunner struct {
 // (FLAG_DROP_AMBI).
 //
 // Returns the number of het sites emitted on this reference.
-func runUpstreamPhase(g *upstreamPhaseRunner, recs []*sam.Record, rname string, bw *bufio.Writer, bs *bamSplitWriter, rng phaseRNG, opts PhaseOptions) (int, error) {
+func runUpstreamPhase(g *upstreamPhaseRunner, recs []*sam.Record, rname string, isLastRef bool, bw *bufio.Writer, bs *bamSplitWriter, rng phaseRNG, opts PhaseOptions) (int, error) {
 	pp := newPhaseStreamPileup(recs, rname)
 	em := errmod.Init(1.0 - 0.83)
 	bases := make([]uint16, 0, g.maxDepth)
 	cns := make([]uint64, 0, 256)
 	vpos := 0
 	hash := newFragKhash()
-	g.vposShift = 0
+	// g.vposShift is NOT reset here: upstream resets vpos_shift to 0 at a tid
+	// change *before* flushing the previous chromosome's trailing buffer (so
+	// that buffer's hets are renumbered from 0 and the new chromosome continues
+	// from there). The reset is therefore applied just before this reference's
+	// final flush below, not at its start — except for the last reference,
+	// whose trailing buffer upstream flushes at end-of-stream with no reset.
 	emitted := 0
 	q := make([]float32, 16)
 	// cursor over `recs` — head of the per-reference queue not yet
@@ -198,7 +203,14 @@ func runUpstreamPhase(g *upstreamPhaseRunner, recs []*sam.Record, rname string, 
 		}
 		vpos++
 	}
-	// Final flush for any remaining vpos > 0.
+	// Final flush for any remaining vpos > 0. Upstream resets vpos_shift to 0
+	// at the next chromosome's arrival, just before this flush — so the
+	// trailing block is renumbered from 0 and the next reference continues from
+	// there. The last reference has no following chromosome, so it keeps the
+	// accumulated counter (upstream's end-of-stream phase() with no reset).
+	if !isLastRef {
+		g.vposShift = 0
+	}
 	if vpos > 0 {
 		n2, err := phaseEmit(g, rname, vpos, cns, hash, bw)
 		if err != nil {
