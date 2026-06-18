@@ -91,3 +91,25 @@ func refBaseIndex(b byte) int {
 func (m substMatrix) lookup(refBase byte, code byte) byte {
 	return m.table[refBaseIndex(refBase)][code&0x3]
 }
+
+// substCodeFor returns the 2-bit substitution code that names readBase
+// relative to refBase under the DEFAULT substitution matrix (SM rows all
+// 0x1B), the inverse of lookup with that matrix. The writer emits no SM entry,
+// so the decoder's newSubstMatrix(nil) builds exactly this default — code j
+// decodes to substCandidates[refIdx][j] — and the encoder must therefore set
+// code = the index of readBase among the candidates (the bases ACGTN with the
+// reference base removed, order preserved). An unrecognised read base maps to
+// the N candidate. Callers only invoke this for a genuine mismatch
+// (readBase != refBase), so readBase is always one of the four candidates.
+func substCodeFor(refBase, readBase byte) byte {
+	r := refBaseIndex(refBase)
+	rb := substBases[refBaseIndex(readBase)] // normalise non-ACGTN read base to N
+	for j := 0; j < 4; j++ {
+		if substCandidates[r][j] == rb {
+			return byte(j)
+		}
+	}
+	// readBase == refBase (not a real substitution) — should not happen; fall
+	// back to code 0 so the value is at least well-defined.
+	return 0
+}

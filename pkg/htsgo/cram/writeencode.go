@@ -27,6 +27,7 @@ type seriesBuffers struct {
 	sc, scLen              []byte // soft-clip values and lengths.
 	dl, rs, pd, hc         []byte // deletion/skip/pad/hard-clip lengths.
 	ba                     []byte // single bases (unmapped reads).
+	bs                     []byte // base-substitution codes (feature 'X', reference-based encoding).
 	qs                     []byte // quality scores.
 
 	// tagLens and tagVals hold each auxiliary tag's BYTE_ARRAY_LEN series:
@@ -53,7 +54,7 @@ func newSeriesBuffers() *seriesBuffers {
 // lossy quality-binning scheme applied to each record's QUAL (BinningNone
 // leaves quality untouched). recordCounter is the running record total of
 // all earlier containers.
-func encodeContainer(version Version, binning QualityBinning, records []*sam.Record, refIndex map[string]int32, recordCounter int64) ([]byte, error) {
+func encodeContainer(version Version, binning QualityBinning, records []*sam.Record, refIndex map[string]int32, reference map[string][]byte, recordCounter int64) ([]byte, error) {
 	if len(records) == 0 {
 		return nil, fmt.Errorf("cram: cannot encode an empty container")
 	}
@@ -64,12 +65,13 @@ func encodeContainer(version Version, binning QualityBinning, records []*sam.Rec
 	refID, multiRef := sliceRefScope(records, refIndex)
 
 	enc := &recordEncoder{
-		version:  version,
-		intw:     newIntWriter(version),
-		refIndex: refIndex,
-		multiRef: multiRef,
-		binning:  binning,
-		buffers:  newSeriesBuffers(),
+		version:   version,
+		intw:      newIntWriter(version),
+		refIndex:  refIndex,
+		multiRef:  multiRef,
+		reference: reference,
+		binning:   binning,
+		buffers:   newSeriesBuffers(),
 	}
 	if err := enc.encodeAll(records); err != nil {
 		return nil, err
@@ -315,6 +317,7 @@ func (sb *seriesBuffers) blocks(version Version, tagKeys []tagKey) (data [][]byt
 	add(cidFP, sb.fp)
 	add(cidBB, sb.bb)
 	add(cidBBLen, sb.bbLen)
+	add(cidBS, sb.bs)
 	add(cidBA, sb.ba)
 	add(cidQS, sb.qs)
 	add(cidIN, sb.in)
@@ -346,6 +349,14 @@ type recordEncoder struct {
 
 	refIndex map[string]int32
 	multiRef bool
+	// reference maps a contig name to its full reference bases. When a
+	// mapped record's contig is present here, encodeFeatures diffs the read
+	// against the reference and emits a substitution feature only at each
+	// mismatch (the matched bases are reconstructed from the reference on
+	// decode), exactly as upstream CRAM does. When nil, or the contig is
+	// absent, the writer falls back to the self-contained reference-free
+	// encoding (every M/=/X run carried literally in a base-stretch feature).
+	reference map[string][]byte
 	// binning is the lossy quality-binning scheme applied to each
 	// record's QUAL before it is appended to the QS series. BinningNone
 	// leaves quality untouched.

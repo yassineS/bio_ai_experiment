@@ -16,6 +16,7 @@ import (
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/cram"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/hfile"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/region"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
@@ -666,7 +667,18 @@ func openViewWriter(out io.Writer, hdr *sam.Header, opts ViewOptions) (sam.Write
 		if err != nil {
 			return nil, err
 		}
-		w = alnio.NewCRAMWriterOpts(out, alnio.CRAMWriteOptions{QualityBinning: binning})
+		// With -T/--reference, load the reference so the writer can encode
+		// reads reference-based (only mismatches stored) — far smaller and
+		// faster, matching upstream CRAM. Without it the writer falls back to
+		// the self-contained reference-free encoding.
+		var ref map[string][]byte
+		if opts.Reference != "" {
+			ref, err = loadReferenceMap(opts.Reference, hdr)
+			if err != nil {
+				return nil, err
+			}
+		}
+		w = alnio.NewCRAMWriterOpts(out, alnio.CRAMWriteOptions{QualityBinning: binning, Reference: ref})
 	case opts.OutputBAM:
 		bw, err := sam.NewBAMWriterOptions(out, sam.BAMWriterOptions{
 			Uncompressed: opts.Uncompressed,
@@ -694,6 +706,33 @@ func openViewWriter(out io.Writer, hdr *sam.Header, opts ViewOptions) (sam.Write
 		return nil, err
 	}
 	return w, nil
+}
+
+// loadReferenceMap loads the bases of every header @SQ contig present in the
+// FASTA at refPath into a name->bases map for reference-based CRAM encoding.
+// Contigs absent from the FASTA are skipped (reads on them fall back to the
+// reference-free per-read encoding). The whole referenced sequence is held in
+// memory, matching how a CRAM encode needs random access to it; a lazy
+// faidx-backed provider would lower peak memory for very large genomes.
+func loadReferenceMap(refPath string, hdr *sam.Header) (map[string][]byte, error) {
+	ra, err := fasta.OpenRandomAccess(refPath)
+	if err != nil {
+		return nil, fmt.Errorf("samtools view: open reference %s: %w", refPath, err)
+	}
+	defer ra.Close()
+	ref := make(map[string][]byte, len(hdr.Refs))
+	for _, sq := range hdr.Refs {
+		n := ra.Length(sq.Name)
+		if n <= 0 {
+			continue // contig not in the FASTA index
+		}
+		seq, ferr := ra.Fetch(sq.Name, 0, n)
+		if ferr != nil {
+			return nil, fmt.Errorf("samtools view: fetch reference %s: %w", sq.Name, ferr)
+		}
+		ref[sq.Name] = seq
+	}
+	return ref, nil
 }
 
 // closeViewWriter flushes the writer if it is non-nil.
