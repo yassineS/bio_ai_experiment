@@ -1667,3 +1667,38 @@ binary including a `.`-strand record in
 `tools/bed12tobed6/pkg/bed12tobed6/live_parity_test.go`
 (`TestLiveParity_ScoredNumbered`) and unit-covered binary-free by
 `TestUnit_NumberBlocksDotStrand`.
+
+## bcftools csq: `@<pos>` compound marker prints a recycled record's position <a id="bcftools-csq-prnup-recycled-pos"></a>
+
+When a variant participates in a compound (haplotype-combined) consequence,
+`csq.c` prints a "printed upstream" marker `@<pos>` on the silent member
+records, where `<pos>` is meant to be the position of the record that carries
+the full consequence string (the haplotype anchor). The marker stores a
+**`bcf1_t*` pointer** to that anchor record (`csq.c` `hap_add_csq`,
+`tmp_csq->type.ref = hap->stack[ref_node].node->rec`) and resolves
+`ref->pos+1` only later, at output time (`kput_vcsq`).
+
+Those `bcf1_t` records live in a recycled ring buffer: `vbuf_push` does
+`SWAP(bcf1_t*, *rec_ptr, vrec->line)`, so once the anchor record's `vbuf`
+slot is flushed it is reused for a **later** incoming record. When a variant
+is shared between two *overlapping genes'* compound haplotypes, one gene's
+anchor can be flushed and its `bcf1_t` recycled while the silent member is
+still buffered (held by the other gene's still-active transcript). The marker
+then prints the **recycled** record's position instead of the anchor's.
+
+Concretely, on the parity fixture at `chr1` the variants 30690/30722/31112 are
+shared by `gene00024`'s frameshift (anchor 30420, `+`) and `gene00025`'s
+frameshift (anchor 31623, `−`). Upstream prints `BCSQ=@33495,@31623`, but
+`@33495` is wrong: instrumenting `hap_add_csq` shows the marker is correctly
+attributed to `gene00024` with `ref->pos+1 == 30420` at staging time;
+by output time the same pointer reads `33495` (an unrelated
+`intron|gene00025` record that reused the slot). The intended value is the
+gene00024 anchor, **30420**.
+
+**Our behaviour:** fixed on port. We resolve the anchor position by value when
+the marker is staged, so the shared members correctly print
+`BCSQ=@30420,@31623`. Everything else in the haplotype-aware engine — the
+INFO/BCSQ consequence set and order, the FORMAT/BCSQ sample bitmask, the
+intron gene selection, and the splice-region ordering — is byte-identical to
+upstream over this multi-gene fixture; this recycled-pointer `@pos` is the one
+place our output is deliberately *more* correct than upstream's.

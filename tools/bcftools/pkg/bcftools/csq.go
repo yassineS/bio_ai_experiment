@@ -409,6 +409,14 @@ type CSQIndex struct {
 	// lookup.
 	ByChrom map[string][]*CSQTranscript
 
+	// SpliceExons is the flattened per-contig exon list of all coding
+	// transcripts, ordered the way htslib's idx_exon returns overlaps (by
+	// start ascending, end descending). test_splice iterates idx_exon, not the
+	// per-transcript exon lists, so two overlapping transcripts contribute
+	// their splice_region consequences in exon-position order — which differs
+	// from transcript-start order and decides the INFO/BCSQ entry order.
+	SpliceExons map[string][]csqExonRef
+
 	// Genes holds the parsed gene features in GFF appearance order.
 	// Retained only for --dump-gff (mirrors upstream's gid2gene table).
 	Genes []*CSQGene
@@ -469,6 +477,14 @@ type CSQTranscript struct {
 	// child CDS/exon/UTR feature. Mirrors upstream's tr->used flag and
 	// is emitted by --dump-gff.
 	Used bool
+}
+
+// csqExonRef is one exon paired with its parent transcript, used to
+// build the flattened idx_exon-ordered splice index (CSQIndex.SpliceExons).
+type csqExonRef struct {
+	Start int
+	End   int
+	Tr    *CSQTranscript
 }
 
 // CSQExon is one exon (genomic coordinates, 1-based inclusive). For a
@@ -536,6 +552,7 @@ func loadCSQIndexUnified(fastaPath, gffPath, prefixVCF, prefixGFF, prefixFAI str
 		Refs:        make(map[string][]byte),
 		Transcripts: make(map[string]*CSQTranscript),
 		ByChrom:     make(map[string][]*CSQTranscript),
+		SpliceExons: make(map[string][]csqExonRef),
 	}
 
 	// Load FASTA.
@@ -700,6 +717,53 @@ func loadCSQIndexUnified(fastaPath, gffPath, prefixVCF, prefixGFF, prefixFAI str
 		finalizeTranscript(t, idx.Refs[t.Chrom])
 		sort.Slice(t.UTRs, func(i, j int) bool { return t.UTRs[i].Start < t.UTRs[j].Start })
 		idx.ByChrom[t.Chrom] = append(idx.ByChrom[t.Chrom], t)
+	}
+	// Order each contig's transcript list the way htslib's regidx returns
+	// overlaps: by start ascending, then end DESCENDING (longer spans first —
+	// cmp_regs in regidx.c), with a deterministic ID tie-break. csq.c iterates
+	// idx_tscript / idx_cds / idx_utr in this order, and csq_push keeps the
+	// FIRST-staged consequence on a dedup (e.g. an intron shared by two
+	// overlapping genes collapses onto the earlier-starting transcript), so the
+	// scan order decides the winner. Building ByChrom from a Go map left it in
+	// randomised iteration order; matching regidx makes that selection — and the
+	// BCSQ consequence ordering it feeds — deterministic and upstream-faithful.
+	for chrom := range idx.ByChrom {
+		list := idx.ByChrom[chrom]
+		sort.Slice(list, func(i, j int) bool {
+			if list[i].Beg != list[j].Beg {
+				return list[i].Beg < list[j].Beg
+			}
+			if list[i].End != list[j].End {
+				return list[i].End > list[j].End
+			}
+			return list[i].ID < list[j].ID
+		})
+	}
+	// Flatten coding transcripts' exons into the idx_exon-ordered splice index
+	// (start ascending, end descending, transcript-ID tie-break). test_splice
+	// only considers coding transcripts (the !tr->ncds skip), so non-coding
+	// transcripts are excluded here.
+	for chrom, list := range idx.ByChrom {
+		for _, t := range list {
+			if !t.Coding {
+				continue
+			}
+			for _, ex := range t.Exons {
+				idx.SpliceExons[chrom] = append(idx.SpliceExons[chrom], csqExonRef{Start: ex.Start, End: ex.End, Tr: t})
+			}
+		}
+	}
+	for chrom := range idx.SpliceExons {
+		ex := idx.SpliceExons[chrom]
+		sort.Slice(ex, func(i, j int) bool {
+			if ex[i].Start != ex[j].Start {
+				return ex[i].Start < ex[j].Start
+			}
+			if ex[i].End != ex[j].End {
+				return ex[i].End > ex[j].End
+			}
+			return ex[i].Tr.ID < ex[j].Tr.ID
+		})
 	}
 	return idx, nil
 }
