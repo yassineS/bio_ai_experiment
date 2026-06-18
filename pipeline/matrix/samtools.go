@@ -272,11 +272,15 @@ func samtoolsBinaryOutputSkips() []Entry {
 			Name: "samtools_import", Input: InputFASTQ, Compare: BAMDecoded,
 			Args: []string{"{fastq}"},
 		},
-		skip("phase", "", "samtools phase's default (no -b) text report is byte-exact against upstream for the entire PS/M/FL/// phasing "+
-			"result and all single-het EV blocks. The only residual is the ORDER of the EV supporting-read lines within a multi-het block: "+
-			"upstream emits them in klib khash bucket-iteration order (keyed by read-name X31 hash), which depends on the exact khash "+
-			"put/resize/probe sequence and the htslib pileup read order. Matching it byte-for-byte needs full klib-khash + pileup "+
-			"iteration-order parity. Owned by the samtools agent.",
+		skip("phase", "", "samtools phase's default (no -b) text report is byte-exact for the entire PS/M/FL/// phasing result and all "+
+			"single-het EV blocks; the only residual is the ORDER of EV supporting-read lines in ONE multi-het block (8 lines), emitted in "+
+			"klib khash bucket-iteration order. A deep investigation (instrumenting both sides) ruled out every per-operation cause: our "+
+			"ksortRseq reproduces klib ks_introsort's equal-key permutation bit-for-bit; the khash hash/triangular-probe/resize-rehash/del/"+
+			"size bookkeeping all match klib; the per-block put order is coordinate-correct; and the total distinct reads put MATCH upstream "+
+			"exactly (237/424/689 per chrom). The divergence is purely cumulative: upstream's table reaches n_buckets=64 while ours reaches "+
+			"32, because at the resize-critical moment upstream holds >=16 live reads (table grows 32->64) where ours holds <16 (a "+
+			"tombstone-clear keeps it at 32). That is a del/block live-set TIMING difference somewhere earlier on the chromosome; pinpointing "+
+			"it needs block-by-block live-set comparison. Owned by the samtools agent.",
 			"{bam}"),
 	}
 }
