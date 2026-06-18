@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/cram/codec"
 )
 
 // TestBzip2CRAMSamtoolsWritesOurDecodeAgrees is the decode-side interop
@@ -117,86 +117,59 @@ func makeRepetitiveSAM(n int) string {
 }
 
 // TestBzip2BlockLibbz2Parity is the bzip2-encoder cross-tool gate. The
-// CRAM writer now compresses eligible external blocks with the in-tree
-// pure-Go bzip2 encoder (codec.Bzip2Encode, compression method 2). This
-// test writes such a CRAM, extracts every method-2 block, and decodes it
-// with the *system* bzip2 — which is libbz2, the very library upstream
-// htslib/samtools links for its CRAM BZIP2 codec
-// (BZ2_bzBuffToBuffDecompress). A green run proves the bytes our encoder
-// emits are accepted by libbz2 and reproduce the block payload exactly,
-// the same gate samtools would apply when reading a bzip2 CRAM block.
-//
-// (Note: a full `samtools view` of our writer's CRAM is not a usable
-// oracle here — our reference-free writer produces a container layout
-// upstream samtools does not read, independent of any codec choice — so
-// the libbz2 decode of the actual on-disk block is the faithful
-// cross-tool check.) The test fails, never skips, when bzip2 is available.
+// default CRAM writer no longer auto-selects bzip2 (it is ~10x slower than
+// gzip for ~0.5% gain — see chooseBlockCompression), but the in-tree
+// pure-Go bzip2 encoder (codec.Bzip2Encode, compression method 2) remains
+// available for an explicit archive profile and must stay byte-compatible
+// with libbz2 — the very library upstream htslib/samtools links for its
+// CRAM BZIP2 codec (BZ2_bzBuffToBuffDecompress). This test encodes a
+// representative payload with codec.Bzip2Encode, then decodes the exact
+// bytes BOTH through our CRAM block path (Block.Decompress, method 2) and
+// through the *system* bzip2, asserting all three agree. A green run
+// proves the bytes our encoder emits are accepted by libbz2 and reproduce
+// the payload exactly — the same gate samtools applies reading a bzip2
+// CRAM block. It fails, never skips, when bzip2 is available.
 func TestBzip2BlockLibbz2Parity(t *testing.T) {
 	bzip2Path, err := exec.LookPath("bzip2")
 	if err != nil {
 		t.Fatalf("system bzip2 (libbz2) not available; install the bzip2 package to run the CRAM BZIP2 cross-tool gate")
 	}
 
-	h := writerTestHeader()
-	// Many identical reads make the per-series external blocks long and
-	// highly repetitive — the regime where the BWT+MTF+Huffman bzip2
-	// pipeline beats gzip, so method 2 is actually chosen.
-	var records []*sam.Record
-	for i := 0; i < 400; i++ {
-		records = append(records, mkRec("read", "chr1", 100, "20M", "ACGTACGTACGTACGTACGT"))
-	}
+	// A long, highly repetitive payload — the regime where the
+	// BWT+MTF+Huffman bzip2 pipeline is exercised across multiple blocks.
+	payload := bytes.Repeat([]byte("ACGTACGTACGTACGTACGT"), 4000)
 
-	var buf bytes.Buffer
-	if err := WriteCRAMVersion(&buf, h, records, VersionV30); err != nil {
-		t.Fatalf("WriteCRAMVersion(v3.0): %v", err)
-	}
-
-	rd, err := NewReader(bytes.NewReader(buf.Bytes()))
+	enc, err := codec.Bzip2Encode(payload)
 	if err != nil {
-		t.Fatalf("NewReader: %v", err)
+		t.Fatalf("codec.Bzip2Encode: %v", err)
 	}
-	bzBlocks := 0
-	for {
-		c, err := rd.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			t.Fatalf("Next: %v", err)
-		}
-		for i := range c.Blocks {
-			b := &c.Blocks[i]
-			if b.Method != CompBzip2 {
-				continue
-			}
-			bzBlocks++
 
-			// Our decode of the block.
-			ourDec, err := b.Decompress()
-			if err != nil {
-				t.Fatalf("our Decompress of bzip2 block (cid %d): %v", b.ContentID, err)
-			}
-
-			// libbz2's decode of the very same on-disk bytes.
-			cmd := exec.Command(bzip2Path, "-d", "-c")
-			cmd.Stdin = bytes.NewReader(b.Data)
-			var out, errb bytes.Buffer
-			cmd.Stdout = &out
-			cmd.Stderr = &errb
-			if err := cmd.Run(); err != nil {
-				t.Fatalf("libbz2 (bzip2 -d) rejected our block (cid %d): %v (stderr: %s)",
-					b.ContentID, err, errb.String())
-			}
-			if !bytes.Equal(out.Bytes(), ourDec) {
-				t.Fatalf("libbz2 decode of block cid %d differs from ours: libbz2 %d bytes, ours %d",
-					b.ContentID, out.Len(), len(ourDec))
-			}
-			if int32(len(out.Bytes())) != b.UncompressedSize {
-				t.Fatalf("libbz2 decoded %d bytes, block declared %d", out.Len(), b.UncompressedSize)
-			}
-		}
+	// Our CRAM block decode of the encoder output (compression method 2).
+	blk := Block{
+		Method:           CompBzip2,
+		ContentType:      ContentExternal,
+		CompressedSize:   int32(len(enc)),
+		UncompressedSize: int32(len(payload)),
+		Data:             enc,
 	}
-	if bzBlocks == 0 {
-		t.Fatal("writer produced no bzip2 block; the encoder cross-tool gate did not run")
+	ourDec, err := blk.Decompress()
+	if err != nil {
+		t.Fatalf("our Decompress of bzip2 block: %v", err)
+	}
+	if !bytes.Equal(ourDec, payload) {
+		t.Fatalf("our bzip2 round-trip differs: %d bytes vs %d", len(ourDec), len(payload))
+	}
+
+	// libbz2's decode of the very same encoder bytes.
+	cmd := exec.Command(bzip2Path, "-d", "-c")
+	cmd.Stdin = bytes.NewReader(enc)
+	var out, errb bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("libbz2 (bzip2 -d) rejected our encoder output: %v (stderr: %s)", err, errb.String())
+	}
+	if !bytes.Equal(out.Bytes(), payload) {
+		t.Fatalf("libbz2 decode differs from payload: libbz2 %d bytes, want %d", out.Len(), len(payload))
 	}
 }

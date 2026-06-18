@@ -523,13 +523,20 @@ func encodeBlock(version Version, ct BlockContentType, contentID int32, payload 
 // chooseBlockCompression picks the block compression method for a
 // payload and returns it together with the bytes to store. The candidate
 // set depends on the CRAM version: every version considers raw (method
-// 0), gzip (method 1) and bzip2 (method 2); v3.1 additionally considers
-// rANS 4x16 (method 5), its distinguishing codec. The smallest candidate
-// wins and raw is always in the running, so the stored payload is never
-// larger than the input — the block stays decodable even if a codec
-// misbehaves. bzip2 is produced by the in-tree pure-Go encoder
-// (codec.Bzip2Encode); its output is read back by this package's
-// Decompress and by upstream htslib/samtools alike.
+// 0) and gzip (method 1); v3.1 additionally considers rANS 4x16 (method
+// 5), its distinguishing codec. The smallest candidate wins and raw is
+// always in the running, so the stored payload is never larger than the
+// input — the block stays decodable even if a codec misbehaves.
+//
+// bzip2 is deliberately NOT in the default candidate set. The in-tree
+// pure-Go bzip2 encoder is ~10x slower than gzip and, brute-forced on
+// every block, dominated encode time — a 48 MB BAM -> CRAM took 97 s with
+// it versus 10 s without — while shrinking the output by only ~0.5%.
+// Upstream htslib likewise omits bzip2 from its default CRAM profile
+// (using it only in the opt-in "archive"/"small" profiles). The decoder
+// still reads bzip2 blocks (block.go's Decompress) for files that use
+// them, and codec.Bzip2Encode stays in-tree for an explicit archive
+// profile; it is simply never auto-selected by the default writer.
 func chooseBlockCompression(version Version, payload []byte) (CompressionMethod, []byte) {
 	method := CompRaw
 	stored := payload
@@ -540,9 +547,6 @@ func chooseBlockCompression(version Version, payload []byte) (CompressionMethod,
 	}
 	if gz := gzipCompress(payload); len(gz) < len(stored) {
 		method, stored = CompGzip, gz
-	}
-	if bz, err := codec.Bzip2Encode(payload); err == nil && len(bz) < len(stored) {
-		method, stored = CompBzip2, bz
 	}
 	if version == VersionV31 {
 		// rANS 4x16 is a v3.1-only codec; never offer it for v3.0. Order 0
