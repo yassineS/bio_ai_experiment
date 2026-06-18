@@ -2,9 +2,9 @@ package bgzf
 
 import (
 	"bytes"
-	"compress/flate"
 	"encoding/binary"
 	"errors"
+	kflate "github.com/klauspost/compress/flate"
 	"hash/crc32"
 	"io"
 	"sort"
@@ -161,7 +161,7 @@ func (sr *SeekReader) loadBlock(caddr, uaddr int64) error {
 		return nil
 	}
 
-	fr := flate.NewReader(bytes.NewReader(deflated))
+	fr := kflate.NewReader(bytes.NewReader(deflated))
 	defer fr.Close()
 	out := make([]byte, 0, wantISIZE)
 	buf := bytes.NewBuffer(out)

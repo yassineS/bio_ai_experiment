@@ -2,8 +2,8 @@ package bgzf
 
 import (
 	"bytes"
-	"compress/flate"
 	"encoding/binary"
+	kflate "github.com/klauspost/compress/flate"
 	"hash/crc32"
 	"io"
 	"sync"
@@ -78,7 +78,7 @@ func NewMultiReader(r io.Reader, threads int) (*MultiReader, error) {
 		return &MultiReader{seq: seq}, nil
 	}
 	mr := &MultiReader{r: r}
-	mr.pool.New = func() any { return flate.NewReader(bytes.NewReader(nil)) }
+	mr.pool.New = func() any { return kflate.NewReader(bytes.NewReader(nil)) }
 	mr.pr, mr.pw = io.Pipe()
 	mr.start(threads)
 	return mr, nil
@@ -163,7 +163,7 @@ func (mr *MultiReader) worker() {
 			continue
 		}
 		fr := mr.pool.Get().(io.ReadCloser)
-		if rs, ok := fr.(flate.Resetter); ok {
+		if rs, ok := fr.(kflate.Resetter); ok {
 			_ = rs.Reset(bytes.NewReader(job.deflated), nil)
 		}
 		var buf bytes.Buffer
