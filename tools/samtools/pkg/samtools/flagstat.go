@@ -49,6 +49,26 @@ func CountFlagstatThreaded(r io.Reader, threads int) (*FlagstatCounts, error) {
 		defer rc.Close()
 	}
 	c := &FlagstatCounts{}
+	// flagstat only tallies flags, never retaining a record past add, so it
+	// uses the reader's allocation-free ReadInto when available (the
+	// single-threaded BAM path) and falls back to Read otherwise (CRAM, SAM,
+	// the threaded reader).
+	if ri, ok := rd.(interface {
+		ReadInto(*sam.Record) error
+	}); ok {
+		var rec sam.Record
+		for {
+			err := ri.ReadInto(&rec)
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return nil, err
+			}
+			c.add(&rec)
+		}
+		return c, nil
+	}
 	for {
 		rec, err := rd.Read()
 		if err == io.EOF {

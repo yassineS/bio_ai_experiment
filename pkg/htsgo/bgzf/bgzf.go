@@ -296,6 +296,13 @@ type Reader struct {
 	block []byte
 	off   int
 
+	// deflated and decBuf are reused across blocks to avoid allocating a
+	// fresh compressed-payload slice and decompressed-output buffer per BGZF
+	// block. Both are internal: Read copies bytes out of br.block before the
+	// next block is decoded, so reusing their backing arrays is safe.
+	deflated []byte
+	decBuf   bytes.Buffer
+
 	// blockCoff is the compressed-stream byte offset of the current block —
 	// i.e. the byte at which the gzip member containing br.block begins.
 	blockCoff int64
@@ -381,7 +388,12 @@ func (br *Reader) nextBlock() error {
 		return fmt.Errorf("bgzf: invalid block layout (deflate length %d)", deflatedLen)
 	}
 
-	deflated := make([]byte, deflatedLen)
+	if cap(br.deflated) < int(deflatedLen) {
+		br.deflated = make([]byte, deflatedLen)
+	} else {
+		br.deflated = br.deflated[:deflatedLen]
+	}
+	deflated := br.deflated
 	if _, err := io.ReadFull(br.counted, deflated); err != nil {
 		return ioErrUnexpected(err)
 	}
@@ -418,12 +430,12 @@ func (br *Reader) nextBlock() error {
 		}
 	}
 
-	out := make([]byte, 0, wantISIZE)
-	buf := bytes.NewBuffer(out)
-	if _, err := io.Copy(buf, br.fr); err != nil {
+	br.decBuf.Reset()
+	br.decBuf.Grow(int(wantISIZE))
+	if _, err := io.Copy(&br.decBuf, br.fr); err != nil {
 		return err
 	}
-	decoded := buf.Bytes()
+	decoded := br.decBuf.Bytes()
 	if uint32(len(decoded)) != wantISIZE {
 		return ErrISIZE
 	}
