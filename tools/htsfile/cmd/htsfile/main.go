@@ -14,12 +14,18 @@
 //	alignments.bam: BAM BGZF-compressed sequence data
 //	variants.vcf.gz: VCF version 4.2 BGZF-compressed variant calling data
 //
+// The "-c"/"--view" mode writes the canonical textual form of each file
+// (the format-aware htslib round-trip): a VCF/BCF is re-serialised as VCF
+// text. Other formats report that view is unsupported rather than emitting
+// non-canonical bytes.
+//
 // Differences from upstream htsfile (intentional):
 //   - We don't link against libhts; sniffing is a pure-Go peek that
 //     never decompresses more than the first BGZF block.
-//   - The "--copy" output mode (`-c`) is not implemented; the v1
-//     scope is identification only. Use shell redirection if you
-//     need the raw bytes.
+//   - The "--copy" mode (`-C`) raw byte copy is not implemented.
+//   - -h/-v stay bound to help/version (project CLI convention), so
+//     upstream's -h/--header-only / -H/--no-header view modifiers are
+//     not offered.
 
 package main
 
@@ -66,16 +72,13 @@ func run(args []string) int {
 	)
 	cliflag.BoolVar(fs, &helpFlag, "h", "help", false, "show help")
 	cliflag.BoolVar(fs, &versionFlag, "v", "version", false, "show version")
-	// -c/-C are accepted no-ops. Upstream htsfile -c ("--view") does NOT raw-
-	// decompress; it routes each file through htslib's format-aware reader and
-	// re-serialises (a viewed VCF gains the implicit ##FILTER=<ID=PASS> header
-	// and htslib's canonical header order; a FASTA is rewritten in htslib's
-	// normalized record form). Reproducing that per-format view writer is out of
-	// scope for this identification tool, so we accept the flags (so bundled
-	// clusters parse) without claiming view parity. Our -h/-v stay bound to
-	// help/version per the project CLI convention.
-	cliflag.BoolVar(fs, &copyMode, "c", "", false, "Ignored: htslib format-aware view mode not implemented (legacy)")
-	cliflag.BoolVar(fs, &copyNoDecode, "C", "", false, "Ignored: raw copy mode not implemented (legacy)")
+	// -c ("--view") is the format-aware view: each file is routed through the
+	// matching format reader and re-serialised (a VCF/BCF becomes canonical VCF
+	// text), NOT raw-decompressed. -C ("--copy") is the raw byte copy. Our -h/-v
+	// stay bound to help/version per the project CLI convention, so upstream's
+	// -h/--header-only / -H/--no-header view modifiers are not offered.
+	cliflag.BoolVar(fs, &copyMode, "c", "view", false, "Write the textual (format-aware) form of FILEs to stdout")
+	cliflag.BoolVar(fs, &copyNoDecode, "C", "copy", false, "Ignored: raw copy mode not implemented (legacy)")
 
 	// Route through cliflag.Parse so POSIX getopt-style short-flag bundling
 	// works the way upstream htsfile's getopt parser accepts it.
@@ -93,7 +96,6 @@ func run(args []string) int {
 		fmt.Println(version)
 		return 0
 	}
-	_ = copyMode
 	_ = copyNoDecode
 
 	rest := fs.Args()
@@ -105,7 +107,13 @@ func run(args []string) int {
 
 	failed := 0
 	for _, path := range rest {
-		if err := runOne(path); err != nil {
+		var err error
+		if copyMode {
+			err = viewOne(path)
+		} else {
+			err = runOne(path)
+		}
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "htsfile: %s: %v\n", path, err)
 			failed++
 		}
@@ -114,6 +122,25 @@ func run(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// viewOne identifies path and writes its canonical textual form to stdout,
+// implementing `htsfile -c`.
+func viewOne(path string) error {
+	var (
+		f   *htsfile.Format
+		err error
+	)
+	if path == "-" {
+		// Identification consumes the sniff bytes from stdin; viewing stdin
+		// would need to re-read them, which this tool does not buffer.
+		return fmt.Errorf("htsfile -c does not support stdin")
+	}
+	f, err = htsfile.Identify(path)
+	if err != nil {
+		return err
+	}
+	return htsfile.View(path, f, os.Stdout)
 }
 
 func runOne(path string) error {
