@@ -278,9 +278,12 @@ func samtoolsBinaryOutputSkips() []Entry {
 			"ksortRseq reproduces klib ks_introsort's equal-key permutation bit-for-bit; the khash hash/triangular-probe/resize-rehash/del/"+
 			"size bookkeeping all match klib; the per-block put order is coordinate-correct; and the total distinct reads put MATCH upstream "+
 			"exactly (237/424/689 per chrom). The divergence is purely cumulative: upstream's table reaches n_buckets=64 while ours reaches "+
-			"32, because at the resize-critical moment upstream holds >=16 live reads (table grows 32->64) where ours holds <16 (a "+
-			"tombstone-clear keeps it at 32). That is a del/block live-set TIMING difference somewhere earlier on the chromosome; pinpointing "+
-			"it needs block-by-block live-set comparison. Owned by the samtools agent.",
+			"32, because the table grows 32->64 only when n_occupied hits the upper bound with >=16 live slots. Block-by-block hash-stat "+
+			"instrumentation localised the FIRST divergence to chr1 block 4: identical live size (11) but n_occupied 20 (upstream) vs 19 "+
+			"(ours) — a one-tombstone difference, meaning a put landed on an empty slot upstream but a recycled deleted slot for us. So the "+
+			"bucket LAYOUT had already diverged by block 3 despite matching counts, which can only come from a put/del order difference at a "+
+			"single read earlier on chr1 (most likely one read's per-column allele code, hence its clean_seqs deletion, differs). Resuming "+
+			"needs frag-content (seq array) comparison at the first chr1 blocks. Owned by the samtools agent.",
 			"{bam}"),
 	}
 }
