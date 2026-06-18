@@ -16,9 +16,10 @@ package matrix
 // Several modes in THIS upstream build (vcftools 0.1.14 compiled against a
 // modern glibc with _FORTIFY_SOURCE) abort with a buffer-overflow on the
 // pairwise-LD (--geno-r2/--hap-r2) and 012-matrix (--012) writers, even on a
-// trivially clean VCF, and --LROH/--TsTv-by-* segfault. Those are real upstream
-// crashes (our port produces correct output), so they are Skipped with the
-// reason recorded rather than producing a spurious exit-mismatch DIVERGE.
+// trivially clean VCF. Those three are real upstream crashes (our port produces
+// correct output), so they are Skipped with the reason recorded rather than
+// producing a spurious exit-mismatch DIVERGE. --LROH runs cleanly when given the
+// required --chr and is byte-exact (its forward-backward HMM is ported).
 
 func init() {
 	Register(vcftoolsMatrix()...)
@@ -107,9 +108,11 @@ func vcftoolsMatrix() []Entry {
 		crash("matrix012", ".012",
 			"upstream vcftools --012 aborts with a glibc buffer-overflow in the 012-matrix writer on this build (even on a clean VCF); our port produces correct output. Upstream bug.",
 			"--012"),
-		crash("lroh", ".LROH",
-			"upstream vcftools --LROH segfaults on this build; our port produces correct output. Upstream bug.",
-			"--LROH"),
+		// --LROH detects runs of homozygosity via the Boyko/Auton forward-
+		// backward HMM. Upstream requires a single --chr, so the entry passes
+		// --chr chr1; our port reproduces the 8-column report (including the
+		// MIN_START/MAX_END/N_MISMATCHES columns) byte-for-byte.
+		multiS("lroh", ".LROH", "--LROH", "--chr", "chr1"),
 		// --hardy: byte-exact. Our .hwe writer now emits glibc's '-nan' for the
 		// monomorphic-site ChiSq (matching the upstream C++ printf rendering of a
 		// quiet NaN) instead of Go's 'NaN'.

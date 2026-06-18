@@ -147,23 +147,23 @@ func TestRelatedness_SkipsMultiAllelic(t *testing.T) {
 	}
 }
 
-// TestLROH_Basic builds a VCF where one individual has 5 consecutive
-// homozygous sites and verifies a single run is emitted with the right
-// coords and N_VARIANTS, using min-variants=5.
-func TestLROH_Basic(t *testing.T) {
-	rows := []relRow{
-		{"1", 100, []string{"0/0", "0/1"}},
-		{"1", 200, []string{"0/0", "0/1"}},
-		{"1", 300, []string{"0/0", "0/1"}},
-		{"1", 400, []string{"0/0", "0/1"}},
-		{"1", 500, []string{"0/0", "0/1"}},
-		{"1", 600, []string{"0/1", "0/0"}}, // breaks s1 run
+const lrohHeader = "CHROM\tAUTO_START\tAUTO_END\tMIN_START\tMAX_END\tN_VARIANTS_BETWEEN_MAX_BOUNDARIES\tN_MISMATCHES\tINDV"
+
+// TestLROH_HMMDetectsRun checks the forward-backward HMM reports an autozygous
+// region for an individual that is homozygous across a tight cluster of sites
+// (with other samples het, so the site heterozygosity h makes the homozygous
+// emissions favour the autozygous state) and reports none for a het-rich one.
+func TestLROH_HMMDetectsRun(t *testing.T) {
+	var rows []relRow
+	pos := 1000
+	for i := 0; i < 60; i++ {
+		pos += 200
+		rows = append(rows, relRow{"1", pos, []string{"1/1", "0/1", "0/1"}})
 	}
-	vcfText := buildMinimalVCFRel(t, []string{"s1", "s2"}, rows)
+	vcfText := buildMinimalVCFRel(t, []string{"s1", "s2", "s3"}, rows)
 	dir := t.TempDir()
 	prefix := filepath.Join(dir, "out")
-	params := &Params{OutPrefix: prefix, LROH: true, LROHMinVariants: 5}
-	if err := Run(strings.NewReader(vcfText), params); err != nil {
+	if err := Run(strings.NewReader(vcfText), &Params{OutPrefix: prefix, LROH: true}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	data, err := os.ReadFile(prefix + ".LROH")
@@ -171,22 +171,28 @@ func TestLROH_Basic(t *testing.T) {
 		t.Fatalf("read .LROH: %v", err)
 	}
 	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-	if len(lines) < 2 {
-		t.Fatalf("expected header + at least 1 row, got %q", data)
-	}
-	if lines[0] != "CHROM\tAUTO_START\tAUTO_END\tN_VARIANTS\tINDV" {
+	if lines[0] != lrohHeader {
 		t.Errorf("bad header: %q", lines[0])
 	}
-	// Only s1 has a run >= 5 ending at site 500; s2 has only 1 hom at the end
-	// (line "0/0") which is too short.
-	found := false
+	s1Rows, s2Rows := 0, 0
 	for _, ln := range lines[1:] {
-		if ln == "1\t100\t500\t5\ts1" {
-			found = true
+		cols := strings.Split(ln, "\t")
+		if len(cols) != 8 {
+			t.Errorf("row should have 8 columns: %q", ln)
+			continue
+		}
+		switch cols[7] {
+		case "s1":
+			s1Rows++
+		case "s2":
+			s2Rows++
 		}
 	}
-	if !found {
-		t.Errorf("expected '1\\t100\\t500\\t5\\ts1' in output, got:\n%s", data)
+	if s1Rows == 0 {
+		t.Errorf("expected at least one autozygous region for s1:\n%s", data)
+	}
+	if s2Rows != 0 {
+		t.Errorf("het-rich s2 should have no autozygous region, got %d:\n%s", s2Rows, data)
 	}
 }
 
@@ -324,32 +330,26 @@ func TestIsPhasedDiploid(t *testing.T) {
 	}
 }
 
-// TestLROH_ChromosomeBreak verifies a chrom change splits runs.
-func TestLROH_ChromosomeBreak(t *testing.T) {
-	rows := []relRow{
-		{"1", 100, []string{"0/0"}},
-		{"1", 200, []string{"0/0"}},
-		{"2", 100, []string{"0/0"}},
-		{"2", 200, []string{"0/0"}},
+// TestLROH_NoRunOnHighHet verifies the HMM reports no autozygous region (only
+// the header) when every individual is heterozygous everywhere — the
+// non-autozygous emissions dominate.
+func TestLROH_NoRunOnHighHet(t *testing.T) {
+	var rows []relRow
+	pos := 1000
+	for i := 0; i < 40; i++ {
+		pos += 500
+		rows = append(rows, relRow{"1", pos, []string{"0/1", "0/1"}})
 	}
-	vcfText := buildMinimalVCFRel(t, []string{"s1"}, rows)
+	vcfText := buildMinimalVCFRel(t, []string{"s1", "s2"}, rows)
 	dir := t.TempDir()
 	prefix := filepath.Join(dir, "out")
-	params := &Params{OutPrefix: prefix, LROH: true, LROHMinVariants: 2}
-	if err := Run(strings.NewReader(vcfText), params); err != nil {
+	if err := Run(strings.NewReader(vcfText), &Params{OutPrefix: prefix, LROH: true}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	data, _ := os.ReadFile(prefix + ".LROH")
 	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-	// Expect 2 data rows (one per chromosome).
-	if len(lines) != 3 {
-		t.Fatalf("expected 3 lines, got %d:\n%s", len(lines), data)
-	}
-	if !strings.HasPrefix(lines[1], "1\t100\t200\t2\ts1") {
-		t.Errorf("row 1 unexpected: %q", lines[1])
-	}
-	if !strings.HasPrefix(lines[2], "2\t100\t200\t2\ts1") {
-		t.Errorf("row 2 unexpected: %q", lines[2])
+	if len(lines) != 1 || lines[0] != lrohHeader {
+		t.Errorf("expected header-only output, got %d lines:\n%s", len(lines), data)
 	}
 }
 

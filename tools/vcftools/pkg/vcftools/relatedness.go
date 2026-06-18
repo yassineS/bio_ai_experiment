@@ -3,6 +3,7 @@ package vcftools
 import (
 	"bufio"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
@@ -397,116 +398,128 @@ func (r *relatednessRunner) writeOutput(prefix string) error {
 	return nil
 }
 
-// lrohRunner implements --LROH: for each individual, emit contiguous runs of
-// homozygous diploid genotypes ("0/0" or "1/1") that span at least
-// `lrohMinVariants` consecutive variants on the same chromosome.
+// lrohRunner implements --LROH: detect Long Runs of Homozygosity by the
+// Boyko/Auton (Genome Research 2009) hidden-Markov method, using the
+// forward-backward algorithm exactly as vcftools' output_LROH does. Per site
+// it accumulates, for each individual, an emission probability pair
+// (autozygous, non-autozygous) and a transition matrix derived from the
+// inter-site genetic distance (assuming 1cM/Mb); after the scan it runs
+// forward-backward per individual and reports each maximal run of sites whose
+// posterior P(autozygous) exceeds the 0.99 threshold.
 //
-// Output: <prefix>.LROH with header CHROM AUTO_START AUTO_END N_VARIANTS INDV
-// where AUTO_START and AUTO_END are the 1-based VCF positions of the first
-// and last homozygous variant in the run.
+// Output: <prefix>.LROH with the 8-column header
+// CHROM AUTO_START AUTO_END MIN_START MAX_END N_VARIANTS_BETWEEN_MAX_BOUNDARIES
+// N_MISMATCHES INDV. vcftools requires a single --chr, so the runner assumes
+// all sites it sees are on one chromosome.
 type lrohRunner struct {
 	samples []string
-	// running state per sample: current chrom, start pos, end pos, count.
-	curChrom []string
-	curStart []int
-	curEnd   []int
-	curN     []int
-	// closed runs: chrom, start, end, n, sampleIdx.
-	runs []lrohRun
-	// minimum number of consecutive homozygous variants for a run to be emitted.
-	minVariants int
+	nIndv   int
+	chrom   string
+	// per-individual accumulators (only sites the individual contributes to).
+	emAuto  [][]float64    // emission given autozygous
+	emNon   [][]float64    // emission given non-autozygous
+	trans   [][][4]float64 // transition matrix A = [AtoA, AtoN, NtoA, NtoN]
+	sPos    [][]int        // site positions
+	isHet   [][]bool       // per-site het flag
+	lastPOS []int          // previous contributing position per individual
 }
 
-type lrohRun struct {
-	chrom     string
-	start     int
-	end       int
-	n         int
-	sampleIdx int
-}
+// LROH model constants (vcftools output_LROH).
+const (
+	lrohNGen           = 4.0  // generations since common ancestry
+	lrohGenoErr        = 0.01 // assumed genotype error rate
+	lrohPAutoPrior     = 0.05 // prior probability of the autozygous state
+	lrohPAutoThreshold = 0.99 // posterior threshold for reporting a region
+	lrohMinSNPs        = 0    // minimum sites in a reported region
+)
 
-const defaultLROHMinVariants = 10
-
-func newLROHRunner(samples []string, minVariants int) *lrohRunner {
-	if minVariants <= 0 {
-		minVariants = defaultLROHMinVariants
+func newLROHRunner(samples []string, _ int) *lrohRunner {
+	n := len(samples)
+	last := make([]int, n)
+	for i := range last {
+		last[i] = -1
 	}
-	r := &lrohRunner{
-		samples:     append([]string(nil), samples...),
-		curChrom:    make([]string, len(samples)),
-		curStart:    make([]int, len(samples)),
-		curEnd:      make([]int, len(samples)),
-		curN:        make([]int, len(samples)),
-		minVariants: minVariants,
+	return &lrohRunner{
+		samples: append([]string(nil), samples...),
+		nIndv:   n,
+		emAuto:  make([][]float64, n),
+		emNon:   make([][]float64, n),
+		trans:   make([][][4]float64, n),
+		sPos:    make([][]int, n),
+		isHet:   make([][]bool, n),
+		lastPOS: last,
 	}
-	return r
 }
 
-// addVariant updates per-sample homozygous-run state. We treat ANY variant
-// (not just biallelic SNPs) as a usable site for LROH; non-homozygous,
-// missing, or chromosome-change events close the current run.
+// addVariant accumulates the per-individual HMM emission/transition data for
+// one site. Sites where every genotype is homozygous-reference are skipped
+// (matching upstream's has_non_ref guard); missing and non-diploid genotypes do
+// not contribute.
 func (r *lrohRunner) addVariant(v *vcf.Variant) {
-	if r == nil || len(r.samples) == 0 {
+	if r == nil || r.nIndv == 0 {
 		return
 	}
-	for i := range r.samples {
+	type geno struct {
+		het   bool
+		valid bool
+	}
+	g := make([]geno, r.nIndv)
+	nGeno, nHet := 0, 0
+	hasNonRef := false
+	for i := 0; i < r.nIndv; i++ {
 		if i >= len(v.Samples) {
-			r.closeRun(i)
 			continue
 		}
-		gt, ok := v.Samples[i].Data["GT"]
+		a, b, ok := parseLROHGenotype(v.Samples[i].Data["GT"])
 		if !ok {
-			r.closeRun(i)
 			continue
 		}
-		gc, _, _ := parseGTForLD(gt)
-		// Homozygous when gc == 0 (0/0) or gc == 2 (1/1). gc==1 is het,
-		// gc<0 missing/skipped.
-		if gc != 0 && gc != 2 {
-			r.closeRun(i)
+		if a > 0 || b > 0 {
+			hasNonRef = true
+		}
+		het := a != b
+		g[i] = geno{het: het, valid: true}
+		nGeno++
+		if het {
+			nHet++
+		}
+	}
+	if !hasNonRef || nGeno == 0 {
+		return
+	}
+	h := float64(nHet) / float64(nGeno) // site heterozygosity
+	r.chrom = v.Chrom
+	pos := v.Pos
+	for i := 0; i < r.nIndv; i++ {
+		if !g[i].valid {
 			continue
 		}
-		if r.curChrom[i] != v.Chrom || r.curN[i] == 0 {
-			// Either first variant or chromosome change: start a fresh run.
-			r.closeRun(i)
-			r.curChrom[i] = v.Chrom
-			r.curStart[i] = v.Pos
-			r.curEnd[i] = v.Pos
-			r.curN[i] = 1
-			continue
+		var emA, emN float64
+		if g[i].het {
+			emA, emN = lrohGenoErr, h
+		} else {
+			emA, emN = 1.0-lrohGenoErr, 1.0-h
 		}
-		// Extend the existing run.
-		r.curEnd[i] = v.Pos
-		r.curN[i]++
+		rDist := 0.0
+		if r.lastPOS[i] > 0 {
+			rDist = float64(pos-r.lastPOS[i]) / 1000000.0 / 100.0 // Morgans, 1cM/Mb
+		}
+		e := 1.0 - math.Exp(-2.0*lrohNGen*rDist)
+		pAtoN := (1.0 - lrohPAutoPrior) * e
+		pNtoA := lrohPAutoPrior * e
+		r.emAuto[i] = append(r.emAuto[i], emA)
+		r.emNon[i] = append(r.emNon[i], emN)
+		r.trans[i] = append(r.trans[i], [4]float64{1.0 - pNtoA, pAtoN, pNtoA, 1.0 - pAtoN})
+		r.sPos[i] = append(r.sPos[i], pos)
+		r.isHet[i] = append(r.isHet[i], g[i].het)
+		r.lastPOS[i] = pos
 	}
 }
 
-// closeRun appends the current open run for sample i to runs (if long enough)
-// and resets the per-sample state.
-func (r *lrohRunner) closeRun(i int) {
-	if r.curN[i] >= r.minVariants {
-		r.runs = append(r.runs, lrohRun{
-			chrom:     r.curChrom[i],
-			start:     r.curStart[i],
-			end:       r.curEnd[i],
-			n:         r.curN[i],
-			sampleIdx: i,
-		})
-	}
-	r.curChrom[i] = ""
-	r.curStart[i] = 0
-	r.curEnd[i] = 0
-	r.curN[i] = 0
-}
-
-// writeOutput closes any open runs and emits <prefix>.LROH.
-// Layout: CHROM AUTO_START AUTO_END N_VARIANTS INDV.
+// writeOutput runs forward-backward per individual and emits <prefix>.LROH.
 func (r *lrohRunner) writeOutput(prefix string) error {
 	if r == nil {
 		return nil
-	}
-	for i := range r.samples {
-		r.closeRun(i)
 	}
 	f, err := iohelper.OpenWriter(prefix + ".LROH")
 	if err != nil {
@@ -515,14 +528,129 @@ func (r *lrohRunner) writeOutput(prefix string) error {
 	defer f.Close()
 	w := bufio.NewWriter(f)
 	defer w.Flush()
-	if _, err := w.WriteString("CHROM\tAUTO_START\tAUTO_END\tN_VARIANTS\tINDV\n"); err != nil {
+	if _, err := w.WriteString("CHROM\tAUTO_START\tAUTO_END\tMIN_START\tMAX_END\tN_VARIANTS_BETWEEN_MAX_BOUNDARIES\tN_MISMATCHES\tINDV\n"); err != nil {
 		return err
 	}
-	for _, run := range r.runs {
-		if _, err := fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%s\n",
-			run.chrom, run.start, run.end, run.n, r.samples[run.sampleIdx]); err != nil {
+	for ui := 0; ui < r.nIndv; ui++ {
+		if err := r.emitIndividual(w, ui); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// emitIndividual runs the forward-backward HMM for one individual and writes
+// its autozygous regions, mirroring vcftools output_LROH exactly (including the
+// p_trans[i-1] indexing and the 1e-20/1e20 underflow renormalisation).
+func (r *lrohRunner) emitIndividual(w *bufio.Writer, ui int) error {
+	nObs := len(r.emAuto[ui])
+	if nObs == 0 {
+		return nil
+	}
+	emA, emN, trans := r.emAuto[ui], r.emNon[ui], r.trans[ui]
+	sPos, isHet := r.sPos[ui], r.isHet[ui]
+
+	alpha := make([][2]float64, nObs)
+	beta := make([][2]float64, nObs)
+	alpha[0][0] = emA[0]
+	alpha[0][1] = emN[0]
+	for i := 1; i < nObs; i++ {
+		alpha[i][0] = alpha[i-1][0]*trans[i-1][0]*emA[i] + alpha[i-1][1]*trans[i-1][2]*emA[i]
+		alpha[i][1] = alpha[i-1][1]*trans[i-1][3]*emN[i] + alpha[i-1][0]*trans[i-1][1]*emN[i]
+		for alpha[i][0]+alpha[i][1] < 1e-20 {
+			alpha[i][0] *= 1e20
+			alpha[i][1] *= 1e20
+		}
+	}
+	beta[nObs-1][0] = 1.0
+	beta[nObs-1][1] = 1.0
+	for i := nObs - 2; i >= 0; i-- {
+		beta[i][0] = beta[i+1][0]*trans[i][0]*emA[i] + beta[i+1][1]*trans[i][2]*emA[i]
+		beta[i][1] = beta[i+1][1]*trans[i][3]*emN[i] + beta[i+1][0]*trans[i][1]*emN[i]
+		for beta[i][0]+beta[i][1] < 1e-20 {
+			beta[i][0] *= 1e20
+			beta[i][1] *= 1e20
+		}
+	}
+
+	pAuto := make([]float64, nObs)
+	for i := 0; i < nObs; i++ {
+		pAuto[i] = alpha[i][0] * beta[i][0] / (alpha[i][0]*beta[i][0] + alpha[i][1]*beta[i][1])
+	}
+
+	inAuto := false
+	startPos, endPos := 0, 0
+	nSNPs, nSNPsBetweenHets, nHetsInRegion := 0, 0, 0
+	lastHetPos := sPos[0]
+	nextHetPos := -1
+	for i := 0; i < nObs; i++ {
+		if pAuto[i] > lrohPAutoThreshold {
+			if !inAuto {
+				startPos = sPos[i]
+			}
+			nSNPs++
+			nSNPsBetweenHets++
+			if isHet[i] {
+				nHetsInRegion++
+			}
+			inAuto = true
+		} else {
+			if inAuto {
+				nextHetPos = sPos[nObs-1]
+				for j := i; j < nObs; j++ {
+					if isHet[j] {
+						nextHetPos = sPos[j]
+						break
+					}
+					nSNPsBetweenHets++
+				}
+				endPos = sPos[i-1]
+				if nSNPs >= lrohMinSNPs {
+					if _, err := fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n",
+						r.chrom, startPos, endPos, lastHetPos+1, nextHetPos-1, nSNPsBetweenHets, nHetsInRegion, r.samples[ui]); err != nil {
+						return err
+					}
+				}
+			}
+			inAuto = false
+			nSNPs = 0
+			nHetsInRegion = 0
+			if isHet[i] {
+				lastHetPos = sPos[i]
+				nSNPsBetweenHets = 0
+			}
+		}
+	}
+	if inAuto {
+		endPos = sPos[nObs-1]
+		nextHetPos = sPos[nObs-1]
+		if nSNPs >= lrohMinSNPs {
+			if _, err := fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n",
+				r.chrom, startPos, endPos, lastHetPos+1, nextHetPos, nSNPsBetweenHets, nHetsInRegion, r.samples[ui]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// parseLROHGenotype parses a diploid GT into its two allele indices. It returns
+// ok=false for missing, haploid, or unparseable genotypes (which do not
+// contribute to the LROH HMM).
+func parseLROHGenotype(gt string) (a, b int, ok bool) {
+	if gt == "" || gt == "." {
+		return 0, 0, false
+	}
+	sep := strings.IndexAny(gt, "/|")
+	if sep < 0 {
+		return 0, 0, false // haploid
+	}
+	left, right := gt[:sep], gt[sep+1:]
+	// Trim any trailing per-sample fields should not appear here (GT only).
+	an, aok := parseAlleleForLD(left)
+	bn, bok := parseAlleleForLD(right)
+	if !aok || !bok || an < 0 || bn < 0 {
+		return 0, 0, false
+	}
+	return an, bn, true
 }
