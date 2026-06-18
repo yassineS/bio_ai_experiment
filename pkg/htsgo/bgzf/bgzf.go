@@ -2,7 +2,6 @@ package bgzf
 
 import (
 	"bytes"
-	"compress/flate"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -12,15 +11,18 @@ import (
 	kflate "github.com/klauspost/compress/flate"
 )
 
-// The BGZF compression (writer) side uses klauspost/compress's pure-Go flate
-// implementation (imported as kflate), which is faster and produces a slightly
-// better compression ratio than the standard library's compress/flate while
-// emitting standard DEFLATE bit streams. The decompression (reader) side stays
-// on the standard library's compress/flate: klauspost output is ordinary
-// DEFLATE and decodes with any conformant inflater, so there is no need to take
-// on the dependency for reads. The klauspost writer API mirrors the stdlib's
-// (NewWriter + Reset + Close) and uses the same level constants, so the BGZF
-// framing, block-size bounds, and level mapping are unchanged.
+// Both the BGZF compression (writer) and decompression (reader) sides use
+// klauspost/compress's pure-Go flate implementation (imported as kflate). On
+// the writer side it is faster and produces a slightly better ratio than the
+// standard library's compress/flate while emitting standard DEFLATE bit
+// streams. On the reader side its inflater is also faster than the standard
+// library's, and since BGZF blocks are ordinary DEFLATE the decoded bytes are
+// identical — only the decode speed changes. BGZF read is on the hot path of
+// every BAM/CRAM/.vcf.gz-consuming tool (view, flagstat, stats, depth,
+// mpileup, bcftools view/query/...), so using the faster inflater there moves
+// all of them toward upstream's libdeflate-backed throughput. The klauspost
+// reader API mirrors the stdlib's (NewReader + Resetter), so the BGZF framing,
+// block-size bounds and level mapping are unchanged.
 
 // MaxBlockSize is the maximum number of uncompressed bytes a single BGZF block
 // may carry. htslib uses 64 KiB minus a 256-byte safety margin so that the
@@ -405,14 +407,14 @@ func (br *Reader) nextBlock() error {
 	}
 
 	if br.fr == nil {
-		br.fr = flate.NewReader(bytes.NewReader(deflated))
+		br.fr = kflate.NewReader(bytes.NewReader(deflated))
 	} else {
-		if rs, ok := br.fr.(flate.Resetter); ok {
+		if rs, ok := br.fr.(kflate.Resetter); ok {
 			if err := rs.Reset(bytes.NewReader(deflated), nil); err != nil {
 				return err
 			}
 		} else {
-			br.fr = flate.NewReader(bytes.NewReader(deflated))
+			br.fr = kflate.NewReader(bytes.NewReader(deflated))
 		}
 	}
 
