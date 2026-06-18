@@ -254,8 +254,10 @@ func writeGFF(path string, contigs []contig, p Params, rng *rand.Rand) error {
 // of biallelic SNPs, so vcftools modes that need more than one sample
 // (relatedness, het, LD) have meaningful input. It reuses the contig sequences
 // for REF bases and is sorted in coordinate order so it can be bgzipped and
-// tabixed. Output is deterministic from rng.
-func writeMultiSampleVCF(path string, contigs []contig, p Params, rng *rand.Rand) error {
+// tabixed. Output is deterministic from rng. When phased is true the genotypes
+// use the '|' separator with distinguishable haplotypes (0|1 vs 1|0), which
+// vcftools --hap-r2 requires.
+func writeMultiSampleVCF(path string, contigs []contig, p Params, rng *rand.Rand, phased bool) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
@@ -299,6 +301,9 @@ func writeMultiSampleVCF(path string, contigs []contig, p Params, rng *rand.Rand
 	})
 
 	gts := []string{"0/0", "0/1", "1/1"}
+	if phased {
+		gts = []string{"0|0", "0|1", "1|0", "1|1"}
+	}
 	for i, r := range recs {
 		c := contigs[r.ci]
 		ref := string(c.Seq[r.pos-1])
