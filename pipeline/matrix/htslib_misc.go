@@ -13,9 +13,9 @@ package matrix
 //     byte-exact text. -R (regions file) over our overlapping BED is a
 //     documented Skip (same record SET, upstream orders overlap hits
 //     differently).
-//   - htsfile: file-format identification. Its description strings and the
-//     -c/-h flag semantics differ from our port, so its entries are documented
-//     Skips recording the divergence.
+//   - htsfile: file-format identification (byte-exact) and the -c/--view
+//     format-aware re-serialisation, which for a VCF/BCF round-trips through the
+//     VCF reader/writer to canonical VCF text (byte-exact, provenance-stripped).
 
 func init() {
 	Register(bgzipMatrix()...)
@@ -108,12 +108,13 @@ func htsfileMatrix() []Entry {
 			Input: InputVCF, Compare: ByteExact, Args: []string{"{vcf}", "{bam}", "{fasta}"},
 		},
 		{
+			// htsfile -c/--view re-serialises a VCF/BCF through the format reader
+			// (the htslib round-trip); our port does the same via the VCF
+			// reader/writer. The implicit ##FILTER=<ID=PASS> line htslib injects
+			// is provenance boilerplate stripped by the comparison, so the
+			// decoded VCF text matches byte-for-byte over the bgzipped fixture.
 			Tool: "htsfile", UpstreamTool: "htsfile", Name: "htsfile_copy",
 			Input: InputVCF, Compare: ByteExact, Args: []string{"-c", "{vcf}"},
-			Skip: "htsfile -c/--view is NOT a raw decompress: upstream routes each file through htslib's format-aware reader and " +
-				"re-serialises it (a viewed VCF gains the implicit ##FILTER=<ID=PASS> header and htslib's canonical header order; a FASTA " +
-				"is rewritten in htslib's normalized record form). Matching it needs htslib's per-format view writer. Our -h/-v also stay " +
-				"bound to help/version per the project CLI convention, so upstream's -h/--header-only / -H / -v/--verbose view modifiers differ.",
 		},
 	}
 }
