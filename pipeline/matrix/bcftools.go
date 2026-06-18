@@ -281,8 +281,13 @@ func bcftoolsSkips() []Entry {
 		// likelihood arithmetic (same class as the errmod float-vs-double work,
 		// a deep-internals item).
 		skip("call", "call",
-			"bcftools call -m over the PL fixture: every INFO/GT/AD field matches upstream; the only divergence is the QUAL column's "+
-				"last decimal (15.6999 vs 15.6998) — a sub-ULP float-precision difference in the call genotype-likelihood model. Deep-internals.",
+			"bcftools call -m over the PL fixture: every CHROM/POS/REF/ALT/INFO/GT/AD field matches upstream byte-for-byte; the ONLY "+
+				"divergence is the QUAL column's last printed decimal on 133 of ~12000 REF-only sites (e.g. 15.6999 vs 15.6998). The "+
+				"genotype-likelihood accumulation order is identical to mcall.c (set_pdg normalise-then-divide, lk_tot += log(pdg) per "+
+				"sample, logsumexp2 over allele combos, QUAL = -4.343*(ref_lk - logsumexp2(lk_sum,ref_lk)) stored as float32). The residual "+
+				"is that Go's pure-Go math.Pow (pl2p table) and math.Log are not bit-identical to glibc's libm pow/log, so a few borderline "+
+				"values round to the adjacent ULP. Closing it would require a bit-exact glibc-libm transcendental reimplementation, outside "+
+				"the stdlib-only scope; a genuine near-terminal precision limit.",
 			"-m", "{vcf_pl}"),
 		skip("csq", "csq",
 			"bcftools csq --force: the GFF fixture is now valid (all 800 transcripts index on both sides) and the BCSQ consequence "+
