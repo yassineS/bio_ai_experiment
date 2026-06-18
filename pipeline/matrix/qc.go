@@ -244,11 +244,10 @@ func skewerMatrix() []Entry {
 //     that ran by default because qualified_quality_phred (-q) was mistakenly
 //     treated as a trim threshold rather than a filter threshold — was removed.
 //
-// Only genuinely non-deterministic / non-comparable paths remain Skipped:
-//
-//   - adapter auto-detection (--detect_adapter_for_pe) is a sampling heuristic;
-//     the per-tool suite validates it with a documented similarity bound.
-//   - the --json/--html reports carry a version stamp and wall-clock time.
+// --detect_adapter_for_pe runs the single-file adapter evaluator independently
+// on read1 and read2 (not pairwise), so its trimmed FASTQ output is
+// deterministic and byte-exact. The --json/--html reports still carry a version
+// stamp and wall-clock time, so only the FASTQ outputs are compared.
 //
 // Nothing here DIVERGEs.
 func fastpMatrix() []Entry {
@@ -279,13 +278,17 @@ func fastpMatrix() []Entry {
 			UpstreamArgs: []string{"-i", fq, "-o", "{out}.fastq", "-A", "--json", "{out}.json", "--html", "{out}.html"},
 		},
 		{
+			// --detect_adapter_for_pe runs the single-file adapter evaluator
+			// independently on read1 and read2 (upstream main.cpp:447-480), so
+			// the detected adapters and the resulting trimmed FASTQ are
+			// deterministic and byte-exact. The two CLIs differ in PE input flag
+			// names (our -I is read1; upstream's -I is read2), handled by the
+			// per-side arg templates.
 			Tool: "fastp", UpstreamTool: "fastp", Name: "fastp_detect_adapter_pe_heavy",
-			Input: InputFASTQPaired, Compare: Similarity, Heavy: true,
+			Input: InputFASTQPaired, Compare: ByteExact, Heavy: true,
 			OutputFiles:  []string{".r1.fastq", ".r2.fastq"},
 			OurArgs:      []string{"-I", r1, "--in2", r2, "-O", "{out}.r1.fastq", "--out2", "{out}.r2.fastq", "--detect_adapter_for_pe", "--json", "{out}.json", "--html", "{out}.html"},
 			UpstreamArgs: []string{"-i", r1, "-I", r2, "-o", "{out}.r1.fastq", "-O", "{out}.r2.fastq", "--detect_adapter_for_pe", "--json", "{out}.json", "--html", "{out}.html"},
-			Skip: "fastp adapter auto-detection is a sampling heuristic; the per-tool suite validates it with a documented " +
-				"similarity bound (TestUnitDetectAdapterSE). The two CLIs also differ in PE input flags. Owned by the fastp agent.",
 		},
 	}
 }
