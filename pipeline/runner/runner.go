@@ -347,7 +347,7 @@ func decodeBAM(samtoolsBin string, bam []byte) ([]byte, error) {
 // placeholderKeys are the manifest-backed fixture tokens resolvePlaceholders
 // substitutes. {out} is handled separately because it is per-invocation.
 var placeholderKeys = []string{
-	"bam", "bam_namesorted", "cram", "vcf", "vcf_plain", "vcf_multi", "vcf_pl", "vcf_samples", "bed", "bed12", "bedpe", "bedgraph1", "bedgraph2", "fasta", "genome",
+	"bam", "bam_namesorted", "cram", "vcf", "vcf_plain", "vcf_multi", "vcf_pl", "vcf_samples", "vcf_phased_plain", "bed", "bed12", "bedpe", "bedgraph1", "bedgraph2", "fasta", "genome",
 	"fastq", "fastq_gz", "fastq1", "fastq2", "gff",
 }
 

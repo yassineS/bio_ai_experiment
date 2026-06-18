@@ -190,7 +190,7 @@ func TestWriteMultiSampleVCF(t *testing.T) {
 	cs := testContigs(t, p, 1)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "m.vcf")
-	if err := writeMultiSampleVCF(path, cs, p, rand.New(rand.NewSource(11))); err != nil {
+	if err := writeMultiSampleVCF(path, cs, p, rand.New(rand.NewSource(11)), false); err != nil {
 		t.Fatalf("writeMultiSampleVCF: %v", err)
 	}
 	lines := readLines(t, path)

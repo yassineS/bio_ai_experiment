@@ -15,12 +15,13 @@ package matrix
 //
 // vcftools 0.1.14 has a temp-file off-by-one VLA that a modern glibc
 // (_FORTIFY_SOURCE on at -O2) aborts on, so the pairwise-LD (--geno-r2/--hap-r2)
-// and 012-matrix (--012) writers crash before producing output. The vendored
-// build applies reference_code/patches/vcftools-tmpfile-vla-off-by-one.patch,
-// after which: --012 is byte-exact (closed); --geno-r2 emits the same pairs in a
-// different order plus a few near-zero r^2 residuals (our-side fix pending);
-// --hap-r2 needs a phased fixture (the unphased multi-sample VCF yields no LD
-// sites). --LROH runs cleanly with the required --chr and is byte-exact.
+// and 012-matrix (--012) writers crashed before producing output. The vendored
+// build applies reference_code/patches/vcftools-tmpfile-vla-off-by-one.patch, so
+// they run, and all three are byte-exact: --012 across its three sidecars;
+// --geno-r2 (outer-first-SNP order + reference-allele encoding); --hap-r2 over a
+// phased fixture (calc_hap_r2's pA - pA*pA variance form). --LROH (the
+// forward-backward HMM) is byte-exact with the required --chr. No vcftools
+// entry is skipped.
 
 func init() {
 	Register(vcftoolsMatrix()...)
@@ -87,18 +88,10 @@ func vcftoolsMatrix() []Entry {
 	// upstream, so recode_heavy is byte-exact and runs (the prior alphabetical
 	// AF;DP serialisation was fixed).
 
-	// Upstream-crashing modes on this build (recorded as documented Skips so
-	// they neither run nor DIVERGE). These are NOT our bugs and cannot be
-	// byte-validated: the vendored upstream binary aborts (glibc buffer overflow
-	// / segfault) before writing output, so there is no golden to compare
-	// against. Our port produces correct output, validated by the per-tool unit
-	// suite. Keeping them skipped is the correct terminal state — re-running
-	// upstream would only reproduce the crash.
-	crash := func(name, ext, reason string, modeArgs ...string) Entry {
-		e := multiS(name, ext, modeArgs...)
-		e.Skip = reason
-		return e
-	}
+	// The pairwise-LD (--geno-r2/--hap-r2) and 012-matrix (--012) writers crash
+	// on a modern glibc because of vcftools' temp-file off-by-one; the vendored
+	// build applies reference_code/patches/vcftools-tmpfile-vla-off-by-one.patch
+	// so they run, and all three are now byte-exact (see the per-entry notes).
 	entries = append(entries,
 		// --geno-r2: pairwise genotype LD. With the temp-file off-by-one patch
 		// (see reference_code/patches) upstream runs; our port emits the pairs in
@@ -112,10 +105,19 @@ func vcftoolsMatrix() []Entry {
 			e.Heavy = true
 			return e
 		}(),
-		crash("hap_r2", ".hap.ld",
-			"upstream vcftools --hap-r2 needs PHASED genotypes; the multi-sample fixture is unphased, so upstream errors 'Insufficient sites "+
-				"remained after filtering' and emits no LD. Needs a phased fixture to exercise (and the temp-file patch to run).",
-			"--hap-r2"),
+		// --hap-r2: phased haplotype LD. Needs the temp-file patch to run and
+		// PHASED genotypes (the {vcf_phased_plain} fixture uses '|' separators).
+		// Our port reproduces calc_hap_r2's variance form (var = pA - pA*pA, not
+		// pA*(1-pA)) so r^2 is bit-identical; D/Dprime already matched. 3000bp
+		// window, byte-exact against upstream.
+		func() Entry {
+			return Entry{
+				Tool: "vcftools", UpstreamTool: "vcftools", Name: "vcftools_hap_r2",
+				Input: InputVCFMulti, Compare: ByteExact, Heavy: true,
+				OutputFiles: []string{".hap.ld"},
+				Args:        []string{"--vcf", "{vcf_phased_plain}", "--hap-r2", "--ld-window-bp", "3000", "--out", "{out}"},
+			}
+		}(),
 		// --012: with the vendored binary's temp-file off-by-one patched (see
 		// reference_code/patches), upstream writes the .012 matrix plus the
 		// .012.indv (sample list) and .012.pos (CHROM/POS list) sidecars; all

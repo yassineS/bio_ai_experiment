@@ -200,7 +200,7 @@ func Generate(opt Options) (*Manifest, error) {
 	// Several vcftools modes (relatedness, het, LD) need more than one sample;
 	// the single-sample VCF above keeps the simpler per-site modes simple.
 	vcfMultiPath := filepath.Join(dir, "variants.multi.vcf")
-	if err := writeMultiSampleVCF(vcfMultiPath, contigs, p, rng); err != nil {
+	if err := writeMultiSampleVCF(vcfMultiPath, contigs, p, rng, false); err != nil {
 		return nil, err
 	}
 	if err := run(bgzip, "-kf", vcfMultiPath); err != nil {
@@ -213,6 +213,13 @@ func Generate(opt Options) (*Manifest, error) {
 	_ = m.recordFile("vcf_multi_plain", vcfMultiPath, true)
 	_ = m.recordFile("vcf_multi", vcfMultiGz, false)
 	_ = m.recordFile("vcf_multi_tbi", vcfMultiGz+".tbi", false)
+
+	// --- Phased multi-sample VCF for vcftools --hap-r2 (needs phased GTs) ---
+	vcfPhasedPath := filepath.Join(dir, "variants.phased.vcf")
+	if err := writeMultiSampleVCF(vcfPhasedPath, contigs, p, rng, true); err != nil {
+		return nil, err
+	}
+	_ = m.recordFile("vcf_phased_plain", vcfPhasedPath, true)
 
 	// --- Samples rename file (one new name per line) for bcftools reheader -s ---
 	samplesPath := filepath.Join(dir, "samples.txt")

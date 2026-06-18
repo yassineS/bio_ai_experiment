@@ -23,7 +23,8 @@ import (
 // v5: added a bcftools-mpileup PL-likelihood VCF (mpileup.pl.vcf) for bcftools call.
 // v6: added a name-collated BAM (reads.namesorted.bam) for samtools fixmate.
 // v7: added a samples rename file (samples.txt) for bcftools reheader -s.
-const manifestVersion = 7
+// v8: added a phased multi-sample VCF (variants.phased.vcf) for vcftools --hap-r2.
+const manifestVersion = 8
 
 // Manifest records what was generated for one scale tier so the runner can
 // resolve fixture paths and decide whether a cached set is still valid.

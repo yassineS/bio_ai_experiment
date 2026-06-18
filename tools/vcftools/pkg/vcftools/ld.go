@@ -297,11 +297,16 @@ func computeHapR2(a, b *ldSite) (nChr int, r2, D, Dprime float64, ok bool) {
 		return nChr, 0, 0, 0, false
 	}
 	Dprime = D / dMax
-	denom := pA * (1 - pA) * pB * (1 - pB)
-	if denom <= 0 {
+	// Match calc_hap_r2's variance form exactly: var1 = X2/n - (X/n)^2, which
+	// for a 0/1 indicator (X2 == X) is pA - pA*pA, NOT pA*(1-pA). The two are
+	// mathematically equal but round differently, and r2 = cov^2/(var1*var2)
+	// (with cov == D) must use the pA - pA*pA form to be bit-identical.
+	var1 := pA - pA*pA
+	var2 := pB - pB*pB
+	if var1 <= 0 || var2 <= 0 {
 		return nChr, 0, 0, 0, false
 	}
-	r2 = (D * D) / denom
+	r2 = (D * D) / (var1 * var2)
 	return nChr, r2, D, Dprime, true
 }
 
