@@ -72,11 +72,13 @@ func runMerge(args []string) int {
 		compressLevel int
 		threads       int
 		forceSamples  bool
+		infoRules     string
 		showHelp      bool
 		showVer       bool
 	)
 	cliflag.StringVar(fs, &fileList, "L", "file-list", "", "File of input paths")
 	cliflag.StringVar(fs, &mergeFlag, "m", "merge", "both", "Collapse rule")
+	cliflag.StringVar(fs, &infoRules, "i", "info-rules", "", "INFO combine rules (TAG:method,...)")
 	fs.BoolVar(&forceSamples, "force-samples", false, "Resolve duplicate sample names")
 	cliflag.StringVar(fs, &regions, "r", "regions", "", "Region(s)")
 	cliflag.StringVar(fs, &regionsFile, "R", "regions-file", "", "Regions file")
@@ -125,6 +127,7 @@ func runMerge(args []string) int {
 		Threads:       threads,
 		RegionsFile:   regionsFile,
 		ForceSamples:  forceSamples,
+		InfoRules:     infoRules,
 	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)

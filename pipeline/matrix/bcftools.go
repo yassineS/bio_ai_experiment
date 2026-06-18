@@ -31,10 +31,10 @@ import (
 // stats, filter, sort, head, annotate (-x), concat (-a), gtcheck, mpileup,
 // roh, consensus (default IUPAC), reheader (-s sample rename, BGZF-decoded),
 // isec (-p Venn decomposition: the four 000N.vcf files + sites.txt, compared
-// via OutputFiles), and fill-tags / split-vep plugin smoke.
-// Documented Skips: call, csq, merge — the residual deep-internals gaps
-// (QUAL precision, csq haplotype engine, merge maux/INFO-combine), spelled out
-// per entry.
+// via OutputFiles), merge (--force-samples: maux occurrence pairing + INFO
+// DP:sum rule), and fill-tags / split-vep plugin smoke.
+// Documented Skips: call, csq — the residual deep-internals gaps (QUAL
+// precision, csq haplotype engine), spelled out per entry.
 
 func init() {
 	Register(bcftoolsViewMatrix()...)
@@ -303,19 +303,11 @@ func bcftoolsSkips() []Entry {
 			Args:        []string{"-p", "{out}", "{vcf}", "{vcf_multi}"},
 			OutputFiles: []string{"/0000.vcf", "/0001.vcf", "/0002.vcf", "/0003.vcf", "/sites.txt"},
 		},
-		// --force-samples sample renaming works, but two deeper merge-maux gaps
-		// remain on this fixture (which has intra-position duplicate records,
-		// e.g. rs795 AND rs796 both G>A at chr1:101511): (1) our bucketize
-		// collapses all same-type records at a position into one, whereas
-		// upstream's maux pairs the k-th record across files and keeps them as
-		// distinct output lines (so upstream emits 8000 records, we emit 7966);
-		// and (2) the INFO combine rules are not applied (INFO/DP should be
-		// summed). Both are substantial bcftools merge-internals work.
-		skip("merge", "merge",
-			"bcftools merge --force-samples: sample renaming works, but the maux record-matching (intra-position duplicate records are "+
-				"paired line-by-line across files, not collapsed) and the INFO combine rules (e.g. INFO/DP summed) are not yet ported — "+
-				"upstream emits 8000 records here, we emit 7966. Deep merge-internals gap.",
-			"--force-samples", "{vcf}", "{vcf}"),
+		// merge --force-samples: intra-position duplicate records are paired by
+		// per-input occurrence (maux), kept as distinct output lines rather than
+		// collapsed, and the default INFO combine rule sums INFO/DP. Byte-exact
+		// (provenance-stripped) against upstream over the self-merge.
+		mkBcf("merge", "merge", InputVCFPlain, ByteExact, "--force-samples", "{vcf}", "{vcf}"),
 		// convert --gvcf2vcf writes a full VCF to stdout and is byte-exact
 		// (provenance-stripped) against upstream — re-activated.
 		mkBcf("convert", "convert", InputVCFPlain, ByteExact, "--gvcf2vcf", "-f", "{fasta}", "{vcf_plain}"),
