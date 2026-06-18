@@ -100,12 +100,18 @@ func vcftoolsMatrix() []Entry {
 		return e
 	}
 	entries = append(entries,
-		crash("geno_r2", ".geno.ld",
-			"upstream vcftools --geno-r2 needs the vendored binary's temp-file off-by-one patched to run (see reference_code/patches). With that, "+
-				"it emits the same 7,996,827 pairs and r^2 values as our port, but in a different ORDER (upstream loops outer over the first SNP; "+
-				"we emit each pair as the second SNP is read) and a few r^2 that upstream computes as exactly 0 we get as ~3e-32 roundoff. Our-side "+
-				"ordering + near-zero-residual fix pending.",
-			"--geno-r2"),
+		// --geno-r2: pairwise genotype LD. With the temp-file off-by-one patch
+		// (see reference_code/patches) upstream runs; our port emits the pairs in
+		// upstream's outer-first-SNP order and encodes genotypes as the reference
+		// allele count (matching calc_geno_r2's sx/sy), so the XY-X*Y
+		// cancellation that yields an exact 0 for uncorrelated sites is
+		// bit-identical. A 3000bp LD window keeps the output ~190k rows; byte-
+		// exact against upstream.
+		func() Entry {
+			e := multiS("geno_r2", ".geno.ld", "--geno-r2", "--ld-window-bp", "3000")
+			e.Heavy = true
+			return e
+		}(),
 		crash("hap_r2", ".hap.ld",
 			"upstream vcftools --hap-r2 needs PHASED genotypes; the multi-sample fixture is unphased, so upstream errors 'Insufficient sites "+
 				"remained after filtering' and emits no LD. Needs a phased fixture to exercise (and the temp-file patch to run).",
