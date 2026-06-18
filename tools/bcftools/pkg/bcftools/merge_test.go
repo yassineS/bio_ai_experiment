@@ -48,6 +48,50 @@ func readMerged(t *testing.T, inputs []string, opts MergeOptions) (string, []*vc
 	return out.String(), vs
 }
 
+// TestMergeInfoDPSum verifies the default INFO rule (DP:sum): a site shared by
+// two inputs combines their INFO/DP by summing, while a non-ruled tag (here
+// none) is unaffected.
+func TestMergeInfoDPSum(t *testing.T) {
+	a := mergeVCFOneSample("S1", "chr1\t100\trs1\tA\tT\t.\tPASS\tDP=10\tGT:DP\t0/1:10")
+	b := mergeVCFOneSample("S2", "chr1\t100\trs1\tA\tT\t.\tPASS\tDP=25\tGT:DP\t1/1:25")
+	_, recs := readMerged(t, []string{a, b}, MergeOptions{})
+	if len(recs) != 1 {
+		t.Fatalf("expected 1 merged record, got %d", len(recs))
+	}
+	if got := recs[0].Info["DP"]; got != "35" {
+		t.Errorf("INFO/DP = %q, want 35 (10+25 summed)", got)
+	}
+	// -i - disables rules, so DP falls back to first-input value.
+	_, recs2 := readMerged(t, []string{a, b}, MergeOptions{InfoRules: "-"})
+	if got := recs2[0].Info["DP"]; got != "10" {
+		t.Errorf("INFO/DP with rules disabled = %q, want 10 (first input)", got)
+	}
+}
+
+// TestMergeDuplicatePairing verifies that intra-position duplicate records are
+// paired per-input occurrence (kept as distinct merged rows) rather than
+// collapsed, and that a SNP/indel pair at one position keeps file order.
+func TestMergeDuplicatePairing(t *testing.T) {
+	// Each input holds two records at chr1:100: an indel (file order first) then
+	// a SNP. A self-merge must yield two rows, indel before SNP.
+	dup := mergeVCFOneSample("S1",
+		"chr1\t100\trsIndel\tA\tAG\t.\tPASS\tDP=10\tGT:DP\t0/1:10",
+		"chr1\t100\trsSnp\tA\tT\t.\tPASS\tDP=20\tGT:DP\t1/1:20")
+	b := mergeVCFOneSample("S2",
+		"chr1\t100\trsIndel\tA\tAG\t.\tPASS\tDP=5\tGT:DP\t0/1:5",
+		"chr1\t100\trsSnp\tA\tT\t.\tPASS\tDP=7\tGT:DP\t1/1:7")
+	_, recs := readMerged(t, []string{dup, b}, MergeOptions{})
+	if len(recs) != 2 {
+		t.Fatalf("expected 2 merged records (duplicates paired), got %d", len(recs))
+	}
+	if recs[0].ID != "rsIndel" || recs[1].ID != "rsSnp" {
+		t.Errorf("record order = %q,%q, want rsIndel,rsSnp (file order)", recs[0].ID, recs[1].ID)
+	}
+	if recs[0].Info["DP"] != "15" || recs[1].Info["DP"] != "27" {
+		t.Errorf("DP sums = %q,%q, want 15,27", recs[0].Info["DP"], recs[1].Info["DP"])
+	}
+}
+
 // Hand-computed: two single-sample inputs covering disjoint sites; merged
 // header should hold both samples and each record should have GT data for
 // both (with `./.` for the missing-from-this-input sample).

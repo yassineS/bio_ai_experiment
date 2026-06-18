@@ -99,6 +99,11 @@ type MergeOptions struct {
 	// "<i+1>:" instead of erroring out, matching upstream vcfmerge.c
 	// merge_headers (e.g. A + A -> A, 2:A).
 	ForceSamples bool
+	// InfoRules is the -i/--info-rules spec controlling how INFO fields combine
+	// across merged records ("TAG:method,..."; method one of sum/avg/min/max/
+	// join). "-" disables all rules. Empty selects the upstream default
+	// (DP:sum,DP4:sum, plus AN:sum,AC:sum when the output has no samples).
+	InfoRules string
 }
 
 // MergeFiles is the file-aware entry point. It opens each path through
@@ -165,6 +170,10 @@ func Merge(headers []*vcf.Header, groups [][]*vcf.Variant, out io.Writer, opts M
 		}
 	}
 	order := contigOrder(mergedHdr)
+	infoRules, err := resolveInfoRules(opts.InfoRules, mergedHdr)
+	if err != nil {
+		return 0, err
+	}
 	regions, err := parseRegions(append(opts.Regions, []string{}...))
 	if err != nil {
 		return 0, err
@@ -239,7 +248,7 @@ func Merge(headers []*vcf.Header, groups [][]*vcf.Variant, out io.Writer, opts M
 		// MergeMode. Each bucket becomes one output record.
 		buckets := bucketize(participants, opts.MergeMode)
 		for _, bk := range buckets {
-			rec := mergeBucket(bk, headers, mergedHdr.Samples, order)
+			rec := mergeBucket(bk, headers, mergedHdr.Samples, infoRules)
 			if len(regions) > 0 && !overlapsAny(rec, regions) {
 				continue
 			}
@@ -294,6 +303,26 @@ type variantRef struct {
 	variant  *vcf.Variant
 }
 
+// pairByOccurrence splits a set of records that are eligible to merge into
+// buckets by per-input occurrence index: the k-th record from each input lands
+// in bucket k. This mirrors bcftools' maux, where each output record draws at
+// most one line from any single input — so a file that holds two compatible
+// records at a position (an intra-position duplicate or a split multiallelic)
+// contributes to two distinct output records rather than collapsing them.
+func pairByOccurrence(group []variantRef) [][]variantRef {
+	occ := map[int]int{}
+	var buckets [][]variantRef
+	for _, p := range group {
+		k := occ[p.groupIdx]
+		occ[p.groupIdx]++
+		for len(buckets) <= k {
+			buckets = append(buckets, nil)
+		}
+		buckets[k] = append(buckets[k], p)
+	}
+	return buckets
+}
+
 // bucketize groups co-located records according to MergeMode. The result
 // is a slice of buckets (each bucket becomes one output record).
 func bucketize(parts []variantRef, mode MergeMode) [][]variantRef {
@@ -302,7 +331,7 @@ func bucketize(parts []variantRef, mode MergeMode) [][]variantRef {
 	}
 	switch mode {
 	case MergeAll:
-		return [][]variantRef{parts}
+		return pairByOccurrence(parts)
 	case MergeNone:
 		// Each input record stands on its own — except byte-identical
 		// (REF + ALT) records collapse trivially.
@@ -348,9 +377,8 @@ func bucketize(parts []variantRef, mode MergeMode) [][]variantRef {
 			}
 		}
 		out := [][]variantRef{}
-		if len(snp) > 0 {
-			out = append(out, snp)
-		}
+		// SNPs merge, but pair by per-input occurrence so duplicates split.
+		out = append(out, pairByOccurrence(snp)...)
 		// Non-SNP records are emitted one bucket per record.
 		for _, p := range other {
 			out = append(out, []variantRef{p})
@@ -366,9 +394,7 @@ func bucketize(parts []variantRef, mode MergeMode) [][]variantRef {
 			}
 		}
 		out := [][]variantRef{}
-		if len(indel) > 0 {
-			out = append(out, indel)
-		}
+		out = append(out, pairByOccurrence(indel)...)
 		for _, p := range other {
 			out = append(out, []variantRef{p})
 		}
@@ -388,17 +414,39 @@ func bucketize(parts []variantRef, mode MergeMode) [][]variantRef {
 			}
 		}
 		out := [][]variantRef{}
-		if len(snp) > 0 {
-			out = append(out, snp)
-		}
-		if len(indel) > 0 {
-			out = append(out, indel)
-		}
+		out = append(out, pairByOccurrence(snp)...)
+		out = append(out, pairByOccurrence(indel)...)
 		for _, p := range other {
 			out = append(out, []variantRef{p})
 		}
-		return out
+		return orderBucketsByInput(out, parts)
 	}
+}
+
+// orderBucketsByInput stable-sorts buckets by the original input position of
+// their first-appearing record. bcftools emits the merged records at a site in
+// the order the records appear in the inputs (first input first), not grouped
+// by variant type, so a SNP and an indel at one position keep their file order.
+func orderBucketsByInput(buckets [][]variantRef, parts []variantRef) [][]variantRef {
+	idx := make(map[*vcf.Variant]int, len(parts))
+	for i, p := range parts {
+		if _, ok := idx[p.variant]; !ok {
+			idx[p.variant] = i
+		}
+	}
+	minIdx := func(bk []variantRef) int {
+		m := 1 << 30
+		for _, p := range bk {
+			if i, ok := idx[p.variant]; ok && i < m {
+				m = i
+			}
+		}
+		return m
+	}
+	sort.SliceStable(buckets, func(i, j int) bool {
+		return minIdx(buckets[i]) < minIdx(buckets[j])
+	})
+	return buckets
 }
 
 // isSNPRecord returns true when REF is one base and every ALT is one base.
@@ -429,7 +477,7 @@ func isIndelRecord(v *vcf.Variant) bool {
 // Allele numbering is unified across the bucket and each input sample's
 // FORMAT values are remapped to the new ALT indices. Samples present in the
 // merged header but not in this bucket are emitted with `.` placeholders.
-func mergeBucket(bk []variantRef, srcHeaders []*vcf.Header, mergedSamples []string, _ map[string]int) *vcf.Variant {
+func mergeBucket(bk []variantRef, srcHeaders []*vcf.Header, mergedSamples []string, infoRules map[string]infoRule) *vcf.Variant {
 	first := bk[0].variant
 
 	// Build the union ALT list, in first-seen order.
@@ -464,7 +512,8 @@ func mergeBucket(bk []variantRef, srcHeaders []*vcf.Header, mergedSamples []stri
 
 	// INFO union — first input wins on collisions for tags whose Number
 	// isn't A or R; tags with A/R are remapped to the merged allele order.
-	out.Info, out.InfoOrder = mergeInfo(bk, perSrcMap, len(altList))
+	// INFO rules (e.g. DP:sum) then combine values across the bucket.
+	out.Info, out.InfoOrder = mergeInfo(bk, perSrcMap, len(altList), infoRules)
 
 	// Per-sample fan-out.
 	out.Samples = make([]vcf.Sample, len(mergedSamples))
@@ -622,8 +671,10 @@ func mergeFormat(bk []variantRef) []string {
 
 // mergeInfo returns the union of INFO tags. Tags with comma-separated
 // per-allele values (one per ALT) are remapped to the new allele order. For
-// fixed-Number tags the first input that defines the tag wins.
-func mergeInfo(bk []variantRef, perSrc []map[int]int, nAlt int) (map[string]string, []string) {
+// fixed-Number tags the first input that defines the tag wins, unless the tag
+// has an INFO rule (e.g. DP:sum), in which case the rule combines the values
+// across every bucket record.
+func mergeInfo(bk []variantRef, perSrc []map[int]int, nAlt int, rules map[string]infoRule) (map[string]string, []string) {
 	out := map[string]string{}
 	var order []string
 	tagSeen := map[string]bool{}
@@ -633,6 +684,10 @@ func mergeInfo(bk []variantRef, perSrc []map[int]int, nAlt int) (map[string]stri
 			if !tagSeen[k] {
 				tagSeen[k] = true
 				order = append(order, k)
+			}
+			if r, ok := rules[k]; ok {
+				out[k] = applyInfoRule(bk, k, r)
+				continue
 			}
 			if _, exists := out[k]; exists {
 				continue
@@ -661,6 +716,186 @@ func mergeInfo(bk []variantRef, perSrc []map[int]int, nAlt int) (map[string]stri
 		}
 	}
 	return out, order
+}
+
+// infoRule is one INFO-combine method for the -i/--info-rules machinery.
+type infoRule int
+
+const (
+	infoRuleSum  infoRule = iota // element-wise sum
+	infoRuleAvg                  // element-wise mean
+	infoRuleMin                  // element-wise minimum
+	infoRuleMax                  // element-wise maximum
+	infoRuleJoin                 // comma-join every value across records
+)
+
+// resolveInfoRules turns the -i/--info-rules spec into a tag->rule map. "-"
+// disables all rules; "" selects upstream's default (DP:sum, DP4:sum, and
+// AN:sum,AC:sum when the merged header carries no samples), restricted to tags
+// that are actually declared in the merged header.
+func resolveInfoRules(spec string, hdr *vcf.Header) (map[string]infoRule, error) {
+	if spec == "-" {
+		return nil, nil
+	}
+	if spec == "" {
+		declared := infoTagSet(hdr)
+		var parts []string
+		if declared["DP"] {
+			parts = append(parts, "DP:sum")
+		}
+		if declared["DP4"] {
+			parts = append(parts, "DP4:sum")
+		}
+		if len(hdr.Samples) == 0 {
+			if declared["AN"] {
+				parts = append(parts, "AN:sum")
+			}
+			if declared["AC"] {
+				parts = append(parts, "AC:sum")
+			}
+		}
+		spec = strings.Join(parts, ",")
+	}
+	return parseInfoRules(spec)
+}
+
+// parseInfoRules parses a "TAG:method,TAG:method" spec.
+func parseInfoRules(spec string) (map[string]infoRule, error) {
+	if spec == "" {
+		return nil, nil
+	}
+	out := map[string]infoRule{}
+	for _, item := range strings.Split(spec, ",") {
+		kv := strings.SplitN(item, ":", 2)
+		if len(kv) != 2 || kv[0] == "" {
+			return nil, fmt.Errorf("bcftools merge: could not parse INFO rule %q", item)
+		}
+		var r infoRule
+		switch kv[1] {
+		case "sum":
+			r = infoRuleSum
+		case "avg":
+			r = infoRuleAvg
+		case "min":
+			r = infoRuleMin
+		case "max":
+			r = infoRuleMax
+		case "join":
+			r = infoRuleJoin
+		default:
+			return nil, fmt.Errorf("bcftools merge: unknown INFO rule method %q", kv[1])
+		}
+		out[kv[0]] = r
+	}
+	return out, nil
+}
+
+// infoTagSet returns the set of INFO tag IDs declared in the header.
+func infoTagSet(hdr *vcf.Header) map[string]bool {
+	out := map[string]bool{}
+	for _, ln := range hdr.MetaInfo {
+		if !strings.HasPrefix(ln, "##INFO=<") {
+			continue
+		}
+		if id := headerLineID(ln); id != "" {
+			out[id] = true
+		}
+	}
+	return out
+}
+
+// headerLineID extracts the ID=<value> field from a structured header line.
+func headerLineID(ln string) string {
+	i := strings.Index(ln, "ID=")
+	if i < 0 {
+		return ""
+	}
+	s := ln[i+3:]
+	for j := 0; j < len(s); j++ {
+		if s[j] == ',' || s[j] == '>' {
+			return s[:j]
+		}
+	}
+	return s
+}
+
+// applyInfoRule combines a tag's value across every record in the bucket per
+// the rule. Numeric rules (sum/avg/min/max) operate element-wise over the
+// comma-separated value vectors; join concatenates the raw values. Records
+// lacking the tag are skipped (a missing field never contributes).
+func applyInfoRule(bk []variantRef, tag string, r infoRule) string {
+	if r == infoRuleJoin {
+		var vals []string
+		for _, ref := range bk {
+			if v, ok := ref.variant.Info[tag]; ok {
+				vals = append(vals, v)
+			}
+		}
+		return strings.Join(vals, ",")
+	}
+	var acc []float64
+	count := 0
+	anyFloat := false
+	for _, ref := range bk {
+		v, ok := ref.variant.Info[tag]
+		if !ok {
+			continue
+		}
+		parts := strings.Split(v, ",")
+		if acc == nil {
+			acc = make([]float64, len(parts))
+		}
+		if len(parts) != len(acc) {
+			// Vector-length mismatch: fall back to the first value seen.
+			return v
+		}
+		for i, p := range parts {
+			f, err := strconv.ParseFloat(p, 64)
+			if err != nil {
+				return v
+			}
+			if strings.ContainsAny(p, ".eE") {
+				anyFloat = true
+			}
+			switch r {
+			case infoRuleSum, infoRuleAvg:
+				acc[i] += f
+			case infoRuleMin:
+				if count == 0 || f < acc[i] {
+					acc[i] = f
+				}
+			case infoRuleMax:
+				if count == 0 || f > acc[i] {
+					acc[i] = f
+				}
+			}
+		}
+		count++
+	}
+	if count == 0 {
+		return ""
+	}
+	if r == infoRuleAvg {
+		for i := range acc {
+			acc[i] /= float64(count)
+		}
+		anyFloat = true
+	}
+	strs := make([]string, len(acc))
+	for i, a := range acc {
+		if anyFloat {
+			strs[i] = formatInfoFloat(a)
+		} else {
+			strs[i] = strconv.FormatInt(int64(a), 10)
+		}
+	}
+	return strings.Join(strs, ",")
+}
+
+// formatInfoFloat renders a combined float the way bcftools prints INFO floats
+// (shortest round-trippable form).
+func formatInfoFloat(f float64) string {
+	return strconv.FormatFloat(f, 'g', -1, 64)
 }
 
 // remapGTByMap rewrites a GT string ("0/1", "1|0", "./.", ...) using a
