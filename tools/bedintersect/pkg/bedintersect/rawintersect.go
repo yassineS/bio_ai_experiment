@@ -68,11 +68,25 @@ func newFinder(bRecords []*inRecord, opts IntersectOptions) inFinder {
 		b.order = len(byChrom[b.chrom])
 		byChrom[b.chrom] = append(byChrom[b.chrom], b)
 	}
-	if opts.UseTree {
+	// The interval tree yields byte-identical output to the linear scan (it
+	// re-sorts each query's hits back into B's file order) but turns the
+	// per-A cost from O(B) into O(log B + k). The linear scan's O(A*B) blows
+	// up at scale — a different-file intersect over the medium fixture took
+	// 2.7 s linear vs 0.23 s with the tree (11.5x). So auto-enable the tree
+	// once B is large enough to amortise its build, instead of requiring the
+	// explicit -t flag (which still forces it on for any size).
+	if opts.UseTree || len(bRecords) >= autoTreeThreshold {
 		return newTreeFinder(byChrom)
 	}
 	return linearFinder{byChrom: byChrom}
 }
+
+// autoTreeThreshold is the B-record count at or above which newFinder switches
+// from the linear scan to the interval tree by default. Below it the tree's
+// build cost is not worth it and the linear scan is marginally faster; well
+// above it the O(A*B) scan dominates and the tree is dramatically faster. The
+// two paths are byte-identical, so the switch never changes output.
+const autoTreeThreshold = 256
 
 // inIntervalNode is a node in the augmented interval tree over inRecords. max is
 // the largest end across the subtree, used to prune queries.
