@@ -47,13 +47,12 @@ type upstreamPhaseRunner struct {
 // (FLAG_DROP_AMBI).
 //
 // Returns the number of het sites emitted on this reference.
-func runUpstreamPhase(g *upstreamPhaseRunner, recs []*sam.Record, rname string, isLastRef bool, bw *bufio.Writer, bs *bamSplitWriter, rng phaseRNG, opts PhaseOptions) (int, error) {
+func runUpstreamPhase(g *upstreamPhaseRunner, hash *fragKhash, recs []*sam.Record, rname string, isLastRef bool, bw *bufio.Writer, bs *bamSplitWriter, rng phaseRNG, opts PhaseOptions) (int, error) {
 	pp := newPhaseStreamPileup(recs, rname)
 	em := errmod.Init(1.0 - 0.83)
 	bases := make([]uint16, 0, g.maxDepth)
 	cns := make([]uint64, 0, 256)
 	vpos := 0
-	hash := newFragKhash()
 	// g.vposShift is NOT reset here: upstream resets vpos_shift to 0 at a tid
 	// change *before* flushing the previous chromosome's trailing buffer (so
 	// that buffer's hets are renumbered from 0 and the new chromosome continues
@@ -239,6 +238,14 @@ func runUpstreamPhase(g *upstreamPhaseRunner, recs []*sam.Record, rname string, 
 			return emitted, err
 		}
 		_ = cursor
+	}
+	// Chromosome boundary: upstream deletes every fragment from the shared hash
+	// (update_vpos(0x7fffffff), phase.c:732) once the previous chr's trailing
+	// block has been flushed and its reads drained, leaving the table at its
+	// current n_buckets full of tombstones. The next reference reuses that table.
+	// The last reference has no following chr, so upstream never clears it.
+	if !isLastRef {
+		updateVpos(math.MaxInt32, hash)
 	}
 	return emitted, nil
 }

@@ -27,8 +27,8 @@ package matrix
 // gap), calmd, consensus, dict, quickcheck, fastq/fasta, cat (count round-trip),
 // tview (text), and markdup / fixmate / addreplacerg / reheader / split /
 // import / merge (BAMDecoded; merge renames colliding @RG IDs under a fixed -s
-// seed). Documented Skips: subsample -s (RNG differs) and phase (output-format /
-// behaviour gaps spelled out per entry).
+// seed) and phase (the full PS/M/FL/// + EV text report, byte-exact). Documented
+// Skip: subsample -s (RNG differs).
 
 func init() {
 	Register(samtoolsViewMatrix()...)
@@ -224,13 +224,6 @@ func samtoolsDecodeText() []Entry {
 // decoded DATA was verified correct out-of-band it is noted, and where the data
 // itself diverges that is flagged for the samtools agent.
 func samtoolsBinaryOutputSkips() []Entry {
-	skip := func(name, args, reason string, argv ...string) Entry {
-		return Entry{
-			Tool: "samtools", Subcommand: name, UsesSubcommand: true,
-			Name: "samtools_" + name, Input: InputBAM, Compare: ByteExact,
-			Args: argv, Skip: reason,
-		}
-	}
 	// bamOut builds an entry whose stdout is BGZF BAM; the runner decodes both
 	// sides through `samtools view -h` (BAMDecoded) and compares the SAM, so the
 	// klauspost-vs-htslib framing difference is bypassed and only the records
@@ -272,19 +265,21 @@ func samtoolsBinaryOutputSkips() []Entry {
 			Name: "samtools_import", Input: InputFASTQ, Compare: BAMDecoded,
 			Args: []string{"{fastq}"},
 		},
-		skip("phase", "", "samtools phase's default (no -b) text report is byte-exact for the entire PS/M/FL/// phasing result and all "+
-			"single-het EV blocks; the only residual is the ORDER of EV supporting-read lines in ONE multi-het block (8 lines), emitted in "+
-			"klib khash bucket-iteration order. A deep investigation (instrumenting both sides) ruled out every per-operation cause: our "+
-			"ksortRseq reproduces klib ks_introsort's equal-key permutation bit-for-bit; the khash hash/triangular-probe/resize-rehash/del/"+
-			"size bookkeeping all match klib; the per-block put order is coordinate-correct; and the total distinct reads put MATCH upstream "+
-			"exactly (237/424/689 per chrom). The divergence is purely cumulative: upstream's table reaches n_buckets=64 while ours reaches "+
-			"32, because the table grows 32->64 only when n_occupied hits the upper bound with >=16 live slots. Block-by-block hash-stat "+
-			"instrumentation localised the FIRST divergence to chr1 block 4: identical live size (11) but n_occupied 20 (upstream) vs 19 "+
-			"(ours) — a one-tombstone difference, meaning a put landed on an empty slot upstream but a recycled deleted slot for us. So the "+
-			"bucket LAYOUT had already diverged by block 3 despite matching counts, which can only come from a put/del order difference at a "+
-			"single read earlier on chr1 (most likely one read's per-column allele code, hence its clean_seqs deletion, differs). Resuming "+
-			"needs frag-content (seq array) comparison at the first chr1 blocks. Owned by the samtools agent.",
-			"{bam}"),
+		// phase: the default (no -b) text report — the entire PS/M/FL/// phasing
+		// result AND the EV supporting-read lines — is byte-exact against upstream.
+		// Matching the EV-line order required reproducing two khash details that
+		// drive the unstable ks_introsort_rseq permutation of equal-vpos frags:
+		// (1) the KHASH_MAP_INIT_INT64 hash kh_int64_hash_func (key>>33 ^ key ^
+		// key<<11), not the raw low 32 bits, so the initial bucket of each key
+		// matches; and (2) carrying ONE fragment table across all references with
+		// update_vpos(0x7fffffff) at each chromosome boundary (phase.c uses a single
+		// continuous pileup), so n_buckets grows identically instead of resetting
+		// per chromosome. With both in place the report is byte-identical end to end.
+		{
+			Tool: "samtools", Subcommand: "phase", UsesSubcommand: true,
+			Name: "samtools_phase", Input: InputBAM, Compare: ByteExact,
+			Args: []string{"{bam}"},
+		},
 	}
 }
 
