@@ -136,14 +136,25 @@ func CompareByteExact(ours, upstream []byte) CompareResult {
 	return CompareResult{Equal: false, Detail: firstDiff(a, b)}
 }
 
-// similarityEpsilon is the relative tolerance for numeric field comparison.
+// similarityEpsilon is the default relative tolerance for numeric field
+// comparison. An entry may widen it via Entry.Tolerance (see resolveEpsilon).
 const similarityEpsilon = 1e-6
 
+// resolveEpsilon returns the per-entry numeric tolerance, falling back to the
+// package default when the entry does not set one.
+func resolveEpsilon(tol float64) float64 {
+	if tol > 0 {
+		return tol
+	}
+	return similarityEpsilon
+}
+
 // CompareSimilarity compares streams structurally: identical non-numeric tokens
-// and numeric tokens within a relative epsilon. It records the maximum relative
-// deviation observed. Used for heuristic / float-scored / RNG paths where
-// byte-exact equality is not expected but structural+numeric agreement is.
-func CompareSimilarity(ours, upstream []byte) CompareResult {
+// and numeric tokens within a relative epsilon eps. It records the maximum
+// relative deviation observed. Used for heuristic / float-scored / RNG paths
+// where byte-exact equality is not expected but structural+numeric agreement
+// is.
+func CompareSimilarity(ours, upstream []byte, eps float64) CompareResult {
 	al := splitLines(stripProvenance(ours))
 	bl := splitLines(stripProvenance(upstream))
 	if len(al) != len(bl) {
@@ -165,7 +176,7 @@ func CompareSimilarity(ours, upstream []byte) CompareResult {
 				if dev > maxDev {
 					maxDev = dev
 				}
-				if dev > similarityEpsilon {
+				if dev > eps {
 					return CompareResult{Equal: false, MaxDeviation: dev,
 						Detail: fmt.Sprintf("line %d field %d numeric deviation %.3g (%v vs %v)", i+1, j+1, dev, af, bf)}
 				}
@@ -240,7 +251,7 @@ func trunc(s string) string {
 // with the chosen mode. The first mismatching file fails the whole entry; a
 // missing-on-exactly-one-side file is a divergence. This is how the vcftools
 // and mosdepth matrices verify multi-file output.
-func CompareOutputFiles(ourPrefix, upPrefix string, suffixes []string, mode matrix.CompareMode) CompareResult {
+func CompareOutputFiles(ourPrefix, upPrefix string, suffixes []string, mode matrix.CompareMode, eps float64) CompareResult {
 	var maxDev float64
 	// BAMDecoded output files (e.g. the per-read-group BAMs samtools split
 	// writes) are decoded through the upstream samtools so only their records
@@ -270,7 +281,7 @@ func CompareOutputFiles(ourPrefix, upPrefix string, suffixes []string, mode matr
 		}
 		var cmp CompareResult
 		if mode == matrix.Similarity {
-			cmp = CompareSimilarity(ourBytes, upBytes)
+			cmp = CompareSimilarity(ourBytes, upBytes, eps)
 		} else {
 			cmp = CompareByteExact(ourBytes, upBytes)
 		}

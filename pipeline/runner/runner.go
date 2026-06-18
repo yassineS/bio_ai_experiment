@@ -221,7 +221,7 @@ func RunEntry(cfg Config, e matrix.Entry) Result {
 		// .gz, stripping provenance). The compare mode still selects byte-exact
 		// vs similarity for the file contents.
 		cmp = CompareOutputFiles(filepath.Join(ourDir, "out"), filepath.Join(upDir, "out"),
-			e.OutputFiles, e.CompareModeOrDefault())
+			e.OutputFiles, e.CompareModeOrDefault(), resolveEpsilon(e.Tolerance))
 		if cmp.Equal {
 			if e.CompareModeOrDefault() == matrix.Similarity {
 				res.Status = StatusSimilar
@@ -232,7 +232,7 @@ func RunEntry(cfg Config, e matrix.Entry) Result {
 			res.Status = StatusDiverge
 		}
 	case e.CompareModeOrDefault() == matrix.Similarity:
-		cmp = CompareSimilarity(ourOut, upOut)
+		cmp = CompareSimilarity(ourOut, upOut, resolveEpsilon(e.Tolerance))
 		if cmp.Equal {
 			res.Status = StatusSimilar
 		} else {

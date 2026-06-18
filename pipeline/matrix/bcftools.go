@@ -33,8 +33,11 @@ import (
 // isec (-p Venn decomposition: the four 000N.vcf files + sites.txt, compared
 // via OutputFiles), merge (--force-samples: maux occurrence pairing + INFO
 // DP:sum rule), and fill-tags / split-vep plugin smoke.
-// Documented Skips: call, csq — the residual deep-internals gaps (QUAL
-// precision, csq haplotype engine), spelled out per entry.
+// call runs as a Similarity comparison (a small per-entry tolerance absorbs the
+// glibc-version-dependent libm last-ULP rounding of the QUAL column; every other
+// field is byte-exact). Documented Skip: csq — the one remaining deep-internals
+// residual (an upstream recycled-pointer @pos bug we deliberately do not
+// reproduce), spelled out per entry.
 
 func init() {
 	Register(bcftoolsViewMatrix()...)
@@ -274,21 +277,26 @@ func bcftoolsSkips() []Entry {
 		// map, distinct IDs are concatenated (rs45;rs46), and same-position
 		// records are emitted in variant-type-bit order.
 		mkBcf("norm", "norm_join", InputVCFPlain, ByteExact, "-m+", "-f", "{fasta}", "{vcf_plain}"),
-		// call -m now runs over the bcftools-mpileup PL fixture (the old "Wrong
-		// number of PL fields" blocker is gone). Every INFO/GT/AD field matches;
-		// the only residual is the QUAL column's last decimal (e.g. 15.6999 vs
-		// 15.6998) — a sub-ULP float-precision difference in the call model's
-		// likelihood arithmetic (same class as the errmod float-vs-double work,
-		// a deep-internals item).
-		skip("call", "call",
-			"bcftools call -m over the PL fixture: every CHROM/POS/REF/ALT/INFO/GT/AD field matches upstream byte-for-byte; the ONLY "+
-				"divergence is the QUAL column's last printed decimal on 133 of ~12000 REF-only sites (e.g. 15.6999 vs 15.6998). The "+
-				"genotype-likelihood accumulation order is identical to mcall.c (set_pdg normalise-then-divide, lk_tot += log(pdg) per "+
-				"sample, logsumexp2 over allele combos, QUAL = -4.343*(ref_lk - logsumexp2(lk_sum,ref_lk)) stored as float32). The residual "+
-				"is that Go's pure-Go math.Pow (pl2p table) and math.Log are not bit-identical to glibc's libm pow/log, so a few borderline "+
-				"values round to the adjacent ULP. Closing it would require a bit-exact glibc-libm transcendental reimplementation, outside "+
-				"the stdlib-only scope; a genuine near-terminal precision limit.",
-			"-m", "{vcf_pl}"),
+		// call -m over the bcftools-mpileup PL fixture. Every CHROM/POS/REF/ALT/
+		// INFO/GT/AD field is byte-exact; the only divergence is the QUAL column's
+		// last printed decimal on 133 of ~12000 REF-only sites (e.g. 15.6999 vs
+		// 15.6998, max relative deviation 7.2e-6). The genotype-likelihood
+		// accumulation order is identical to mcall.c (set_pdg normalise-then-
+		// divide, lk_tot += log(pdg) per sample, logsumexp2 over allele combos,
+		// QUAL = -4.343*(ref_lk - logsumexp2(lk_sum,ref_lk))); the residual is
+		// that Go's math.Log/exp and the pl2p pow table are not bit-identical to
+		// glibc's libm, and glibc itself is not bit-stable across versions, so
+		// "byte-exact QUAL" is a moving target tied to the vendored binary's exact
+		// libm. The values are correct to ~6 significant figures, so this runs as
+		// a Similarity comparison with a 2e-5 per-entry tolerance (≈3x the
+		// observed 7.2e-6, still orders of magnitude tighter than any real bug) —
+		// the same libm-last-ULP class the project accepts for trio-dnm3 float
+		// scores. See docs/PARITY_ROADMAP.md.
+		{
+			Tool: "bcftools", Subcommand: "call", UsesSubcommand: true,
+			Name: "bcftools_call", Input: InputVCFPlain, Compare: Similarity,
+			Tolerance: 2e-5, Args: []string{"-m", "{vcf_pl}"},
+		},
 		skip("csq", "csq",
 			"bcftools csq --force over the multi-gene fixture is byte-identical to upstream EXCEPT for 3 records, and that residual is an "+
 				"upstream bug we deliberately do not reproduce (fix-on-port). The haplotype-aware engine now matches upstream on the INFO/BCSQ "+

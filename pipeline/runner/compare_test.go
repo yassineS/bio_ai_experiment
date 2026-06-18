@@ -80,7 +80,7 @@ func TestCompareByteExact(t *testing.T) {
 func TestCompareSimilarity(t *testing.T) {
 	a := []byte("chr1\t0.1000000\t2\n")
 	b := []byte("chr1\t0.1000001\t2\n")
-	r := CompareSimilarity(a, b)
+	r := CompareSimilarity(a, b, similarityEpsilon)
 	if !r.Equal {
 		t.Errorf("expected within-tolerance equal, got %+v", r)
 	}
@@ -88,14 +88,26 @@ func TestCompareSimilarity(t *testing.T) {
 		t.Errorf("expected non-zero recorded deviation")
 	}
 
-	d := CompareSimilarity([]byte("chr1\t1.0\n"), []byte("chr2\t1.0\n"))
+	d := CompareSimilarity([]byte("chr1\t1.0\n"), []byte("chr2\t1.0\n"), similarityEpsilon)
 	if d.Equal {
 		t.Errorf("expected non-numeric field mismatch to diverge")
 	}
 
-	e := CompareSimilarity([]byte("chr1\t1.0\n"), []byte("chr1\t2.0\n"))
+	e := CompareSimilarity([]byte("chr1\t1.0\n"), []byte("chr1\t2.0\n"), similarityEpsilon)
 	if e.Equal {
 		t.Errorf("expected out-of-tolerance numeric to diverge")
+	}
+
+	// A per-entry tolerance widens acceptance: a deviation that fails at the
+	// default epsilon passes when the entry opts into a looser bound (the
+	// bcftools call QUAL libm-last-ULP case).
+	f := CompareSimilarity([]byte("chr1\t15.6999\n"), []byte("chr1\t15.6998\n"), resolveEpsilon(2e-5))
+	if !f.Equal {
+		t.Errorf("expected within widened tolerance, got %+v", f)
+	}
+	g := CompareSimilarity([]byte("chr1\t15.6999\n"), []byte("chr1\t15.6998\n"), resolveEpsilon(0))
+	if g.Equal {
+		t.Errorf("expected default tolerance to reject the QUAL last-ULP deviation")
 	}
 }
 
@@ -123,24 +135,24 @@ func TestCompareOutputFiles_ByteExact(t *testing.T) {
 	// Plain text, identical.
 	write("a.frq", "chr1\t1\tA\n")
 	write("b.frq", "chr1\t1\tA\n")
-	if r := CompareOutputFiles(filepath.Join(dir, "a"), filepath.Join(dir, "b"), []string{".frq"}, matrix.ByteExact); !r.Equal {
+	if r := CompareOutputFiles(filepath.Join(dir, "a"), filepath.Join(dir, "b"), []string{".frq"}, matrix.ByteExact, similarityEpsilon); !r.Equal {
 		t.Errorf("identical .frq should match: %+v", r)
 	}
 	// Gzipped, identical payload (different framing is irrelevant after decode).
 	writeGz("a.bed.gz", "chr1\t0\t100\t5\n")
 	writeGz("b.bed.gz", "chr1\t0\t100\t5\n")
-	if r := CompareOutputFiles(filepath.Join(dir, "a"), filepath.Join(dir, "b"), []string{".bed.gz"}, matrix.ByteExact); !r.Equal {
+	if r := CompareOutputFiles(filepath.Join(dir, "a"), filepath.Join(dir, "b"), []string{".bed.gz"}, matrix.ByteExact, similarityEpsilon); !r.Equal {
 		t.Errorf("identical gzip payload should match: %+v", r)
 	}
 	// Mismatch.
 	write("a.diff", "x\n")
 	write("b.diff", "y\n")
-	if r := CompareOutputFiles(filepath.Join(dir, "a"), filepath.Join(dir, "b"), []string{".diff"}, matrix.ByteExact); r.Equal {
+	if r := CompareOutputFiles(filepath.Join(dir, "a"), filepath.Join(dir, "b"), []string{".diff"}, matrix.ByteExact, similarityEpsilon); r.Equal {
 		t.Errorf("differing files should diverge")
 	}
 	// Presence mismatch (one side missing).
 	write("a.only", "x\n")
-	if r := CompareOutputFiles(filepath.Join(dir, "a"), filepath.Join(dir, "b"), []string{".only"}, matrix.ByteExact); r.Equal {
+	if r := CompareOutputFiles(filepath.Join(dir, "a"), filepath.Join(dir, "b"), []string{".only"}, matrix.ByteExact, similarityEpsilon); r.Equal {
 		t.Errorf("missing-on-one-side should diverge")
 	}
 }
