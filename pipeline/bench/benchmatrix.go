@@ -1,6 +1,7 @@
 package bench
 
 import (
+	"os"
 	"path/filepath"
 
 	"github.com/yassineS/bio_ai_experiment/pipeline/fixtures"
@@ -31,11 +32,16 @@ type BenchCell struct {
 // vcftools, whose CLI shape we match exactly). stdoutFile, when true, captures
 // stdout to a per-side temp file.
 func sameArgs(ourTool, upKey string, stdoutFile bool, args ...string) func(*fixtures.Manifest, string) benchPlan {
-	return func(_ *fixtures.Manifest, tmp string) benchPlan {
+	return func(_ *fixtures.Manifest, _ string) benchPlan {
 		p := benchPlan{ourTool: ourTool, upKey: upKey, ourArgs: args, upArgs: args}
 		if stdoutFile {
-			p.ourStdout = filepath.Join(tmp, "our.out")
-			p.upStdout = filepath.Join(tmp, "up.out")
+			// Stream to the null device, not a temp file: the write() syscalls
+			// are still issued (so output-generation cost is counted) but nothing
+			// hits disk. This keeps cells whose stdout is huge — e.g. `bcftools
+			// call` over a 15M-record mpileup VCF (~1.7 GB at medium, ~20 GB at
+			// large) — from filling /tmp and aborting the run.
+			p.ourStdout = os.DevNull
+			p.upStdout = os.DevNull
 		}
 		return p
 	}
@@ -45,13 +51,13 @@ func sameArgs(ourTool, upKey string, stdoutFile bool, args ...string) func(*fixt
 // (e.g. bedintersect) with no subcommand token; UPSTREAM is `bedtools <sub>`.
 // bed* operations all stream to stdout.
 func bedArgs(ourTool, sub string, args ...string) func(*fixtures.Manifest, string) benchPlan {
-	return func(_ *fixtures.Manifest, tmp string) benchPlan {
+	return func(_ *fixtures.Manifest, _ string) benchPlan {
 		return benchPlan{
 			ourTool: ourTool, upKey: "bedtools",
 			ourArgs:   args,
 			upArgs:    append([]string{sub}, args...),
-			ourStdout: filepath.Join(tmp, "our.out"),
-			upStdout:  filepath.Join(tmp, "up.out"),
+			ourStdout: os.DevNull,
+			upStdout:  os.DevNull,
 		}
 	}
 }
