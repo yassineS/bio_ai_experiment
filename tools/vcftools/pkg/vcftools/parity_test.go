@@ -1336,7 +1336,7 @@ func TestParity_LROH_Header(t *testing.T) {
 	if len(lines) == 0 {
 		t.Fatalf("empty .LROH output")
 	}
-	want := "CHROM\tAUTO_START\tAUTO_END\tN_VARIANTS\tINDV"
+	want := "CHROM\tAUTO_START\tAUTO_END\tMIN_START\tMAX_END\tN_VARIANTS_BETWEEN_MAX_BOUNDARIES\tN_MISMATCHES\tINDV"
 	if lines[0] != want {
 		t.Errorf("header mismatch: %q vs %q", lines[0], want)
 	}
