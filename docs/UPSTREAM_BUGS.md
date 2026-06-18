@@ -1702,3 +1702,7 @@ INFO/BCSQ consequence set and order, the FORMAT/BCSQ sample bitmask, the
 intron gene selection, and the splice-region ordering — is byte-identical to
 upstream over this multi-gene fixture; this recycled-pointer `@pos` is the one
 place our output is deliberately *more* correct than upstream's.
+
+A ready-to-file report for the upstream samtools/bcftools project (root-cause
+walk-through and a suggested fix) is staged at
+`docs/upstream-reports/bcftools-csq-prnup-recycled-pos.md`.
