@@ -54,7 +54,10 @@ type BAMReader struct {
 	hdr   *Header
 	refs  []Reference // copied from hdr.Refs for fast indexed lookup
 	scrat []byte      // reusable buffer for record bodies
-	err   error
+	// seqScratch holds the expanded SEQ nibbles between decode and the single
+	// string conversion, reused across records to avoid a per-record slice.
+	seqScratch []byte
+	err        error
 }
 
 // NewBAMReader constructs a BAMReader that consumes BGZF-encoded BAM bytes
@@ -229,12 +232,54 @@ func (br *BAMReader) VirtualOffset() uint64 {
 	return 0
 }
 
-// decodeRecord deserialises one BAM record body (everything after block_size).
-func (br *BAMReader) decodeRecord(buf []byte) (*Record, error) {
-	if len(buf) < 32 {
-		return nil, fmt.Errorf("sam: BAM record body too small (%d)", len(buf))
+// ReadInto decodes the next record into dst, reusing dst's Cigar and Qual
+// backing arrays (and dst itself) to avoid the per-record allocation that
+// Read incurs. It is meant for consume-and-discard scans (flagstat, depth,
+// stats): the caller must not retain pointers into dst — including its Seq,
+// Qual, Cigar or Aux — across calls, since the next ReadInto overwrites them.
+// It returns io.EOF at end of stream, like Read.
+func (br *BAMReader) ReadInto(dst *Record) error {
+	if br.err != nil {
+		return br.err
 	}
+	var blockSize int32
+	if err := binary.Read(br.src, binary.LittleEndian, &blockSize); err != nil {
+		if err == io.EOF {
+			br.err = io.EOF
+		}
+		return err
+	}
+	if blockSize < 32 {
+		return fmt.Errorf("sam: BAM block too small (%d)", blockSize)
+	}
+	if cap(br.scrat) < int(blockSize) {
+		br.scrat = make([]byte, blockSize)
+	} else {
+		br.scrat = br.scrat[:blockSize]
+	}
+	if _, err := io.ReadFull(br.src, br.scrat); err != nil {
+		return err
+	}
+	return br.decodeInto(dst, br.scrat)
+}
+
+// decodeRecord deserialises one BAM record body (everything after block_size)
+// into a freshly allocated Record.
+func (br *BAMReader) decodeRecord(buf []byte) (*Record, error) {
 	rec := &Record{}
+	if err := br.decodeInto(rec, buf); err != nil {
+		return nil, err
+	}
+	return rec, nil
+}
+
+// decodeInto deserialises one BAM record body into rec, reusing rec's Cigar and
+// Qual backing arrays where they are large enough. Every field rec carries is
+// reset so a reused record never leaks stale data from a previous decode.
+func (br *BAMReader) decodeInto(rec *Record, buf []byte) error {
+	if len(buf) < 32 {
+		return fmt.Errorf("sam: BAM record body too small (%d)", len(buf))
+	}
 	refID := int32(binary.LittleEndian.Uint32(buf[0:4]))
 	pos := int32(binary.LittleEndian.Uint32(buf[4:8]))
 	lReadName := buf[8]
@@ -248,9 +293,14 @@ func (br *BAMReader) decodeRecord(buf []byte) (*Record, error) {
 	tlen := int32(binary.LittleEndian.Uint32(buf[28:32]))
 	off := 32
 
+	// Clear the fields that the rest of the decode sets only conditionally,
+	// so a reused record never carries stale data from a previous decode.
+	rec.RName, rec.RNext, rec.Seq = "", "", ""
+	rec.auxIndex = nil
+
 	// Read name (l_read_name bytes including trailing NUL).
 	if off+int(lReadName) > len(buf) {
-		return nil, fmt.Errorf("sam: truncated read name")
+		return fmt.Errorf("sam: truncated read name")
 	}
 	nameBytes := buf[off : off+int(lReadName)]
 	if len(nameBytes) > 0 && nameBytes[len(nameBytes)-1] == 0 {
@@ -259,25 +309,33 @@ func (br *BAMReader) decodeRecord(buf []byte) (*Record, error) {
 	rec.QName = string(nameBytes)
 	off += int(lReadName)
 
-	// CIGAR ops: nCigarOp uint32s.
+	// CIGAR ops: nCigarOp uint32s. Reuse rec.Cigar's backing array.
 	if off+int(nCigarOp)*4 > len(buf) {
-		return nil, fmt.Errorf("sam: truncated CIGAR")
+		return fmt.Errorf("sam: truncated CIGAR")
 	}
-	if nCigarOp > 0 {
+	if cap(rec.Cigar) >= int(nCigarOp) {
+		rec.Cigar = rec.Cigar[:nCigarOp]
+	} else {
 		rec.Cigar = make(Cigar, nCigarOp)
-		for i := 0; i < int(nCigarOp); i++ {
-			rec.Cigar[i] = CigarOp(binary.LittleEndian.Uint32(buf[off : off+4]))
-			off += 4
-		}
+	}
+	for i := 0; i < int(nCigarOp); i++ {
+		rec.Cigar[i] = CigarOp(binary.LittleEndian.Uint32(buf[off : off+4]))
+		off += 4
 	}
 
-	// Packed SEQ: (l_seq+1)/2 bytes; high nibble first.
+	// Packed SEQ: (l_seq+1)/2 bytes; high nibble first. The nibbles are
+	// expanded into a reused scratch buffer and converted to the Seq string
+	// once, avoiding a separate per-record intermediate slice.
 	seqLen := int((lSeq + 1) / 2)
 	if off+seqLen > len(buf) {
-		return nil, fmt.Errorf("sam: truncated SEQ")
+		return fmt.Errorf("sam: truncated SEQ")
 	}
 	if lSeq > 0 {
-		seqOut := make([]byte, lSeq)
+		if cap(br.seqScratch) < int(lSeq) {
+			br.seqScratch = make([]byte, lSeq)
+		} else {
+			br.seqScratch = br.seqScratch[:lSeq]
+		}
 		for i := int32(0); i < lSeq; i++ {
 			b := buf[off+int(i/2)]
 			var nibble byte
@@ -286,28 +344,31 @@ func (br *BAMReader) decodeRecord(buf []byte) (*Record, error) {
 			} else {
 				nibble = b & 0x0f
 			}
-			seqOut[i] = seqLookup[nibble]
+			br.seqScratch[i] = seqLookup[nibble]
 		}
-		rec.Seq = string(seqOut)
+		rec.Seq = string(br.seqScratch)
 	}
 	off += seqLen
 
-	// QUAL: lSeq bytes of Phred.
+	// QUAL: lSeq bytes of Phred. Reuse rec.Qual's backing array.
 	if off+int(lSeq) > len(buf) {
-		return nil, fmt.Errorf("sam: truncated QUAL")
+		return fmt.Errorf("sam: truncated QUAL")
 	}
-	if lSeq > 0 {
-		qual := make([]byte, lSeq)
-		copy(qual, buf[off:off+int(lSeq)])
-		rec.Qual = qual
+	if cap(rec.Qual) >= int(lSeq) {
+		rec.Qual = rec.Qual[:lSeq]
+	} else {
+		rec.Qual = make([]byte, lSeq)
 	}
+	copy(rec.Qual, buf[off:off+int(lSeq)])
 	off += int(lSeq)
 
-	// AUX: parse remaining bytes as a stream of tag/type/value triples.
+	// AUX: parse remaining bytes as a stream of tag/type/value triples,
+	// reusing rec.Aux's backing array.
+	rec.Aux = rec.Aux[:0]
 	if off < len(buf) {
-		aux, err := decodeBAMAux(buf[off:])
+		aux, err := decodeBAMAuxInto(rec.Aux, buf[off:])
 		if err != nil {
-			return nil, err
+			return err
 		}
 		rec.Aux = aux
 	}
@@ -338,12 +399,18 @@ func (br *BAMReader) decodeRecord(buf []byte) (*Record, error) {
 		rec.PNext = 0
 	}
 	rec.TLen = tlen
-	return rec, nil
+	return nil
 }
 
 // decodeBAMAux walks the binary aux stream and returns parsed Aux entries.
 func decodeBAMAux(buf []byte) ([]Aux, error) {
-	var out []Aux
+	return decodeBAMAuxInto(nil, buf)
+}
+
+// decodeBAMAuxInto is decodeBAMAux that appends into dst (use dst[:0] to reuse
+// a record's existing Aux backing array), returning the grown slice.
+func decodeBAMAuxInto(dst []Aux, buf []byte) ([]Aux, error) {
+	out := dst
 	for len(buf) > 0 {
 		if len(buf) < 3 {
 			return nil, fmt.Errorf("sam: truncated aux header")
