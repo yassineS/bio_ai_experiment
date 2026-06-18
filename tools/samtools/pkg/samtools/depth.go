@@ -186,9 +186,14 @@ func emitDepthInterval(bw *bufio.Writer, ref string, beg0, end0 int, perInputRec
 		}
 	}
 
-	// Stream the depth values position by position.
+	// Stream the depth values position by position. Each output row is
+	// assembled into a single reused byte buffer with strconv.AppendInt — no
+	// per-number string allocation — and written in one call, instead of the
+	// several bufio calls and two string allocations per position the naive
+	// form incurs (the dominant cost on dense output).
 	cur := make([]int32, n)
 	span := make([]int32, n)
+	var line []byte
 	for pos0 := beg0; pos0 < end0; pos0++ {
 		// Apply diffs[i][pos0 - beg0] to cur[i].
 		idx := pos0 - beg0
@@ -211,22 +216,19 @@ func emitDepthInterval(bw *bufio.Writer, ref string, beg0, end0 int, perInputRec
 			continue
 		}
 		// Emit pos+1 (SAM is 1-based).
-		if _, err := bw.WriteString(ref); err != nil {
-			return err
-		}
-		if err := bw.WriteByte('\t'); err != nil {
-			return err
-		}
-		bw.WriteString(strconv.Itoa(pos0 + 1))
+		line = append(line[:0], ref...)
+		line = append(line, '\t')
+		line = strconv.AppendInt(line, int64(pos0+1), 10)
 		for i := 0; i < n; i++ {
 			d := cur[i]
 			if opts.MaxDepth > 0 && d > int32(opts.MaxDepth) {
 				d = int32(opts.MaxDepth)
 			}
-			bw.WriteByte('\t')
-			bw.WriteString(strconv.FormatInt(int64(d), 10))
+			line = append(line, '\t')
+			line = strconv.AppendInt(line, int64(d), 10)
 		}
-		if err := bw.WriteByte('\n'); err != nil {
+		line = append(line, '\n')
+		if _, err := bw.Write(line); err != nil {
 			return err
 		}
 	}

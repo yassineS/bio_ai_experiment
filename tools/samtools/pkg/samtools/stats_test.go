@@ -535,16 +535,16 @@ func TestStatsCOVStreamingFlush(t *testing.T) {
 
 	// First record on contig "a": 10bp at pos 0 fills positions 0..9.
 	c.accumulateCoverage(mapped("a", 0, "10M"))
-	if len(c.covWindow) != 10 {
-		t.Fatalf("after first record: window size = %d, want 10", len(c.covWindow))
+	if got := c.covLive(); got != 10 {
+		t.Fatalf("after first record: live positions = %d, want 10", got)
 	}
 
 	// A second record far downstream on the same contig finalizes every
 	// earlier position. The window must shrink to just the new span.
 	c.accumulateCoverage(mapped("a", 1_000_000, "5M"))
-	if len(c.covWindow) != 5 {
-		t.Fatalf("after distant record: window size = %d, want 5 "+
-			"(earlier positions must be flushed, not retained)", len(c.covWindow))
+	if got := c.covLive(); got != 5 {
+		t.Fatalf("after distant record: live positions = %d, want 5 "+
+			"(earlier positions must be flushed, not retained)", got)
 	}
 
 	// Switching contigs must flush "a"'s remaining window entirely.
@@ -552,14 +552,14 @@ func TestStatsCOVStreamingFlush(t *testing.T) {
 	if c.covContig != "b" {
 		t.Fatalf("covContig = %q, want \"b\"", c.covContig)
 	}
-	if len(c.covWindow) != 3 {
-		t.Fatalf("after contig change: window size = %d, want 3", len(c.covWindow))
+	if got := c.covLive(); got != 3 {
+		t.Fatalf("after contig change: live positions = %d, want 3", got)
 	}
 
 	// End-of-input flush empties the window; all depth is now binned.
 	c.flushCoverageWindow(1 << 30)
-	if len(c.covWindow) != 0 {
-		t.Fatalf("after final flush: window size = %d, want 0", len(c.covWindow))
+	if got := c.covLive(); got != 0 {
+		t.Fatalf("after final flush: live positions = %d, want 0", got)
 	}
 	// 10 + 5 + 3 = 18 single-depth positions binned at depth 1.
 	var total int64

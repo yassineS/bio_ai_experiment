@@ -428,16 +428,23 @@ type StatsCounters struct {
 	// BAMs), depth is accumulated in a bounded sliding window for the
 	// *current contig only* and finalized positions are binned into cov
 	// incrementally — mirroring upstream's fixed-size cov_rbuf ring buffer
-	// and round_buffer_flush (stats.c:326). covWindow holds depth for
-	// positions >= covFlushed on contig covContig; covContig/covFlushed
-	// track the streaming flush frontier. The cov bin array is sized once
+	// and round_buffer_flush (stats.c:326). covWindow is that ring: a
+	// power-of-two []int32 indexed by (position & covMask), holding depth for
+	// positions in [covFlushed, covHigh) on contig covContig. Because the
+	// input is coordinate-sorted the live span never exceeds one read's
+	// reference length, so a small ring (grown only for unusually long reads)
+	// suffices and each position is bins-flushed in O(1) — replacing the
+	// per-base map insert and whole-map rescan the map version incurred. The
+	// cov bin array is sized once
 	// up front from parseCoverageBins so binning can happen during the
 	// flush. COV is emitted only for coordinate-sorted input, matching
 	// upstream's is_sorted gating (stats.c:1848).
-	covWindow  map[int32]int32 // per-position depth for the current contig
-	covContig  string          // RName the window currently tracks ("" = none yet)
-	covFlushed int32           // positions < this have been flushed for covContig
-	cov        []int64         // COV bin array, sized from covMin/covMax/covStep
+	covWindow  []int32 // ring buffer of per-position depth for the current contig
+	covMask    int32   // len(covWindow)-1; covWindow length is always a power of two
+	covHigh    int32   // one past the highest position touched on covContig
+	covContig  string  // RName the window currently tracks ("" = none yet)
+	covFlushed int32   // positions < this have been flushed for covContig
+	cov        []int64 // COV bin array, sized from covMin/covMax/covStep
 	covMin     int
 	covMax     int
 	covStep    int
@@ -571,7 +578,6 @@ func newStatsCounters() *StatsCounters {
 		insCycle2nd: make(map[int]int64),
 		delCycle1st: make(map[int]int64),
 		delCycle2nd: make(map[int]int64),
-		covWindow:   make(map[int32]int32),
 		// gcdPos == -1 marks "no GC-depth segment started yet", mirroring
 		// upstream stats.c's gcd_pos = -1LL initialiser.
 		gcdPos: -1,
@@ -1482,6 +1488,7 @@ func (c *StatsCounters) accumulateCoverage(rec *sam.Record) {
 		c.flushCoverageWindow(math.MaxInt32)
 		c.covContig = rec.RName
 		c.covFlushed = 0
+		c.covHigh = 0
 	}
 	// Every position strictly below rec.Pos can receive no further depth.
 	c.flushCoverageWindow(rec.Pos)
@@ -1510,7 +1517,7 @@ func (c *StatsCounters) accumulateCoverage(rec *sam.Record) {
 				if c.regions != nil && !positionInIntervals(p, ivs) {
 					continue
 				}
-				c.covWindow[p]++
+				c.covAdd(p)
 			}
 			pos += ln
 		case 'D', 'N':
@@ -1971,21 +1978,75 @@ func positionInIntervals(p int32, ivs []regionInterval) bool {
 	return false
 }
 
-// flushCoverageWindow bins and removes every windowed position strictly below
+// covLive returns the number of buffered (touched, not-yet-flushed) coverage
+// positions in the ring. It exists for tests that assert the streaming-flush
+// frontier behaviour without depending on the ring's allocated capacity.
+func (c *StatsCounters) covLive() int {
+	n := 0
+	for p := c.covFlushed; p < c.covHigh; p++ {
+		if c.covWindow[p&c.covMask] != 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// covAdd increments the ring-buffer depth for reference position p (>=
+// c.covFlushed), growing the ring if p falls beyond its current span. p is an
+// absolute contig coordinate; its slot is p & covMask, valid because the live
+// span [covFlushed, covHigh) never exceeds the ring length.
+func (c *StatsCounters) covAdd(p int32) {
+	if span := p - c.covFlushed; span >= int32(len(c.covWindow)) {
+		c.covGrow(span + 1)
+	}
+	c.covWindow[p&c.covMask]++
+	if p+1 > c.covHigh {
+		c.covHigh = p + 1
+	}
+}
+
+// covGrow enlarges the ring buffer to at least need slots (rounded up to a
+// power of two), re-placing the live positions [covFlushed, covHigh) at their
+// new indices. It runs only for reads whose reference span exceeds the current
+// ring (rare), so its cost is amortised away.
+func (c *StatsCounters) covGrow(need int32) {
+	// The ring must also span the whole currently-live window, which a prior
+	// longer read may have stretched past need.
+	if live := c.covHigh - c.covFlushed; live > need {
+		need = live
+	}
+	n := int32(64)
+	for n < need {
+		n <<= 1
+	}
+	next := make([]int32, n)
+	mask := n - 1
+	if c.covWindow != nil {
+		for p := c.covFlushed; p < c.covHigh; p++ {
+			if d := c.covWindow[p&c.covMask]; d != 0 {
+				next[p&mask] = d
+			}
+		}
+	}
+	c.covWindow = next
+	c.covMask = mask
+}
+
+// flushCoverageWindow bins and clears every windowed position strictly below
 // upTo, advancing the flush frontier. Passing math.MaxInt32 flushes the whole
 // window (used on a contig change and at end of input). It is the streaming
-// equivalent of upstream's round_buffer_flush (stats.c:326).
+// equivalent of upstream's round_buffer_flush (stats.c:326). Only touched
+// positions carry depth, so the scan is bounded by [covFlushed, covHigh) — the
+// covered span — never the (possibly huge) gap up to upTo.
 func (c *StatsCounters) flushCoverageWindow(upTo int32) {
-	if len(c.covWindow) == 0 {
-		if upTo > c.covFlushed {
-			c.covFlushed = upTo
-		}
-		return
+	end := upTo
+	if c.covHigh < end {
+		end = c.covHigh
 	}
-	for p, d := range c.covWindow {
-		if p < upTo {
+	for p := c.covFlushed; p < end; p++ {
+		if d := c.covWindow[p&c.covMask]; d != 0 {
 			c.cov[coverageIdx(c.covMin, c.covMax, c.ncov, c.covStep, int(d))]++
-			delete(c.covWindow, p)
+			c.covWindow[p&c.covMask] = 0
 		}
 	}
 	if upTo > c.covFlushed {
