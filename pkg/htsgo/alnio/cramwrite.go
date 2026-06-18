@@ -20,6 +20,11 @@ type CRAMWriteOptions struct {
 	// each record's QUAL before encoding. The zero value, cram.BinningNone,
 	// disables binning and keeps the writer losslessly exact.
 	QualityBinning cram.QualityBinning
+	// Reference maps a contig name to its bases. When set, mapped reads are
+	// encoded reference-based (only mismatches stored), matching upstream
+	// CRAM and shrinking the file; the same reference is then required to
+	// decode. When nil the writer stays reference-free (self-contained).
+	Reference map[string][]byte
 }
 
 // ParseQualityBinning maps a CRAM quality-binning option string to a
@@ -98,7 +103,8 @@ func (cw *cramWriter) WriteHeader(h *sam.Header) error {
 		return cw.err
 	}
 	rw, err := cram.NewRecordWriterOpts(cw.w, h, cram.WriterOptions{
-		Binning: cw.opts.QualityBinning,
+		Binning:   cw.opts.QualityBinning,
+		Reference: cw.opts.Reference,
 	})
 	if err != nil {
 		cw.err = err

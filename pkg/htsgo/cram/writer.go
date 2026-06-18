@@ -115,6 +115,7 @@ const (
 	cidRS        = 26 // reference-skip lengths (feature 'N').
 	cidPD        = 27 // padding lengths (feature 'P').
 	cidHC        = 28 // hard-clip lengths (feature 'H').
+	cidBS        = 29 // base-substitution codes (feature 'X', reference-based encoding).
 	cidTagBase   = 64 // first content id handed out to auxiliary tag series.
 )
 
@@ -154,6 +155,11 @@ type RecordWriter struct {
 	// (the zero value) leaves quality untouched, so the default writer is
 	// losslessly exact and existing callers are unaffected.
 	binning QualityBinning
+
+	// reference maps a contig name to its bases for reference-based
+	// encoding (see WriterOptions.Reference). Nil keeps the writer
+	// reference-free.
+	reference map[string][]byte
 
 	// refIndex maps a reference name to its zero-based @SQ position, so a
 	// record's RName / RNext can be turned into the integer ids the CRAM
@@ -218,6 +224,15 @@ type WriterOptions struct {
 	// exact. When a real scheme is set, the writer records a @CO
 	// provenance line in the embedded SAM header.
 	Binning QualityBinning
+	// Reference maps a contig name to its full reference bases (upper-case
+	// ACGTN). When provided, a mapped read on a known contig is encoded
+	// reference-based — only its mismatches are stored, as substitution
+	// features — exactly as upstream CRAM does, so the file is far smaller
+	// and faster to encode but requires the same reference to decode. When
+	// nil (the zero value, what NewRecordWriter produces) the writer stays
+	// reference-free: every read's bases are carried literally, so the file
+	// is self-contained and decodes without a FASTA.
+	Reference map[string][]byte
 }
 
 // NewRecordWriterOpts returns a RecordWriter that encodes records to w as
@@ -250,6 +265,7 @@ func NewRecordWriterOpts(w io.Writer, h *sam.Header, opts WriterOptions) (*Recor
 		header:          h,
 		version:         opts.Version,
 		binning:         opts.Binning,
+		reference:       opts.Reference,
 		refIndex:        make(map[string]int32, len(h.Refs)),
 		recordsPerSlice: defaultRecordsPerSlice,
 	}
@@ -484,7 +500,7 @@ func (rw *RecordWriter) flushContainer() error {
 	if len(rw.buf) == 0 {
 		return nil
 	}
-	container, err := encodeContainer(rw.version, rw.binning, rw.buf, rw.refIndex, rw.recordCounter)
+	container, err := encodeContainer(rw.version, rw.binning, rw.buf, rw.refIndex, rw.reference, rw.recordCounter)
 	if err != nil {
 		rw.err = err
 		return err

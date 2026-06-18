@@ -44,19 +44,58 @@ import (
 // length-mismatch error. Matching upstream, the writer returns a clear
 // error rather than inventing a feature encoding htslib could never read
 // back. See docs/CRAM_ROADMAP.md §6 (the lossy-names + =/X/B entry).
+// referenceSpan returns the number of reference bases a CIGAR consumes — the
+// sum of the M/=/X (match), D (deletion) and N (skip) operation lengths. It is
+// used to bounds-check a read against its contig reference before choosing the
+// reference-based encoding path.
+func referenceSpan(cigar sam.Cigar) int {
+	span := 0
+	for _, op := range cigar {
+		switch op.Op() {
+		case sam.CigarMatch, sam.CigarEqual, sam.CigarMismatch,
+			sam.CigarDeletion, sam.CigarSkipped:
+			span += int(op.Length())
+		}
+	}
+	return span
+}
+
 func (e *recordEncoder) encodeFeatures(rec *sam.Record, readLen int) error {
 	b := e.buffers
 	seq := seqBytes(rec.Seq)
 
+	// Reference-based encoding: when the reference for this record's contig is
+	// available and the read's reference span lies within it, a match run is
+	// diffed against the reference and only its mismatches are stored, as
+	// substitution features (the matched bases are reconstructed from the
+	// reference on decode — reconstructMapped fills inter-feature gaps as
+	// reference matches). This is what makes CRAM small. ref is nil — keeping
+	// the self-contained base-stretch encoding — when no reference was supplied
+	// or the read falls outside it.
+	var ref []byte
+	if e.reference != nil && rec.Pos > 0 {
+		if r, ok := e.reference[rec.RName]; ok {
+			start := int(rec.Pos) - 1
+			if start >= 0 && start+referenceSpan(rec.Cigar) <= len(r) {
+				ref = r
+			}
+		}
+	}
+
 	type feature struct {
-		code   byte
-		pos    int32 // 1-based in-read position.
-		bases  []byte
-		length int32
+		code      byte
+		pos       int32 // 1-based in-read position.
+		bases     []byte
+		length    int32
+		substCode byte // for featSubst: the BS substitution code.
 	}
 	var feats []feature
 
 	readPos := int32(0) // 0-based cursor within the read.
+	refPos := int32(0)  // 0-based cursor within ref (only used when ref != nil).
+	if ref != nil {
+		refPos = rec.Pos - 1
+	}
 	for _, op := range rec.Cigar {
 		n := int32(op.Length())
 		switch op.Op() {
@@ -64,11 +103,32 @@ func (e *recordEncoder) encodeFeatures(rec *sam.Record, readLen int) error {
 			if int(readPos)+int(n) > len(seq) {
 				return fmt.Errorf("CIGAR match run overruns SEQ")
 			}
-			feats = append(feats, feature{
-				code:  featBases,
-				pos:   readPos + 1,
-				bases: append([]byte(nil), seq[readPos:readPos+n]...),
-			})
+			if ref != nil {
+				// Emit a substitution feature only where the read base differs
+				// from the reference; equal positions are left implicit and
+				// reconstructed from the reference. Equality is an exact byte
+				// compare so the decoder's verbatim reference copy always
+				// reproduces the read base (a soft-masked/lower-case reference
+				// base never counts as a match).
+				for k := int32(0); k < n; k++ {
+					rb := ref[refPos+k]
+					qb := seq[readPos+k]
+					if qb != rb {
+						feats = append(feats, feature{
+							code:      featSubst,
+							pos:       readPos + k + 1,
+							substCode: substCodeFor(rb, qb),
+						})
+					}
+				}
+				refPos += n
+			} else {
+				feats = append(feats, feature{
+					code:  featBases,
+					pos:   readPos + 1,
+					bases: append([]byte(nil), seq[readPos:readPos+n]...),
+				})
+			}
 			readPos += n
 		case sam.CigarInsertion:
 			if int(readPos)+int(n) > len(seq) {
@@ -92,8 +152,10 @@ func (e *recordEncoder) encodeFeatures(rec *sam.Record, readLen int) error {
 			readPos += n
 		case sam.CigarDeletion:
 			feats = append(feats, feature{code: featDeletion, pos: readPos + 1, length: n})
+			refPos += n
 		case sam.CigarSkipped:
 			feats = append(feats, feature{code: featRefSkip, pos: readPos + 1, length: n})
+			refPos += n
 		case sam.CigarPadding:
 			feats = append(feats, feature{code: featPadding, pos: readPos + 1, length: n})
 		case sam.CigarHardClip:
@@ -132,6 +194,8 @@ func (e *recordEncoder) encodeFeatures(rec *sam.Record, readLen int) error {
 		b.fp = e.putU(b.fp, f.pos-prevPos)
 		prevPos = f.pos
 		switch f.code {
+		case featSubst:
+			b.bs = append(b.bs, f.substCode)
 		case featBases:
 			b.bbLen = e.putU(b.bbLen, int32(len(f.bases)))
 			b.bb = append(b.bb, f.bases...)

@@ -198,6 +198,7 @@ func encodeDataSeriesMap(version Version, iw intWriter, multiRef bool, tagKeys [
 		{dataSeriesKey{'F', 'C'}, extSpec(cidFC)},
 		{dataSeriesKey{'F', 'P'}, intSeriesSpec(version, cidFP, false)},
 		{dataSeriesKey{'B', 'B'}, byteArrayLenSpec(version, cidBBLen, cidBB)},
+		{dataSeriesKey{'B', 'S'}, extSpec(cidBS)},
 		{dataSeriesKey{'I', 'N'}, byteArrayLenSpec(version, cidINLen, cidIN)},
 		{dataSeriesKey{'S', 'C'}, byteArrayLenSpec(version, cidSCLen, cidSC)},
 		{dataSeriesKey{'D', 'L'}, intSeriesSpec(version, cidDL, false)},
