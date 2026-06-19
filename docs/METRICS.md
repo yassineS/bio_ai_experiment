@@ -150,6 +150,7 @@ Wins / parity (wall× ≤ 1.05):
 | samtools view BAM→CRAM | **0.72** | CRAM **encoder** — see "transformed" below |
 | samtools view BAM→BAM | **0.72** | |
 | samtools sort | **0.74** | RSS ×3.0 |
+| bedtools intersect (pair / self) | **0.74 / 0.82** | now faster than upstream (was ×1.42 / 1.57); output-path allocs −78% |
 | bcftools view | **0.98** | |
 | bed sort | **1.05** | |
 
@@ -157,13 +158,13 @@ Modest overhead (1.05 < wall× < 2) — at or near the pure-Go inflate/parse flo
 
 | operation | wall× | note |
 |---|---|---|
+| bcftools stats | 1.14 | was ×2.32 — Variant reuse + scratch buffers cut allocs −93% |
 | samtools depth | 1.16 | RSS ×100 (per-position arrays) |
 | bedtools coverage | 1.23 | |
 | bedtools genomecov | 1.25 | |
 | seqtk seq | 1.31 | tiny op (~170 ms); per-record FASTQ alloc removed (was ×3.12) |
 | samtools view CRAM→BAM | 1.34 | CRAM decode |
-| samtools stats | 1.41 | RSS ×26 |
-| bedtools intersect (pair / self) | 1.42 / 1.57 | |
+| samtools stats | 1.41 | RSS ×26; per-record `ReadInto` reuse (−28% allocs) on the single-threaded path; threaded default unchanged |
 | bcftools query | 1.66 | parse-bound |
 | samtools flagstat | 1.66 | |
 | bcftools norm | 1.72 | RSS ×17 |
@@ -172,7 +173,6 @@ Remaining hotspots (wall× ≥ 2 — open optimization targets, not wins):
 
 | operation | wall× | note |
 |---|---|---|
-| bcftools stats | 2.32 | |
 | samtools mpileup | 3.23 | RSS now **×8.7** (was ×204); CPU ×4.8 (was ×5.2) — see "transformed" |
 | bcftools call | 2.17 | **alloc/parse-bound, not libm** (was ×3.04; profiled ~35% alloc/GC, ~25% maps, ~14% float parse, **~2% libm**); VCF reuse + in-place INFO/FORMAT + single-pass list parse cut allocs 32M→18M (−44%), bytes −69%, CPU ×3.4→×2.3 |
 | bed merge | 3.48 | tiny op (43 ms) — startup-dominated; allocs cut ~103k→23k |
@@ -183,7 +183,8 @@ Remaining hotspots (wall× ≥ 2 — open optimization targets, not wins):
 | operation | was | now |
 |---|---|---|
 | samtools view BAM→CRAM (encode) | ×71.5 | **×0.72** |
-| bedtools intersect (self / pair) | ×18.1 / 16.8 | **×1.57 / 1.42** |
+| bedtools intersect (self / pair) | ×18.1 / 16.8 | **×0.82 / 0.74** (now faster than upstream) |
+| bcftools stats | ×2.32 | **×1.14** (allocs −93%) |
 | samtools mpileup — **RSS** | ×204 | **×8.7** (CPU ×5.2 → ×4.8) |
 | samtools stats | ×4.2 | **×1.41** |
 | bcftools query | ×3.9 | **×1.66** |
