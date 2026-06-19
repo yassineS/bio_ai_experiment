@@ -77,6 +77,12 @@ func (v Version) String() string {
 // overhead and per-slice memory; it has no effect on correctness.
 const defaultRecordsPerSlice = 10000
 
+// refIDUnset marks RecordWriter.bufRefID as carrying no value: the slice
+// buffer is empty, so the next record adopts its reference id. It differs
+// from -1 (the genuine unmapped/"*" reference id) and -2 (multi-reference)
+// so an empty buffer is never mistaken for an unmapped run.
+const refIDUnset = -3
+
 // gzipBlockThreshold is the smallest external-block payload the writer
 // bothers to gzip-compress. Below it the deflate header and trailer cost
 // more than they save, so the block is written raw (method 0).
@@ -172,6 +178,16 @@ type RecordWriter struct {
 	// buf holds the records of the slice currently being assembled; it is
 	// flushed to a container once it reaches recordsPerSlice entries.
 	buf []*sam.Record
+	// bufRefID is the reference id shared by every record currently in buf,
+	// or refIDUnset when buf is empty. The writer flushes the buffer before
+	// appending a record whose reference id differs, so every container — and
+	// thus every slice — is single-reference. A multi-reference slice
+	// (RefSeqID -2) cannot be reconstructed against an external reference (the
+	// decoder has no per-record reference span to copy match runs from), so a
+	// slice straddling a contig boundary would emit unreconstructable SEQ.
+	// Splitting at the boundary also matches htslib, which starts a fresh
+	// container at every new reference.
+	bufRefID int32
 	// recordsPerSlice is the slice-size cap; defaultRecordsPerSlice
 	// unless overridden for testing.
 	recordsPerSlice int
@@ -303,6 +319,7 @@ func NewRecordWriterOpts(w io.Writer, h *sam.Header, opts WriterOptions) (*Recor
 		encodeThreads:   resolveEncodeThreads(opts.EncodeThreads),
 		refIndex:        make(map[string]int32, len(h.Refs)),
 		recordsPerSlice: defaultRecordsPerSlice,
+		bufRefID:        refIDUnset,
 	}
 	for i, ref := range h.Refs {
 		rw.refIndex[ref.Name] = int32(i)
@@ -399,6 +416,22 @@ func (rw *RecordWriter) Write(rec *sam.Record) error {
 	}
 	if err := rw.checkRecord(rec); err != nil {
 		return err
+	}
+	// Keep every slice single-reference: flush the buffer before adding a
+	// record that maps to a different reference than the records already
+	// buffered. A slice mixing references would be encoded as multi-reference
+	// (RefSeqID -2), which the reference-based decode path cannot reconstruct
+	// — it has no per-record reference span to copy match runs from, so the
+	// matched bases come back as 'N'. htslib likewise starts a fresh container
+	// at every reference change.
+	id := recordRefID(rec, rw.refIndex)
+	if len(rw.buf) > 0 && id != rw.bufRefID {
+		if err := rw.flushContainer(); err != nil {
+			return err
+		}
+	}
+	if len(rw.buf) == 0 {
+		rw.bufRefID = id
 	}
 	rw.buf = append(rw.buf, rec)
 	if len(rw.buf) >= rw.recordsPerSlice {
@@ -571,6 +604,7 @@ func (rw *RecordWriter) flushContainer() error {
 		}
 		rw.recordCounter += int64(len(rw.buf))
 		rw.buf = rw.buf[:0]
+		rw.bufRefID = refIDUnset
 		return nil
 	}
 
@@ -587,6 +621,7 @@ func (rw *RecordWriter) flushContainer() error {
 	rw.jobs <- job
 	rw.recordCounter += int64(len(rw.buf))
 	rw.buf = make([]*sam.Record, 0, rw.recordsPerSlice)
+	rw.bufRefID = refIDUnset
 	return rw.err
 }
 

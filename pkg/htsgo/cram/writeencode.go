@@ -81,7 +81,7 @@ func encodeContainer(version Version, binning QualityBinning, records []*sam.Rec
 	// tag keys; each record's TL series value indexes it.
 	tagDict := enc.tagDictionary()
 
-	compHeader := encodeCompressionHeader(version, multiRef, tagDict, enc.tagKeysSorted())
+	compHeader := encodeCompressionHeader(version, multiRef, enc.usedReference, tagDict, enc.tagKeysSorted())
 	compBlock := encodeBlock(version, ContentCompressionHeader, 0, compHeader)
 
 	// Assemble the slice: a slice-header block followed by the slice's data
@@ -362,6 +362,14 @@ type recordEncoder struct {
 	// leaves quality untouched.
 	binning QualityBinning
 	buffers *seriesBuffers
+
+	// usedReference records whether any record was encoded against the
+	// external reference (substitution features with implicit match runs),
+	// rather than carrying its bases verbatim. It selects the container's
+	// RR preservation-map entry: a reference-based container omits RR so the
+	// decoder loads the reference, a purely reference-free container writes
+	// RR=0. See encodePreservationMap.
+	usedReference bool
 
 	// numBases is the running total of read bases, stored in the
 	// container header.
