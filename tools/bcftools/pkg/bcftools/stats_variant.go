@@ -203,9 +203,11 @@ func classifyGT(gt string) (typ, ial, jal int) {
 // and only falls back to recomputing from genotypes when samples were requested
 // and the INFO tags are absent. The returned slice is indexed by allele
 // (0=REF). ok is false when no count basis is available.
-func statsAC(v *vcf.Variant, useSamples bool) (ac []int, ok bool) {
+func (r *statsResult) statsAC(v *vcf.Variant) (ac []int, ok bool) {
+	useSamples := r.useSamples
 	nAllele := len(v.Alt) + 1
-	ac = make([]int, nAllele)
+	r.acBuf = intBuf(r.acBuf, nAllele)
+	ac = r.acBuf
 	acRaw, hasAC := v.Info["AC"]
 	anRaw, hasAN := v.Info["AN"]
 	if hasAC && hasAN {
@@ -226,6 +228,11 @@ func statsAC(v *vcf.Variant, useSamples bool) (ac []int, ok bool) {
 			if good && an >= nac {
 				ac[0] = an - nac
 				return ac, true
+			}
+			// Partial fill from a failed/short AC parse must not leak into the
+			// genotype-fallback path below; reset before reusing the buffer.
+			for i := range ac {
+				ac[i] = 0
 			}
 		}
 	}

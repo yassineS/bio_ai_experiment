@@ -143,6 +143,31 @@ type statsResult struct {
 
 	// USR: per-spec Ts/Tv-by-tag accumulators (-u/--user-tstv).
 	userTSTV []*userTSTVAcc
+
+	// Per-record scratch buffers reused across accumulate calls to avoid a
+	// fresh allocation for every record. They are valid only for the duration
+	// of a single accumulate call and must not be retained. iafBuf backs
+	// allelesIAF's result (consumed for the whole accumulate call); acBuf backs
+	// statsAC's per-allele counts (consumed within allelesIAF); altTypeBuf /
+	// altLenBuf back accumulateSamples's per-allele type/length arrays.
+	iafBuf     []int
+	acBuf      []int
+	altTypeBuf []int
+	altLenBuf  []int
+}
+
+// intBuf grows buf to length n (reusing capacity when possible) and zeroes it,
+// returning the resized slice. It is a small helper for the per-record scratch
+// buffers on statsResult.
+func intBuf(buf []int, n int) []int {
+	if cap(buf) < n {
+		return make([]int, n)
+	}
+	buf = buf[:n]
+	for i := range buf {
+		buf[i] = 0
+	}
+	return buf
 }
 
 // newStatsResult prepares accumulators sized to the requested sample set.
@@ -354,18 +379,23 @@ func statsFromVCF(in io.Reader, out io.Writer, opts StatsOptions) (*statsResult,
 	if err != nil {
 		return nil, err
 	}
+	// The stats loop is a pure consume-and-discard scan: accumulate folds each
+	// record into counters and retains nothing across iterations. Reusing a
+	// single Variant via ReadInto lets the reader reuse its maps/slices instead
+	// of allocating a fresh Variant (with fresh Info/Sample maps) per record.
+	var v vcf.Variant
 	for {
-		v, err := r.Read()
+		err := r.ReadInto(&v)
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			return nil, err
 		}
-		if !keepStatsVariant(v, opts, includeF, excludeF, targets) {
+		if !keepStatsVariant(&v, opts, includeF, excludeF, targets) {
 			continue
 		}
-		accumulate(res, v)
+		accumulate(res, &v)
 	}
 	if err := writeStats(out, res); err != nil {
 		return res, err
@@ -593,7 +623,8 @@ func accumulate(r *statsResult, v *vcf.Variant) {
 // htslib's init_iaf. Index 0 (REF) is unused; ALT i lands in iaf[i].
 func (r *statsResult) allelesIAF(v *vcf.Variant) []int {
 	nAllele := len(v.Alt) + 1
-	iaf := make([]int, nAllele)
+	r.iafBuf = intBuf(r.iafBuf, nAllele)
+	iaf := r.iafBuf
 
 	// --af-tag: bin by the INFO float tag value directly.
 	if r.opts.AFTag != "" {
@@ -603,7 +634,12 @@ func (r *statsResult) allelesIAF(v *vcf.Variant) []int {
 				for i, p := range parts {
 					af, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
 					if err != nil {
-						return make([]int, nAllele)
+						// Discard any partial fill and return all zeros, matching
+						// upstream's reset-on-parse-error behaviour.
+						for j := range iaf {
+							iaf[j] = 0
+						}
+						return iaf
 					}
 					iaf[i+1] = r.afBinIndex(af) + 1
 				}
@@ -613,7 +649,7 @@ func (r *statsResult) allelesIAF(v *vcf.Variant) []int {
 		return iaf
 	}
 
-	ac, ok := statsAC(v, r.useSamples)
+	ac, ok := r.statsAC(v)
 	if !ok {
 		return iaf
 	}
@@ -786,9 +822,13 @@ func userTSTVBin(spec UserTSTVSpec, val float64) int {
 // per-genotype DP distribution for v, mirroring htslib's do_sample_stats. iaf
 // holds the per-allele AF bin indices computed by allelesIAF.
 func accumulateSamples(r *statsResult, v *vcf.Variant, iaf []int) {
-	// Per-allele variant types for this site.
-	altType := make([]int, len(v.Alt)+1)
-	altLen := make([]int, len(v.Alt)+1)
+	// Per-allele variant types for this site. The scratch buffers live on r and
+	// are reused across records (accumulate runs single-threaded), so this is
+	// allocation-free after the first call.
+	r.altTypeBuf = intBuf(r.altTypeBuf, len(v.Alt)+1)
+	r.altLenBuf = intBuf(r.altLenBuf, len(v.Alt)+1)
+	altType := r.altTypeBuf
+	altLen := r.altLenBuf
 	for i, alt := range v.Alt {
 		altType[i+1], altLen[i+1] = statsVariantType(v.Ref, alt)
 	}
