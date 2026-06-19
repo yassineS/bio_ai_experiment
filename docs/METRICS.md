@@ -135,32 +135,69 @@ and peak RSS for each side, from `wait4` `rusage`. Ratio = ours / upstream
 
 > The `smoke`/`small` tiers are dominated by Go process startup + GC, so their
 > ratios overstate our cost. The **medium** tier (16 Mb reference, 300 k reads,
-> 60 k variants) is the first tier where steady-state behaviour shows; **large**
-> is pending (to be run once the hotspots below are addressed).
+> 60 k variants) is the first tier where steady-state behaviour shows.
 
-### Medium tier — selected cells (wall ratio, ours/upstream)
+### Medium tier — all 22 cells (measured 2026-06-19, `-reps 5`)
 
-Wins / parity:
+`wall×` = ours/upstream wall-clock (**< 1.0 = we are faster**); `RSS×` flagged
+where memory is the open cost. Full per-axis data: `pipeline/.fixtures/medium/bench/bench.{md,json}`.
 
-| operation | wall× |
-|---|---|
-| sickle se (FASTQ trim) | **0.51** |
-| samtools view BAM→BAM | **0.82** |
-| samtools sort | **0.88** |
-| bed sort | 1.02 |
-| bedtools coverage / genomecov | 1.29 / 1.30 |
-
-Current hotspots (honest — these are open optimization targets, not wins):
+Wins / parity (wall× ≤ 1.05):
 
 | operation | wall× | note |
 |---|---|---|
-| samtools view BAM→CRAM | **71.5** | CRAM **encoder** — the standout regression (decode is fine, ×1.40) |
-| bedtools intersect (self / pair) | **18.1 / 16.8** | the flagship interval op |
-| bcftools isec | 5.1 | + RSS ×17 |
-| samtools mpileup | 2.9 | RSS **×45** — a memory hotspot |
-| samtools stats / bcftools query | 4.2 / 3.9 | per-record overhead on light scans |
+| sickle se (FASTQ trim) | **0.42** | |
+| samtools view BAM→CRAM | **0.72** | CRAM **encoder** — see "transformed" below |
+| samtools view BAM→BAM | **0.72** | |
+| samtools sort | **0.74** | RSS ×3.0 |
+| bcftools view | **0.98** | |
+| bed sort | **1.05** | |
 
-The suite turns the prior hand-wavy "faster than the originals" into a precise,
-per-operation characterization: genuine wins on heavy re-encode / sort / FASTQ
-paths, and concrete, named bottlenecks (CRAM encode, interval intersect,
-mpileup memory) under active work before the large-tier headline run.
+Modest overhead (1.05 < wall× < 2) — at or near the pure-Go inflate/parse floor:
+
+| operation | wall× | note |
+|---|---|---|
+| samtools depth | 1.16 | RSS ×100 (per-position arrays) |
+| bedtools coverage | 1.23 | |
+| bedtools genomecov | 1.25 | |
+| samtools view CRAM→BAM | 1.34 | CRAM decode |
+| samtools stats | 1.41 | RSS ×26 |
+| bedtools intersect (pair / self) | 1.42 / 1.57 | |
+| bcftools query | 1.66 | parse-bound |
+| samtools flagstat | 1.66 | |
+| bcftools norm | 1.72 | RSS ×17 |
+
+Remaining hotspots (wall× ≥ 2 — open optimization targets, not wins):
+
+| operation | wall× | note |
+|---|---|---|
+| bcftools stats | 2.32 | |
+| samtools mpileup | 2.79 | RSS **×204** — the standout memory hotspot |
+| bcftools call | 3.04 | libm-bound (glibc `lgamma`/`pow`); CPU ×3.4 |
+| seqtk seq | 3.12 | tiny op (167 ms) — startup/GC-dominated, not steady-state |
+| bcftools isec | 3.92 | RSS **×108** |
+| bed merge | 4.08 | tiny op (43 ms) — startup-dominated |
+
+**Transformed this optimization cycle** (medium tier, before → after):
+
+| operation | was | now |
+|---|---|---|
+| samtools view BAM→CRAM (encode) | ×71.5 | **×0.72** |
+| bedtools intersect (self / pair) | ×18.1 / 16.8 | **×1.57 / 1.42** |
+| bcftools isec | ×5.1 | ×3.92 |
+| samtools stats | ×4.2 | **×1.41** |
+| bcftools query | ×3.9 | **×1.66** |
+| samtools view BAM→BAM | ×0.82 | ×0.72 |
+| samtools sort | ×0.88 | ×0.74 |
+| sickle se | ×0.51 | ×0.42 |
+
+The headline turnaround is CRAM **encode**, which went from a 71× regression to
+**faster than upstream** (×0.72) without cgo. The remaining wall-time gaps sit in
+two honest buckets: (1) tiny ops (`seqtk seq`, `bed merge`) whose sub-200 ms
+runtime is dominated by Go startup/GC, not throughput; and (2) genuinely
+heavier paths — `bcftools call` is libm-bound (matching glibc's last-ULP
+math is the cost), and `mpileup`/`isec`/`depth` carry **memory** (RSS), not
+wall-time, as their primary remaining cost. CPU-bound scan paths (stats,
+query, flagstat, depth) are now at the pure-Go inflate/parse floor: closing
+them further would require cgo into libdeflate, which the project deliberately
+forgoes to keep a single static, memory-safe binary (see `CLAUDE.md`).
