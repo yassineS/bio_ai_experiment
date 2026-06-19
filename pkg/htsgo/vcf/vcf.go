@@ -204,8 +204,10 @@ func (r *Reader) ReadAll() ([]*Variant, error) {
 
 // Writer provides sequential writing of VCF records.
 type Writer struct {
-	w      *bufio.Writer
-	header *Header
+	w        *bufio.Writer
+	header   *Header
+	num      []byte          // scratch for integer/float formatting, reused per record
+	infoSeen map[string]bool // reused INFO key set for writeInfo's extras pass
 }
 
 // NewWriter creates a new VCF writer.
@@ -238,63 +240,128 @@ func (w *Writer) WriteHeader() error {
 	return nil
 }
 
-// Write writes a variant record.
+// Write writes a variant record. The line is streamed field by field straight
+// into the buffered writer — no intermediate per-field strings, join slices, or
+// Sprintf — which is byte-identical to the join-based form but avoids the dozens
+// of allocations per record that dominated VCF output.
 func (w *Writer) Write(variant *Variant) error {
-	// Build the line
-	var fields []string
-
-	// Required fields
-	fields = append(fields,
-		variant.Chrom,
-		strconv.Itoa(variant.Pos),
-		variant.ID,
-		variant.Ref,
-		strings.Join(variant.Alt, ","),
-	)
+	bw := w.w
+	bw.WriteString(variant.Chrom)
+	bw.WriteByte('\t')
+	w.num = strconv.AppendInt(w.num[:0], int64(variant.Pos), 10)
+	bw.Write(w.num)
+	bw.WriteByte('\t')
+	bw.WriteString(variant.ID)
+	bw.WriteByte('\t')
+	bw.WriteString(variant.Ref)
+	bw.WriteByte('\t')
+	for i, a := range variant.Alt {
+		if i > 0 {
+			bw.WriteByte(',')
+		}
+		bw.WriteString(a)
+	}
+	bw.WriteByte('\t')
 
 	// Quality
 	if variant.Qual < 0 {
-		fields = append(fields, ".")
+		bw.WriteByte('.')
 	} else {
-		fields = append(fields, formatQual(variant.Qual))
+		bw.WriteString(formatQual(variant.Qual))
 	}
+	bw.WriteByte('\t')
 
 	// Filter
 	if len(variant.Filter) == 0 {
-		fields = append(fields, ".")
+		bw.WriteByte('.')
 	} else {
-		fields = append(fields, strings.Join(variant.Filter, ";"))
+		for i, f := range variant.Filter {
+			if i > 0 {
+				bw.WriteByte(';')
+			}
+			bw.WriteString(f)
+		}
 	}
+	bw.WriteByte('\t')
 
 	// Info
-	infoStr := formatInfo(variant.Info, variant.InfoOrder)
-	if infoStr == "" {
-		infoStr = "."
+	if !w.writeInfo(variant.Info, variant.InfoOrder) {
+		bw.WriteByte('.')
 	}
-	fields = append(fields, infoStr)
 
 	// Format and samples
 	if len(variant.Samples) > 0 && len(variant.Format) > 0 {
-		fields = append(fields, strings.Join(variant.Format, ":"))
+		bw.WriteByte('\t')
+		for i, f := range variant.Format {
+			if i > 0 {
+				bw.WriteByte(':')
+			}
+			bw.WriteString(f)
+		}
 		for _, sample := range variant.Samples {
-			values := make([]string, len(variant.Format))
+			bw.WriteByte('\t')
 			for i, format := range variant.Format {
+				if i > 0 {
+					bw.WriteByte(':')
+				}
 				if val, ok := sample.Data[format]; ok {
-					values[i] = val
+					bw.WriteString(val)
 				} else {
-					values[i] = "."
+					bw.WriteByte('.')
 				}
 			}
-			fields = append(fields, strings.Join(values, ":"))
 		}
 	}
 
-	// Write the line
-	if _, err := fmt.Fprintln(w.w, strings.Join(fields, "\t")); err != nil {
-		return err
-	}
+	return bw.WriteByte('\n')
+}
 
-	return nil
+// writeInfo streams the INFO column directly into the buffered writer,
+// reproducing formatInfo's ordering exactly: keys in InfoOrder first (in order),
+// then any remaining keys sorted ascending. It returns whether it wrote
+// anything (false for an empty INFO map, where the caller emits "."). The
+// extras pass reuses w.infoSeen to avoid allocating a set per record.
+func (w *Writer) writeInfo(info map[string]string, order []string) bool {
+	if len(info) == 0 {
+		return false
+	}
+	bw := w.w
+	wrote := false
+	emit := func(k, v string) {
+		if wrote {
+			bw.WriteByte(';')
+		}
+		bw.WriteString(k)
+		if v != "" {
+			bw.WriteByte('=')
+			bw.WriteString(v)
+		}
+		wrote = true
+	}
+	if w.infoSeen == nil {
+		w.infoSeen = make(map[string]bool, len(info))
+	}
+	seen := w.infoSeen
+	clear(seen)
+	for _, k := range order {
+		if v, ok := info[k]; ok {
+			emit(k, v)
+			seen[k] = true
+		}
+	}
+	if len(seen) < len(info) {
+		extras := make([]string, 0, len(info)-len(seen))
+		for k := range info {
+			if !seen[k] {
+				extras = append(extras, k)
+			}
+		}
+		sortStringsAsc(extras)
+		for _, k := range extras {
+			emit(k, info[k])
+		}
+	}
+	return wrote
 }
 
 // Flush writes any buffered data to the underlying writer.
