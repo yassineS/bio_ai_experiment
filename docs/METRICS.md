@@ -160,6 +160,7 @@ Modest overhead (1.05 < wall× < 2) — at or near the pure-Go inflate/parse flo
 | samtools depth | 1.16 | RSS ×100 (per-position arrays) |
 | bedtools coverage | 1.23 | |
 | bedtools genomecov | 1.25 | |
+| seqtk seq | 1.31 | tiny op (~170 ms); per-record FASTQ alloc removed (was ×3.12) |
 | samtools view CRAM→BAM | 1.34 | CRAM decode |
 | samtools stats | 1.41 | RSS ×26 |
 | bedtools intersect (pair / self) | 1.42 / 1.57 | |
@@ -172,11 +173,10 @@ Remaining hotspots (wall× ≥ 2 — open optimization targets, not wins):
 | operation | wall× | note |
 |---|---|---|
 | bcftools stats | 2.32 | |
-| samtools mpileup | 2.79 | RSS **×204** — the standout memory hotspot |
+| samtools mpileup | 3.23 | RSS now **×8.7** (was ×204); CPU ×4.8 (was ×5.2) — see "transformed" |
 | bcftools call | 3.04 | libm-bound (glibc `lgamma`/`pow`); CPU ×3.4 |
-| seqtk seq | 3.12 | tiny op (167 ms) — startup/GC-dominated, not steady-state |
+| bed merge | 3.48 | tiny op (43 ms) — startup-dominated; allocs cut ~103k→23k |
 | bcftools isec | 3.92 | RSS **×108** |
-| bed merge | 4.08 | tiny op (43 ms) — startup-dominated |
 
 **Transformed this optimization cycle** (medium tier, before → after):
 
@@ -184,22 +184,29 @@ Remaining hotspots (wall× ≥ 2 — open optimization targets, not wins):
 |---|---|---|
 | samtools view BAM→CRAM (encode) | ×71.5 | **×0.72** |
 | bedtools intersect (self / pair) | ×18.1 / 16.8 | **×1.57 / 1.42** |
-| bcftools isec | ×5.1 | ×3.92 |
+| samtools mpileup — **RSS** | ×204 | **×8.7** (CPU ×5.2 → ×4.8) |
 | samtools stats | ×4.2 | **×1.41** |
 | bcftools query | ×3.9 | **×1.66** |
-| samtools view BAM→BAM | ×0.82 | ×0.72 |
-| samtools sort | ×0.88 | ×0.74 |
-| sickle se | ×0.51 | ×0.42 |
+| seqtk seq | ×3.12 | **×1.31** |
+| bcftools isec | ×5.1 | ×3.92 |
+| bed merge | ×4.08 | ×3.48 |
+| samtools view BAM→BAM / sort / sickle se | ×0.82 / 0.88 / 0.51 | ×0.72 / 0.74 / 0.42 |
 
 The headline turnaround is CRAM **encode**, which went from a 71× regression to
-**faster than upstream** (×0.72) without cgo. The remaining wall-time gaps sit in
-two honest buckets: (1) tiny ops (`seqtk seq`, `bed merge`) whose sub-200 ms
-runtime is dominated by Go startup/GC, not throughput; and (2) genuinely
-heavier paths — `bcftools call` is libm-bound (matching glibc's last-ULP
-math is the cost), and `mpileup`/`isec`/`depth` carry **memory** (RSS), not
-wall-time, as their primary remaining cost. CPU-bound scan paths (stats,
-query, flagstat, depth) are now at the pure-Go inflate/parse floor: closing
-them further would require cgo into libdeflate, which the project deliberately
+**faster than upstream** (×0.72) without cgo. The second is `mpileup` **memory**:
+it built a per-position event matrix for the whole contig at once (peak RSS
+×204); it now streams a single coordinate-sorted input tile by tile, dropping
+peak RSS to ×8.7 and trimming CPU (×5.2 → ×4.8), with wall roughly flat (×2.8 →
+×3.2 — the tiled walk trades a little scheduling/GC overhead for the memory
+collapse, and output stays byte-exact). The remaining wall-time gaps sit in
+two honest buckets: (1) tiny ops (`bed merge`, and the now-much-better
+`seqtk seq`) whose sub-200 ms runtime is dominated by Go startup/GC, not
+throughput; and (2) genuinely heavier paths — `bcftools call` is libm-bound
+(matching glibc's last-ULP math is the cost), and `isec`/`depth` carry
+**memory** (RSS), not wall-time, as their primary remaining cost. CPU-bound
+scan paths (stats, query, flagstat, depth) are now at the pure-Go inflate/parse
+floor: closing them further would require cgo into libdeflate, which the
+project deliberately
 forgoes to keep a single static, memory-safe binary (see `CLAUDE.md`).
 
 ### Large tier — disk-bound in this environment
