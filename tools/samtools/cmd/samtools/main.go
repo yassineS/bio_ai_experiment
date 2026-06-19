@@ -909,6 +909,11 @@ func runDepth(args []string) int {
 		allTrans = true
 	}
 
+	// Resolve the effective inflate worker count once: a default (no -@)
+	// opts into parallel BGZF decode across cores. The same resolved value
+	// gates the raw open below and is handed to samtools.Depth.
+	effThreads := samtools.ReadDecodeThreads(threads)
+
 	opts := samtools.DepthOptions{
 		AllPositions:      allPos,
 		AllTransPositions: allTrans,
@@ -920,20 +925,21 @@ func runDepth(args []string) int {
 		IncludeFlags:      uint16(incFlags),
 		ExcludeFlags:      uint16(excFlags),
 		MaxDepth:          maxDepth,
-		Threads:           threads,
+		Threads:           effThreads,
 	}
 
 	readers := make([]io.Reader, 0, fs.NArg())
 	closers := make([]io.Closer, 0, fs.NArg())
 	for _, path := range fs.Args() {
-		// With -@ >= 2 open the file raw so samtools.Depth can run the BGZF
-		// decode in parallel; otherwise use the decompressing opener. The
-		// per-position depth output is identical for both paths.
+		// When parallel decode is in effect (resolved threads >= 2) open the
+		// file raw so samtools.Depth can inflate the BGZF blocks in parallel;
+		// otherwise use the decompressing opener. The per-position depth output
+		// is identical for both paths.
 		var (
 			r   io.ReadCloser
 			err error
 		)
-		if threads >= 2 {
+		if effThreads >= 2 {
 			r, err = iohelper.OpenRaw(path)
 		} else {
 			r, err = iohelper.OpenReader(path)
