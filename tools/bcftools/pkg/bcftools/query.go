@@ -2,10 +2,12 @@ package bcftools
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bcf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
@@ -800,8 +802,14 @@ func filterSamplesByName(wanted, headerSamples []string) []string {
 // headerSamples supplies the per-sample names used by the %SAMPLE token
 // inside `[ ... ]` groups; an index into it is taken from sampleFilter (or
 // the natural order when sampleFilter is nil).
+// emitBufPool recycles the per-record output buffer so emitRecord neither
+// grows a fresh strings.Builder nor copies its result into a new []byte for
+// every record.
+var emitBufPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+
 func emitRecord(w io.Writer, tokens []FormatToken, v *vcf.Variant, sampleFilter []int, headerSamples []string) error {
-	var sb strings.Builder
+	sb := emitBufPool.Get().(*bytes.Buffer)
+	sb.Reset()
 	for _, t := range tokens {
 		switch t.Kind {
 		case TokenLiteral:
@@ -832,7 +840,8 @@ func emitRecord(w io.Writer, tokens []FormatToken, v *vcf.Variant, sampleFilter 
 			}
 		}
 	}
-	_, err := w.Write([]byte(sb.String()))
+	_, err := w.Write(sb.Bytes())
+	emitBufPool.Put(sb)
 	return err
 }
 
