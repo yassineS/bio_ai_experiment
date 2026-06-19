@@ -610,7 +610,7 @@ func Stats(in io.Reader, out io.Writer, opts StatsOptions) error {
 	if opts.MaxInsertSize <= 0 {
 		opts.MaxInsertSize = 8000
 	}
-	br, err := alnio.NewReaderThreaded(in, "", opts.Threads)
+	br, err := alnio.NewReaderThreaded(in, "", ReadDecodeThreads(opts.Threads))
 	if err != nil {
 		return err
 	}

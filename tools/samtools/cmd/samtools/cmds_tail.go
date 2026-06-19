@@ -1445,11 +1445,14 @@ func runStats(args []string) int {
 			return 1
 		}
 	}
-	// With -@ >= 2 open the file raw (undecompressed) so samtools.Stats can run
-	// the BGZF decode in parallel; otherwise use the standard decompressing
-	// opener. The decoded records — and thus the report — are identical either
+	// Resolve the effective inflate worker count once: a default (no -@) opts
+	// into parallel BGZF decode across cores. When that resolves to >= 2 the
+	// file is opened raw (undecompressed) so samtools.Stats can inflate the
+	// BGZF blocks in parallel; otherwise the standard decompressing opener is
+	// used. The decoded records — and thus the report — are identical either
 	// way; only decode throughput changes.
-	in, err := openStatsInput(fs.Arg(0), threads)
+	effThreads := samtools.ReadDecodeThreads(threads)
+	in, err := openStatsInput(fs.Arg(0), effThreads)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "samtools stats: %v\n", err)
 		return 1
@@ -1479,7 +1482,7 @@ func runStats(args []string) int {
 		RefStatsChunk:  refStatsChk,
 		TrimQuality:    trimQuality,
 		CovThreshold:   covThresh,
-		Threads:        threads,
+		Threads:        effThreads,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools stats: %v\n", err)
 		return 1

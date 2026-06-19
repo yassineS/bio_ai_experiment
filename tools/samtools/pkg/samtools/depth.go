@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 
@@ -13,6 +14,26 @@ import (
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/region"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
+
+// ReadDecodeThreads resolves the BGZF inflate worker count for a streaming
+// scan. A caller-supplied positive thread count (CLI -@) is honoured verbatim;
+// 0 — the default when no -@ is given — opts into parallel inflate across the
+// machine's cores (capped at 8 to avoid oversubscribing on many-core hosts).
+// Only BGZF block inflation is parallelised, so the decoded record stream — and
+// therefore every tool's output — is byte-identical for any thread count.
+func ReadDecodeThreads(n int) int {
+	if n > 0 {
+		return n
+	}
+	c := runtime.NumCPU()
+	if c > 8 {
+		c = 8
+	}
+	if c < 1 {
+		c = 1
+	}
+	return c
+}
 
 // DefaultDepthExcludeFlags matches upstream samtools depth's default
 // filter-out flag list, UNMAP,SECONDARY,QCFAIL,DUP (see
@@ -85,7 +106,7 @@ func Depth(inputs []io.Reader, out io.Writer, opts DepthOptions) error {
 	}
 	readers := make([]sam.Reader, len(inputs))
 	for i, r := range inputs {
-		rd, err := alnio.NewReaderThreaded(r, "", opts.Threads)
+		rd, err := alnio.NewReaderThreaded(r, "", ReadDecodeThreads(opts.Threads))
 		if err != nil {
 			return fmt.Errorf("samtools depth: input %d: %w", i, err)
 		}
