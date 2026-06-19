@@ -11,11 +11,11 @@ package bedcluster
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"sort"
 	"strconv"
-	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/cppsort"
 )
@@ -31,14 +31,16 @@ type Options struct {
 	StrandSpec bool
 }
 
-// row is one parsed input line, kept with all its raw fields so we can
-// re-emit them verbatim in the original column count.
+// row is one parsed input line. We keep the raw (CR/LF-trimmed) line bytes so
+// the record can be re-emitted verbatim — the original column count and exact
+// tab-delimited text — with only the cluster ID appended, avoiding a per-record
+// split-then-join round trip.
 type row struct {
 	chrom  string
 	start  int
 	end    int
 	strand string
-	fields []string
+	raw    []byte
 }
 
 // Cluster reads BED records from r, assigns each one a cluster ID, and writes
@@ -74,9 +76,23 @@ func Cluster(r io.Reader, w io.Writer, opts Options) (int, error) {
 
 	bw := bufio.NewWriter(w)
 	defer bw.Flush()
-	for i, r := range rows {
-		fields := append(append([]string(nil), r.fields...), strconv.Itoa(clusterIDs[i]))
-		if _, err := fmt.Fprintln(bw, strings.Join(fields, "\t")); err != nil {
+	// Emit each record directly from its retained line bytes: original text,
+	// a tab, the cluster ID (formatted into a reusable scratch buffer), and a
+	// newline. This avoids the per-record split-then-Join and Itoa allocations
+	// the previous []string round trip incurred.
+	var scratch []byte
+	for i := range rows {
+		if _, err := bw.Write(rows[i].raw); err != nil {
+			return 0, err
+		}
+		if err := bw.WriteByte('\t'); err != nil {
+			return 0, err
+		}
+		scratch = strconv.AppendInt(scratch[:0], int64(clusterIDs[i]), 10)
+		if _, err := bw.Write(scratch); err != nil {
+			return 0, err
+		}
+		if err := bw.WriteByte('\n'); err != nil {
 			return 0, err
 		}
 	}
@@ -170,43 +186,135 @@ func assignClusters(rows []row, opts Options) []int {
 	return ids
 }
 
+// Header/track prefixes recognised on text input, kept as byte slices so the
+// read loop can test the scanner buffer without allocating a string per line.
+var (
+	trackPrefix   = []byte("track")
+	browserPrefix = []byte("browser")
+)
+
 func readAll(r io.Reader) ([]row, error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	var rows []row
+	var ci chromInterner
 	for sc.Scan() {
-		line := strings.TrimRight(sc.Text(), "\r\n")
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") ||
-			strings.HasPrefix(trimmed, "track") || strings.HasPrefix(trimmed, "browser") {
+		// Trim trailing CR/LF from the scanner's buffer in place. The scanner
+		// already strips the line's '\n'; this also drops a trailing '\r' so the
+		// emitted text matches the previous TrimRight(line, "\r\n") behaviour.
+		line := bytes.TrimRight(sc.Bytes(), "\r\n")
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) == 0 || trimmed[0] == '#' ||
+			bytes.HasPrefix(trimmed, trackPrefix) || bytes.HasPrefix(trimmed, browserPrefix) {
 			continue
 		}
-		fields := strings.Split(line, "\t")
-		if len(fields) < 3 {
-			return nil, fmt.Errorf("BED record needs >=3 columns, got %d in line: %q", len(fields), line)
+		// Tokenize on tabs without allocating a []string: collect up to the
+		// first six column spans, which is all the parse needs (chrom, start,
+		// end, strand).
+		var cols [6][]byte
+		n := 0
+		begin := 0
+		for i := 0; i <= len(line); i++ {
+			if i == len(line) || line[i] == '\t' {
+				if n < len(cols) {
+					cols[n] = line[begin:i]
+				}
+				n++
+				begin = i + 1
+			}
 		}
-		start, err := strconv.Atoi(strings.TrimSpace(fields[1]))
-		if err != nil {
-			return nil, fmt.Errorf("invalid chromStart %q: %v", fields[1], err)
+		if n < 3 {
+			return nil, fmt.Errorf("BED record needs >=3 columns, got %d in line: %q", n, line)
 		}
-		end, err := strconv.Atoi(strings.TrimSpace(fields[2]))
+		start, err := parseIntBytes(cols[1])
 		if err != nil {
-			return nil, fmt.Errorf("invalid chromEnd %q: %v", fields[2], err)
+			return nil, fmt.Errorf("invalid chromStart %q: %v", cols[1], err)
+		}
+		end, err := parseIntBytes(cols[2])
+		if err != nil {
+			return nil, fmt.Errorf("invalid chromEnd %q: %v", cols[2], err)
 		}
 		strand := ""
-		if len(fields) >= 6 {
-			strand = fields[5]
+		if n >= 6 {
+			strand = internStrand(cols[5])
 		}
+		// The scanner reuses its buffer, so retain a private copy of the line.
+		raw := make([]byte, len(line))
+		copy(raw, line)
 		rows = append(rows, row{
-			chrom:  fields[0],
+			chrom:  ci.intern(cols[0]),
 			start:  start,
 			end:    end,
 			strand: strand,
-			fields: fields,
+			raw:    raw,
 		})
 	}
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("reading BED: %w", err)
 	}
 	return rows, nil
+}
+
+// chromInterner caches the most recently interned chromosome name so a run of
+// records sharing a chromosome (the norm for sorted BED input) allocates the
+// name string once rather than per record.
+type chromInterner struct {
+	last string
+}
+
+func (c *chromInterner) intern(b []byte) string {
+	if c.last != "" && c.last == string(b) {
+		return c.last
+	}
+	s := string(b)
+	c.last = s
+	return s
+}
+
+// internStrand maps the byte form of a strand column to a shared string,
+// allocating nothing for the values that occur in practice.
+func internStrand(b []byte) string {
+	switch string(b) {
+	case "":
+		return ""
+	case "+":
+		return "+"
+	case "-":
+		return "-"
+	case ".":
+		return "."
+	}
+	return string(b)
+}
+
+// parseIntBytes parses a base-10 integer from a byte slice, accepting an
+// optional leading sign, without allocating a string on the fast path. It
+// trims surrounding ASCII whitespace first to match the previous
+// strconv.Atoi(strings.TrimSpace(...)) behaviour.
+func parseIntBytes(b []byte) (int, error) {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 {
+		return 0, fmt.Errorf("empty number")
+	}
+	i := 0
+	neg := false
+	if b[0] == '+' || b[0] == '-' {
+		neg = b[0] == '-'
+		i++
+	}
+	if i >= len(b) {
+		return 0, fmt.Errorf("invalid number %q", b)
+	}
+	val := 0
+	for ; i < len(b); i++ {
+		c := b[i]
+		if c < '0' || c > '9' {
+			return 0, fmt.Errorf("invalid number %q", b)
+		}
+		val = val*10 + int(c-'0')
+	}
+	if neg {
+		val = -val
+	}
+	return val, nil
 }
