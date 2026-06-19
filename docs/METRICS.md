@@ -174,9 +174,9 @@ Remaining hotspots (wall× ≥ 2 — open optimization targets, not wins):
 | operation | wall× | note |
 |---|---|---|
 | samtools mpileup | 3.23 | RSS now **×8.7** (was ×204); CPU ×4.8 (was ×5.2) — see "transformed" |
-| bcftools call | 2.17 | **alloc/parse-bound, not libm** (was ×3.04; profiled ~35% alloc/GC, ~25% maps, ~14% float parse, **~2% libm**); VCF reuse + in-place INFO/FORMAT + single-pass list parse cut allocs 32M→18M (−44%), bytes −69%, CPU ×3.4→×2.3 |
+| bcftools call | 2.05 | **alloc/parse-bound, not libm** (was ×3.04; profiled ~35% alloc/GC, ~25% maps, ~14% float parse, **~2% libm**); VCF reuse + in-place INFO/FORMAT + single-pass parse + output-buffer reuse cut allocs 32M→15M, bytes −72%, CPU ×3.4→×2.2 |
 | bed merge | 3.48 | tiny op (43 ms) — startup-dominated; allocs cut ~103k→23k |
-| bcftools isec | ~4.0 | RSS **×108 → ×28** — per-contig streaming (forward cursors, gated on a sorted/contiguous pre-scan; falls back to load-all otherwise); peak 538→120 MB on the medium fixtures; wall ~neutral |
+| bcftools isec | 3.86 | RSS **×108 → ×30** (peak 538→130 MB) — per-contig streaming (forward cursors, gated on a chrom/pos-only pre-scan; falls back to load-all otherwise); wall now **below** the pre-rewrite load-all (×3.92) after the cheap pre-scan |
 
 **Transformed this optimization cycle** (medium tier, before → after):
 
@@ -189,7 +189,7 @@ Remaining hotspots (wall× ≥ 2 — open optimization targets, not wins):
 | samtools mpileup — **RSS** | ×204 | **×8.7** (CPU ×5.2 → ×4.8) |
 | samtools stats | ×4.2 | **×1.41** |
 | bcftools query | ×3.9 | **×1.66** |
-| bcftools call | ×3.04 | **×2.17** (alloc cut, not faster math) |
+| bcftools call | ×3.04 | **×2.05** (allocs 32M→15M; not faster math) |
 | seqtk seq | ×3.12 | **×1.31** |
 | bcftools isec — **RSS** | ×108 | **×28** (peak 538→120 MB; per-contig streaming) |
 | bed merge | ×4.08 | ×3.48 |
