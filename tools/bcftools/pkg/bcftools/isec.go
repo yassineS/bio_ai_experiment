@@ -24,6 +24,7 @@ package bcftools
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -298,6 +299,125 @@ func isecStreamFile(path string, fn func(*vcf.Variant) error) (*vcf.Header, erro
 // keyFor order; the cross-file keyFor consistency is checked later in
 // isecMergeContigOrder.
 func isecPrescan(path string) (*vcf.Header, []string, bool, error) {
+	in, err := iohelper.OpenReader(path)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer in.Close()
+	br := bufio.NewReader(in)
+	head, perr := br.Peek(5)
+	if perr != nil && perr != io.EOF {
+		return nil, nil, false, perr
+	}
+	// BCF (and any malformed text) uses the full-parse scan; extracting chrom/pos
+	// from BCF needs a binary decode, so it is not worth a bespoke fast path.
+	if len(head) >= 5 && head[0] == 'B' && head[1] == 'C' && head[2] == 'F' {
+		return isecPrescanFull(path)
+	}
+
+	sc := bufio.NewScanner(br)
+	sc.Buffer(make([]byte, 0, 64*1024), 64*1024*1024)
+	var hdrText []byte
+	sawHeader := false
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		if line[0] != '#' {
+			return isecPrescanFull(path) // data before #CHROM — be safe
+		}
+		hdrText = append(hdrText, line...)
+		hdrText = append(hdrText, '\n')
+		if bytes.HasPrefix(line, []byte("#CHROM")) {
+			sawHeader = true
+			break
+		}
+	}
+	if e := sc.Err(); e != nil {
+		return nil, nil, false, e
+	}
+	if !sawHeader {
+		return isecPrescanFull(path)
+	}
+	// Build the header by re-parsing the collected header text (small, one-time)
+	// — identical to the header the full scan would return.
+	hdr, herr := vcf.NewReader(bytes.NewReader(hdrText)).ReadHeader()
+	if herr != nil {
+		return nil, nil, false, herr
+	}
+
+	var contigs []string
+	streamable := true
+	seen := map[string]bool{}
+	curChrom := ""
+	curPos := 0
+	have := false
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(line) == 0 || line[0] == '#' {
+			continue
+		}
+		t1 := bytes.IndexByte(line, '\t')
+		if t1 < 0 {
+			return isecPrescanFull(path) // malformed — be safe
+		}
+		chromB := line[:t1]
+		rest := line[t1+1:]
+		posB := rest
+		if t2 := bytes.IndexByte(rest, '\t'); t2 >= 0 {
+			posB = rest[:t2]
+		}
+		pos, ok := isecParsePos(posB)
+		if !ok {
+			return isecPrescanFull(path) // non-integer POS — let the full parser report it
+		}
+		// string(chromB) in the comparison does not allocate; a fresh chrom
+		// string is allocated only when a new contig is encountered.
+		if !have || string(chromB) != curChrom {
+			cs := string(chromB)
+			if seen[cs] {
+				streamable = false
+			} else {
+				seen[cs] = true
+				contigs = append(contigs, cs)
+			}
+			curChrom = cs
+			curPos = pos
+			have = true
+			continue
+		}
+		if pos < curPos {
+			streamable = false
+		}
+		curPos = pos
+	}
+	if e := sc.Err(); e != nil {
+		return nil, nil, false, e
+	}
+	return hdr, contigs, streamable, nil
+}
+
+// isecParsePos parses a VCF POS (a non-negative decimal integer) from bytes
+// without allocating. It returns ok=false for any non-digit content so the
+// caller can defer to the full parser (which reports the error).
+func isecParsePos(b []byte) (int, bool) {
+	if len(b) == 0 {
+		return 0, false
+	}
+	n := 0
+	for _, c := range b {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n, true
+}
+
+// isecPrescanFull is the full-parse pre-scan (used for BCF and any malformed
+// text the fast path bails on). It mirrors isecPrescan's streamability logic.
+func isecPrescanFull(path string) (*vcf.Header, []string, bool, error) {
 	var contigs []string
 	streamable := true
 	seen := map[string]bool{}
