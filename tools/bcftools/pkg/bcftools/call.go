@@ -408,10 +408,20 @@ type recordSource interface {
 type vcfRecordSource struct {
 	r   *vcf.Reader
 	hdr *vcf.Header
+	v   vcf.Variant // reused across reads; callStreaming copies what it keeps
 }
 
-func (s *vcfRecordSource) Header() *vcf.Header         { return s.hdr }
-func (s *vcfRecordSource) Read() (*vcf.Variant, error) { return s.r.Read() }
+func (s *vcfRecordSource) Header() *vcf.Header { return s.hdr }
+func (s *vcfRecordSource) Read() (*vcf.Variant, error) {
+	// ReadInto reuses s.v's maps and slices across records, so a streaming
+	// consumer that does not retain the returned Variant past the next Read
+	// (callStreaming copies the fields it keeps into the output record) avoids
+	// re-allocating the INFO/FORMAT maps and split buffers every record.
+	if err := s.r.ReadInto(&s.v); err != nil {
+		return nil, err
+	}
+	return &s.v, nil
+}
 
 type bcfRecordSource struct {
 	r   *bcf.Reader
