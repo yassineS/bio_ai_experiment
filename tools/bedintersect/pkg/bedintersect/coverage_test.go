@@ -681,7 +681,8 @@ func TestRawOverlapsChromMismatch(t *testing.T) {
 		{chrom: "chr2", start: 100, end: 300}, // skipped: wrong chrom
 		{chrom: "chr1", start: 150, end: 250}, // overlaps
 	}
-	hits := rawOverlaps(a, bs, IntersectOptions{MinOverlap: 1})
+	var hitBuf []rawHit
+	hits := rawOverlaps(a, bs, IntersectOptions{MinOverlap: 1}, &hitBuf)
 	if len(hits) != 1 {
 		t.Fatalf("expected 1 overlap (chr1 only), got %d", len(hits))
 	}
