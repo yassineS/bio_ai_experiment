@@ -939,7 +939,15 @@ func ccallSite(v *vcf.Variant, opts CallOptions, samplePloidy []int) (*vcf.Varia
 	out := *v
 	out.Samples = make([]vcf.Sample, nsmpl)
 	for i, s := range v.Samples {
-		ns := vcf.Sample{Name: s.Name, Data: copyStringMap(s.Data)}
+		// Rewrite the input sample map in place (see callm.go mcallEmit): the
+		// streaming caller reuses and discards the input Variant, and each read
+		// below captures its old value before the matching write. A nil map
+		// (no FORMAT columns) still needs a fresh allocation.
+		data := s.Data
+		if data == nil {
+			data = make(map[string]string)
+		}
+		ns := vcf.Sample{Name: s.Name, Data: data}
 		var gt string
 		if plPloidy[i] == 2 || plPloidy[i] == 0 {
 			x := bcfP1CallGT(p1, pr.fExp, i, isVar)
@@ -984,8 +992,9 @@ func ccallSite(v *vcf.Variant, opts CallOptions, samplePloidy []int) (*vcf.Varia
 	}
 	out.Format = append([]string{"GT"}, dropFormatKey(v.Format, "GT")...)
 
-	out.Info = copyStringMap(v.Info)
-	out.InfoOrder = append([]string(nil), v.InfoOrder...)
+	// out.Info/out.InfoOrder alias v's (from `out := *v`); only setInfo writes
+	// follow, and the input Variant is reused-and-discarded, so rewrite INFO in
+	// place instead of copying it each record.
 
 	if em[0] >= 0 {
 		setInfo(&out, "AF1", formatFloat32G(1-em[0]))

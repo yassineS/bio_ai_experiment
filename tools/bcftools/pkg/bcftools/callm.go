@@ -1044,7 +1044,16 @@ func mcallEmit(v *vcf.Variant, in *mcallTin, opts CallOptions, alsMap []int, nal
 	}
 	out.Samples = make([]vcf.Sample, in.nsmpl)
 	for i, s := range v.Samples {
-		ns := vcf.Sample{Name: s.Name, Data: copyStringMap(s.Data)}
+		// Rewrite the input sample map in place rather than copying it: the
+		// input Variant is reused-and-discarded by the streaming caller, every
+		// read below captures its old value into a local before the matching
+		// write, and distinct samples own distinct maps. A nil map (a sample
+		// with no FORMAT columns) still needs a fresh allocation to write into.
+		data := s.Data
+		if data == nil {
+			data = make(map[string]string)
+		}
+		ns := vcf.Sample{Name: s.Name, Data: data}
 		// GT
 		pl := in.ploidy
 		if i < len(in.smplPloidy) {
@@ -1109,8 +1118,11 @@ func mcallEmit(v *vcf.Variant, in *mcallTin, opts CallOptions, alsMap []int, nal
 	}
 
 	// --- INFO rewrite --------------------------------------------------
-	out.Info = copyStringMap(v.Info)
-	out.InfoOrder = append([]string(nil), v.InfoOrder...)
+	// out.Info/out.InfoOrder alias v's (from `out := *v`); the input Variant is
+	// reused-and-discarded by the streaming caller, so we rewrite INFO in place
+	// (delInfo/setInfo mutate the maps) instead of copying it every record. The
+	// only later read of the input INFO, v.Info["I16"] just below, happens
+	// before the delInfo calls.
 
 	// Parse I16 before removing it.
 	i16 := parseFloatList(v.Info["I16"])
