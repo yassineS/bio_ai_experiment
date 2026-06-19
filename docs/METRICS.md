@@ -201,3 +201,15 @@ wall-time, as their primary remaining cost. CPU-bound scan paths (stats,
 query, flagstat, depth) are now at the pure-Go inflate/parse floor: closing
 them further would require cgo into libdeflate, which the project deliberately
 forgoes to keep a single static, memory-safe binary (see `CLAUDE.md`).
+
+### Large tier — disk-bound in this environment
+
+A `large`-tier run (192 Mb reference, 2.5 M reads, 400 k variants) was
+attempted but is **not reproducible on a small-disk node**: `fixtures.Generate`
+materialises the full manifest for the tier unconditionally — including the
+`mpileup` and `call` truth VCFs — which comes to **~19 GB** at large scale and
+exhausted the container's root filesystem during fixture generation (the run
+aborted in `bcftools mpileup` with a write error at 100 % disk). The tier needs
+a fat node with ~30 GB+ scratch (consistent with the `bench/README.md` "run on
+a fat node / HPC" guidance). Medium is the largest tier that both fits here and
+shows steady-state behaviour, so it is the headline tier for these numbers.
