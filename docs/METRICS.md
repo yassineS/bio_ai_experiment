@@ -151,6 +151,7 @@ Wins / parity (wall× ≤ 1.05):
 | samtools view BAM→BAM | **0.72** | |
 | samtools sort | **0.74** | RSS ×3.0 |
 | bedtools intersect (pair / self) | **0.74 / 0.82** | now faster than upstream (was ×1.42 / 1.57); output-path allocs −78% |
+| bedtools coverage | **0.80** | now faster than upstream (was ×1.23); allocs −53%, bytes −89% |
 | bcftools view | **0.98** | |
 | bed sort | **1.05** | |
 
@@ -160,12 +161,11 @@ Modest overhead (1.05 < wall× < 2) — at or near the pure-Go inflate/parse flo
 |---|---|---|
 | bcftools stats | 1.14 | was ×2.32 — Variant reuse + scratch buffers cut allocs −93% |
 | samtools depth | 1.16 | RSS ×100 (per-position arrays) |
-| bedtools coverage | 1.23 | |
-| bedtools genomecov | 1.25 | |
+| bedtools genomecov | ~1.3 | histogram default is bound by the 16M-int depth array; per-record allocs now ~constant, the **per-base `-d` mode is 7.3× faster** (48M→28 allocs) |
 | seqtk seq | 1.31 | tiny op (~170 ms); per-record FASTQ alloc removed (was ×3.12) |
 | samtools view CRAM→BAM | 1.34 | CRAM decode |
 | samtools stats | 1.41 | RSS ×26; per-record `ReadInto` reuse (−28% allocs) on the single-threaded path; threaded default unchanged |
-| bcftools query | 1.66 | parse-bound |
+| bcftools query | 1.61 | parse-bound (htsgo `Scanner.Text` floor); `%POS` per-record alloc removed (allocs/record halved) |
 | samtools flagstat | 1.66 | |
 | bcftools norm | 1.72 | RSS ×17 |
 
@@ -184,6 +184,7 @@ Remaining hotspots (wall× ≥ 2 — open optimization targets, not wins):
 |---|---|---|
 | samtools view BAM→CRAM (encode) | ×71.5 | **×0.72** |
 | bedtools intersect (self / pair) | ×18.1 / 16.8 | **×0.82 / 0.74** (now faster than upstream) |
+| bedtools coverage | ×1.23 | **×0.80** (now faster than upstream; bytes −89%) |
 | bcftools stats | ×2.32 | **×1.14** (allocs −93%) |
 | samtools mpileup — **RSS** | ×204 | **×8.7** (CPU ×5.2 → ×4.8) |
 | samtools stats | ×4.2 | **×1.41** |
