@@ -107,9 +107,18 @@ owner approval.
    `compress/gzip` reader, and live upstream `bgzip`), only the speed
    changes. At the default level 6 the writer is ~2x faster at an
    essentially identical ratio, and the reader is measurably faster on
-   every BGZF-consuming tool. Reuse beyond the BGZF/gzip deflate path
-   (e.g. its zstd/s2/snappy packages, or as a general compression
-   utility) still needs its own conversation.
+   every BGZF-consuming tool. **Also sanctioned: CRAM gzip blocks.** The
+   CRAM writer compresses every series block with gzip and previously
+   used the stdlib `compress/gzip` — DEFLATE was ~37% of encode time. It
+   now uses klauspost's gzip backend (imported as `kgzip` in
+   `pkg/htsgo/cram/writer.go`, with a pooled writer), emitting a standard
+   gzip stream the stdlib reader and upstream htslib both decode. Note
+   klauspost's level scale differs from the stdlib's: **level 7**
+   reproduces stdlib level-6 ratio (the writer's `cramGzipLevel`), so
+   CRAM size stays on par with upstream while encoding faster. Reuse
+   beyond the BGZF and CRAM gzip deflate paths (e.g. its zstd/s2/snappy
+   packages, or as a general compression utility) still needs its own
+   conversation.
 
 Preference order:
 
