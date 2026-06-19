@@ -152,6 +152,11 @@ func Coverage(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, 
 	allDepthCounts := map[int]int{}
 	allLen := 0
 
+	// st holds per-call reusable scratch buffers so the hot loop allocates
+	// nothing per A record on the steady-state path (mirrors the bedmerge /
+	// bedintersect playbook).
+	st := &covState{}
+
 	count := 0
 	for {
 		recA, err := bedReaderA.Read()
@@ -163,7 +168,7 @@ func Coverage(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, 
 		}
 		count++
 
-		bMatches := selectOverlapping(recA, trees[recA.Chrom], opts)
+		bMatches := st.selectOverlapping(recA, trees[recA.Chrom], opts)
 
 		// hitCount is the number of contributing B records; depths is the
 		// per-base depth vector spanning A's full [start,end). With -split over
@@ -175,20 +180,35 @@ func Coverage(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, 
 		var hitCount int
 		var depths []int
 		if opts.Split && recA.BlockCount > 0 && len(recA.BlockSizes) > 0 {
-			hitCount, depths = splitDepth(recA, bMatches)
+			hitCount, depths = st.splitDepth(recA, bMatches)
 		} else {
 			hitCount = len(bMatches)
-			depths = perBaseDepth(recA, bMatches)
+			depths = st.perBaseDepth(recA, bMatches)
 		}
+
+		// prefix holds A's original columns rendered once. For ModeDepth it is
+		// reused across every per-base output line, so the (potentially large)
+		// column reconstruction happens once per A record rather than once per
+		// emitted line.
+		prefix := st.recordPrefix(recA)
 
 		switch opts.Mode {
 		case ModeCounts:
-			if err := writeWithExtra(bw, recA, strconv.Itoa(hitCount)); err != nil {
+			st.line = st.line[:0]
+			st.line = append(st.line, prefix...)
+			st.line = appendIntCol(st.line, hitCount)
+			st.line = append(st.line, '\n')
+			if _, err := bw.Write(st.line); err != nil {
 				return count, err
 			}
 		case ModeDepth:
 			for i, d := range depths {
-				if err := writeWithExtra(bw, recA, strconv.Itoa(i+1), strconv.Itoa(d)); err != nil {
+				st.line = st.line[:0]
+				st.line = append(st.line, prefix...)
+				st.line = appendIntCol(st.line, i+1)
+				st.line = appendIntCol(st.line, d)
+				st.line = append(st.line, '\n')
+				if _, err := bw.Write(st.line); err != nil {
 					return count, err
 				}
 			}
@@ -207,31 +227,36 @@ func Coverage(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, 
 				if lenA == 0 {
 					frac = 0
 				}
-				if err := writeWithExtra(bw, recA,
-					strconv.Itoa(d),
-					strconv.Itoa(bp),
-					strconv.Itoa(lenA),
-					formatFraction(frac),
-				); err != nil {
+				st.line = st.line[:0]
+				st.line = append(st.line, prefix...)
+				st.line = appendIntCol(st.line, d)
+				st.line = appendIntCol(st.line, bp)
+				st.line = appendIntCol(st.line, lenA)
+				st.line = appendFracCol(st.line, frac)
+				st.line = append(st.line, '\n')
+				if _, err := bw.Write(st.line); err != nil {
 					return count, err
 				}
 			}
 		case ModeMean, ModeMedian, ModeMin, ModeMax, ModeSum:
 			val, ok := depthOp(opts.Mode, depths)
-			var s string
+			st.line = st.line[:0]
+			st.line = append(st.line, prefix...)
+			st.line = append(st.line, '\t')
 			switch {
 			case !ok:
-				s = "."
+				st.line = append(st.line, '.')
 			case opts.Mode == ModeMean:
 				// Upstream `bedtools coverage -mean` accumulates the mean as a
 				// 32-bit float and prints it with 7 decimals, so the output
 				// carries float32 rounding noise (e.g. 1.3200001). Reproduce it
 				// by narrowing to float32 before formatting.
-				s = strconv.FormatFloat(float64(float32(val)), 'f', 7, 64)
+				st.line = strconv.AppendFloat(st.line, float64(float32(val)), 'f', 7, 64)
 			default:
-				s = formatFloatLoose(val)
+				st.line = appendFloatLoose(st.line, val)
 			}
-			if err := writeWithExtra(bw, recA, s); err != nil {
+			st.line = append(st.line, '\n')
+			if _, err := bw.Write(st.line); err != nil {
 				return count, err
 			}
 		default: // ModeDefault
@@ -241,12 +266,14 @@ func Coverage(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, 
 			if lenA > 0 {
 				frac = float64(covered) / float64(lenA)
 			}
-			if err := writeWithExtra(bw, recA,
-				strconv.Itoa(hitCount),
-				strconv.Itoa(covered),
-				strconv.Itoa(lenA),
-				formatFraction(frac),
-			); err != nil {
+			st.line = st.line[:0]
+			st.line = append(st.line, prefix...)
+			st.line = appendIntCol(st.line, hitCount)
+			st.line = appendIntCol(st.line, covered)
+			st.line = appendIntCol(st.line, lenA)
+			st.line = appendFracCol(st.line, frac)
+			st.line = append(st.line, '\n')
+			if _, err := bw.Write(st.line); err != nil {
 				return count, err
 			}
 		}
@@ -340,9 +367,35 @@ func indexB(records []*bed.Record) map[string]*bed.IntervalTree {
 	return trees
 }
 
-// selectOverlapping returns B records that overlap recA AND pass the
-// strand / fraction filters.
+// covState carries the reusable scratch buffers a single Coverage call threads
+// through its hot loop so the steady-state per-A-record path allocates nothing.
+// All buffers are reset (sliced to length 0) before each reuse; their backing
+// arrays grow once and are then recycled. A covState is not safe for concurrent
+// use — Coverage owns exactly one.
+type covState struct {
+	matches []*bed.Record // selectOverlapping scratch (filtered B hits)
+	depths  []int         // per-base depth vector scratch
+	prefix  []byte        // A's original columns rendered as bytes
+	line    []byte        // one output line under construction
+}
+
+// selectOverlapping is a stateless wrapper over covState.selectOverlapping that
+// allocates a fresh result slice. The hot path uses the covState method (which
+// recycles scratch); this free function exists for callers/tests that want an
+// independently owned slice.
 func selectOverlapping(recA *bed.Record, tree *bed.IntervalTree, opts Options) []*bed.Record {
+	var st covState
+	got := st.selectOverlapping(recA, tree, opts)
+	if got == nil {
+		return nil
+	}
+	return append([]*bed.Record(nil), got...)
+}
+
+// selectOverlapping returns B records that overlap recA AND pass the
+// strand / fraction filters. The returned slice aliases st.matches and is only
+// valid until the next call; callers consume it within the same loop iteration.
+func (st *covState) selectOverlapping(recA *bed.Record, tree *bed.IntervalTree, opts Options) []*bed.Record {
 	if tree == nil {
 		return nil
 	}
@@ -350,7 +403,7 @@ func selectOverlapping(recA *bed.Record, tree *bed.IntervalTree, opts Options) [
 	if len(candidates) == 0 {
 		return nil
 	}
-	out := candidates[:0:0] // new slice; never reuse the tree-owned one
+	out := st.matches[:0]
 	for _, b := range candidates {
 		if !strandPass(recA, b, opts) {
 			continue
@@ -369,6 +422,7 @@ func selectOverlapping(recA *bed.Record, tree *bed.IntervalTree, opts Options) [
 		}
 		out = append(out, b)
 	}
+	st.matches = out
 	return out
 }
 
@@ -447,14 +501,29 @@ func coveredFromDepths(depths []int) int {
 	return n
 }
 
+// depthBuf returns a zeroed []int of length n drawn from st.depths, growing the
+// backing array only when n exceeds its current capacity. The returned slice
+// aliases st.depths and is valid until the next depthBuf call.
+func (st *covState) depthBuf(n int) []int {
+	if cap(st.depths) < n {
+		st.depths = make([]int, n)
+	} else {
+		st.depths = st.depths[:n]
+		for i := range st.depths {
+			st.depths[i] = 0
+		}
+	}
+	return st.depths
+}
+
 // perBaseDepth returns the per-base depth vector for A's interval given the
-// matching B records.
-func perBaseDepth(a *bed.Record, bs []*bed.Record) []int {
+// matching B records. The returned slice aliases st.depths (see depthBuf).
+func (st *covState) perBaseDepth(a *bed.Record, bs []*bed.Record) []int {
 	lenA := a.ChromEnd - a.ChromStart
 	if lenA <= 0 {
 		return nil
 	}
-	d := make([]int, lenA)
+	d := st.depthBuf(lenA)
 	for _, b := range bs {
 		start := b.ChromStart - a.ChromStart
 		end := b.ChromEnd - a.ChromStart
@@ -511,13 +580,26 @@ func queryBlocks(a *bed.Record) []block {
 //   - hitCount is the number of distinct B records overlapping at least one
 //     block, matching upstream's _hitCount after findBlockedOverlaps swaps the
 //     hit set for the blocked-overlap set.
+//
+// splitDepth is a stateless wrapper over covState.splitDepth that returns an
+// independently owned depth slice. The hot path uses the covState method (which
+// recycles scratch); this free function exists for tests.
 func splitDepth(a *bed.Record, bs []*bed.Record) (int, []int) {
+	var st covState
+	hc, d := st.splitDepth(a, bs)
+	if d == nil {
+		return hc, nil
+	}
+	return hc, append([]int(nil), d...)
+}
+
+func (st *covState) splitDepth(a *bed.Record, bs []*bed.Record) (int, []int) {
 	lenA := a.ChromEnd - a.ChromStart
 	if lenA <= 0 {
 		return 0, nil
 	}
 	blocks := queryBlocks(a)
-	d := make([]int, lenA)
+	d := st.depthBuf(lenA)
 	hitCount := 0
 	for _, b := range bs {
 		for _, blk := range blocks {
@@ -606,23 +688,21 @@ func sortedKeys(m map[int]int) []int {
 	return keys
 }
 
-// writeWithExtra emits a tab-separated line: A's original columns followed by
-// the extra columns. Uses the record's parsed fields rather than re-stringing
-// every BED field because the BED writer is conservative about how many
-// optional columns it emits (a 6-field input must round-trip as 6 columns).
-func writeWithExtra(w io.Writer, r *bed.Record, extra ...string) error {
-	cols := recordColumns(r)
-	all := append(cols, extra...)
-	_, err := fmt.Fprintln(w, strings.Join(all, "\t"))
-	return err
-}
-
-// recordColumns reconstructs the original column list from a parsed Record.
-// Fields beyond chrom/start/end are emitted only when they were populated.
-// This mirrors the bed.Writer behaviour, but keeps the columns as a []string
-// so we can append further columns cleanly.
-func recordColumns(r *bed.Record) []string {
-	out := []string{r.Chrom, strconv.Itoa(r.ChromStart), strconv.Itoa(r.ChromEnd)}
+// recordPrefix renders A's original columns into st.prefix as a tab-separated
+// byte run (no leading or trailing tab) and returns the slice. Output columns
+// are appended by the caller via appendIntCol / appendFracCol, each of which
+// emits a leading '\t'. The returned slice aliases st.prefix and is valid until
+// the next recordPrefix call. This is the byte-buffer equivalent of the former
+// recordColumns + strings.Join, avoiding the per-record []string and Itoa heap
+// allocations; the emitted bytes are identical to the previous tab-joined form.
+//
+// Fields beyond chrom/start/end are emitted only when they were populated,
+// mirroring the conservative bed.Writer round-trip behaviour.
+func (st *covState) recordPrefix(r *bed.Record) []byte {
+	out := st.prefix[:0]
+	out = append(out, r.Chrom...)
+	out = appendIntCol(out, r.ChromStart)
+	out = appendIntCol(out, r.ChromEnd)
 	// A BED12 record (block information present, e.g. from a BED12 file or a
 	// BAM alignment) is echoed as the full 12 columns — including thickStart/
 	// thickEnd/itemRgb even when zero. The block lists are echoed VERBATIM:
@@ -636,38 +716,99 @@ func recordColumns(r *bed.Record) []string {
 		if rgb == "" {
 			rgb = "0"
 		}
-		out = append(out,
-			r.Name, strconv.Itoa(r.Score), r.Strand,
-			strconv.Itoa(r.ThickStart), strconv.Itoa(r.ThickEnd), rgb,
-			strconv.Itoa(r.BlockCount),
-			blockField(r.RawBlockSizes, r.BlockSizes),
-			blockField(r.RawBlockStarts, r.BlockStarts),
-		)
-		out = append(out, r.ExtraFields...)
+		out = appendStrCol(out, r.Name)
+		out = appendIntCol(out, r.Score)
+		out = appendStrCol(out, r.Strand)
+		out = appendIntCol(out, r.ThickStart)
+		out = appendIntCol(out, r.ThickEnd)
+		out = appendStrCol(out, rgb)
+		out = appendIntCol(out, r.BlockCount)
+		out = append(out, '\t')
+		out = appendBlockField(out, r.RawBlockSizes, r.BlockSizes)
+		out = append(out, '\t')
+		out = appendBlockField(out, r.RawBlockStarts, r.BlockStarts)
+		for _, ef := range r.ExtraFields {
+			out = appendStrCol(out, ef)
+		}
+		st.prefix = out
 		return out
 	}
 	// The Name/Score/Strand chain only fires once Name is non-empty, matching
 	// the conservative BED-aware emit logic in pkg/htsgo/bed.
 	if r.Name == "" && r.Score == 0 && r.Strand == "" && len(r.ExtraFields) == 0 {
+		st.prefix = out
 		return out
 	}
-	out = append(out, r.Name)
+	out = appendStrCol(out, r.Name)
 	if r.Score != 0 || r.Strand != "" {
-		out = append(out, strconv.Itoa(r.Score))
+		out = appendIntCol(out, r.Score)
 	}
 	if r.Strand != "" {
-		out = append(out, r.Strand)
+		out = appendStrCol(out, r.Strand)
 	}
 	if r.ThickStart != 0 || r.ThickEnd != 0 {
-		out = append(out, strconv.Itoa(r.ThickStart), strconv.Itoa(r.ThickEnd))
+		out = appendIntCol(out, r.ThickStart)
+		out = appendIntCol(out, r.ThickEnd)
 	}
 	if r.ItemRGB != "" {
-		out = append(out, r.ItemRGB)
+		out = appendStrCol(out, r.ItemRGB)
 	}
-	if len(r.ExtraFields) > 0 {
-		out = append(out, r.ExtraFields...)
+	for _, ef := range r.ExtraFields {
+		out = appendStrCol(out, ef)
 	}
+	st.prefix = out
 	return out
+}
+
+// recordColumns reconstructs the original column list from a parsed Record as a
+// []string. It is the structural twin of recordPrefix and is kept for tests and
+// any caller that needs the columns split out; the hot output path uses
+// recordPrefix (byte buffer) instead. Both must stay in lockstep.
+func recordColumns(r *bed.Record) []string {
+	var st covState
+	prefix := string(st.recordPrefix(r))
+	return strings.Split(prefix, "\t")
+}
+
+// appendIntCol appends "\t<n>" to b using strconv.AppendInt (no heap alloc).
+func appendIntCol(b []byte, n int) []byte {
+	b = append(b, '\t')
+	return strconv.AppendInt(b, int64(n), 10)
+}
+
+// appendStrCol appends "\t<s>" to b.
+func appendStrCol(b []byte, s string) []byte {
+	b = append(b, '\t')
+	return append(b, s...)
+}
+
+// appendFracCol appends "\t<fraction>" using the upstream-faithful 7-decimal
+// float32-narrowed formatting (see formatFraction).
+func appendFracCol(b []byte, v float64) []byte {
+	b = append(b, '\t')
+	return strconv.AppendFloat(b, float64(float32(v)), 'f', 7, 64)
+}
+
+// appendBlockField renders one BED12 block column (blockSizes or blockStarts)
+// into b. See blockField for the raw-vs-synthesized rule.
+func appendBlockField(b []byte, raw string, vs []int) []byte {
+	if raw != "" {
+		return append(b, raw...)
+	}
+	for _, v := range vs {
+		b = strconv.AppendInt(b, int64(v), 10)
+		b = append(b, ',')
+	}
+	return b
+}
+
+// appendFloatLoose appends v to b with up to 7 significant digits, trimming
+// trailing zeros — the byte-buffer equivalent of formatFloatLoose.
+func appendFloatLoose(b []byte, v float64) []byte {
+	if v == float64(int64(v)) {
+		return strconv.AppendInt(b, int64(v), 10)
+	}
+	return strconv.AppendFloat(b, v, 'g', -1, 64)
 }
 
 // blockField renders one BED12 block column (blockSizes or blockStarts) for
