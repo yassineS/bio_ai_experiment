@@ -668,22 +668,27 @@ func viewVCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets b
 	}
 
 	count := 0
+	// One Variant is reused across the scan via ReadInto; the body
+	// consumes-and-discards each record (filter, in-place edit, write) and
+	// never retains it past the iteration, so reuse is safe and avoids the
+	// per-record map/slice allocations the parser would otherwise make.
+	var v vcf.Variant
 	for {
-		v, err := r.Read()
+		err := r.ReadInto(&v)
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			return count, err
 		}
-		if !keepVariant(v, opts, includeF, excludeF, applyTargets, targets) {
+		if !keepVariant(&v, opts, includeF, excludeF, applyTargets, targets) {
 			continue
 		}
-		applyACAN(v, opts)
+		applyACAN(&v, opts)
 		if opts.DropGenotypes {
-			dropGenotypes(v)
+			dropGenotypes(&v)
 		}
-		if err := w.Write(v); err != nil {
+		if err := w.Write(&v); err != nil {
 			return count, err
 		}
 		count++
