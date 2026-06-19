@@ -335,6 +335,29 @@ func bedGenomeTools() []Entry {
 			{Name: "bg_strand", Flags: []string{"-bg", "-strand", "+"}},
 		},
 	}.Expand()
+	// The default-histogram modes (no -bg/-bga/-d/-dz) print a per-depth
+	// fraction column as count/genomeSize formatted with %g. The integer
+	// columns (chrom, depth, count, genomeSize) are byte-identical to upstream;
+	// the only divergence is a last-significant-digit flip in that fraction on
+	// exact round-half values (e.g. 294565/2000000 = 0.1472825, where Go's
+	// %g rounds half-to-even -> 0.147282 while C++ ostream %g rounds half-up ->
+	// 0.147283). That is a numeric-format tolerance, not a value error, so the
+	// histogram cells compare under Similarity. The -bg/-bga/-d/-dz cells emit
+	// no fraction column and stay ByteExact.
+	//
+	// A single last-digit flip in the %g-printed fraction is a relative
+	// deviation of at most ~1e-5 (worst observed here: 0.103500 vs 0.103501 ->
+	// 9.7e-06 on the -strand cell). The 1e-5 tolerance accepts that round-half
+	// flip while staying orders of magnitude below any real count/depth error
+	// (which would move a whole field), and the integer columns are still
+	// checked exactly by the Similarity comparator.
+	for i := range gcov {
+		switch gcov[i].Name {
+		case "base", "flagmax_5", "flagstrand_+":
+			gcov[i].Compare = Similarity
+			gcov[i].Tolerance = 1e-5
+		}
+	}
 	out = append(out, gcov...)
 
 	// --- makewindows: -i winnum / -i srcwinnum are correct; default -i none and
