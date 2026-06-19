@@ -223,44 +223,67 @@ func Map(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, error
 	scanner := bufio.NewScanner(readerA)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	count := 0
+	// Per-A scratch buffers reused across iterations to avoid an allocation per
+	// record. fields is rebuilt from the scanner buffer (A's columns are only
+	// used within one iteration — they are written out immediately and never
+	// retained), matches collects the overlapping B records, vals collects one
+	// column's values, and extras holds the aggregation results.
+	recA := &bed.Record{}
+	var fields [][]byte
+	var matches []rawRecord
+	var vals []string
+	var numScratch []float64
+	var splitFieldStrs []string // only allocated when -split needs string fields
+	var chromCache chromIntern
+	extras := make([]string, len(opts.Columns))
 	for scanner.Scan() {
-		line := strings.TrimRight(scanner.Text(), "\r")
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
+		lineB := bytesTrimCR(scanner.Bytes())
+		trimmed := bytesTrimSpace(lineB)
+		if len(trimmed) == 0 {
 			continue
 		}
-		if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "track") || strings.HasPrefix(trimmed, "browser") {
+		if trimmed[0] == '#' || bytesHasPrefix(trimmed, "track") || bytesHasPrefix(trimmed, "browser") {
 			// Under -header, echo A's leading header lines verbatim.
 			if opts.Header {
-				if _, err := fmt.Fprintln(bw, line); err != nil {
+				if _, err := bw.Write(lineB); err != nil {
+					return count, err
+				}
+				if err := bw.WriteByte('\n'); err != nil {
 					return count, err
 				}
 			}
 			continue
 		}
-		fields := strings.Split(line, "\t")
+		fields = splitTabsBytes(fields[:0], lineB)
 		if len(fields) < 3 {
 			return count, fmt.Errorf("A record must have at least 3 columns, got %d", len(fields))
 		}
-		start, err := strconv.Atoi(fields[1])
+		start, err := strconv.Atoi(string(fields[1]))
 		if err != nil {
 			return count, fmt.Errorf("invalid chromStart %q: %v", fields[1], err)
 		}
-		end, err := strconv.Atoi(fields[2])
+		end, err := strconv.Atoi(string(fields[2]))
 		if err != nil {
 			return count, fmt.Errorf("invalid chromEnd %q: %v", fields[2], err)
 		}
-		recA := &bed.Record{Chrom: fields[0], ChromStart: start, ChromEnd: end}
+		// Intern the chrom so a run of records on one chromosome (the sorted-A
+		// norm) reuses one string instead of allocating per record; this also
+		// supplies the map key for the per-chrom tree lookup without an alloc.
+		recA.Chrom = chromCache.intern(fields[0])
+		recA.ChromStart = start
+		recA.ChromEnd = end
+		recA.Strand = ""
 		if len(fields) > 5 {
-			recA.Strand = fields[5]
+			recA.Strand = internStrandBytes(fields[5])
 		}
 		var aBlocks []block
 		if opts.Split {
-			aBlocks = bed12Blocks(fields, start)
+			splitFieldStrs = bytesFieldsToStrings(splitFieldStrs[:0], fields)
+			aBlocks = bed12Blocks(splitFieldStrs, start)
 		}
 
 		// Query B.
-		var matches []rawRecord
+		matches = matches[:0]
 		if tree, ok := trees[recA.Chrom]; ok {
 			candidates := tree.Query(recA)
 			for _, c := range candidates {
@@ -282,28 +305,28 @@ func Map(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, error
 			// Restore upstream's stream order; the tree query may return
 			// candidates out of order. The key is (chromStart, B-file order) —
 			// NOT chromEnd — so equal-start records keep input order, matching
-			// upstream's collapse/distinct value order.
-			sort.SliceStable(matches, func(i, j int) bool {
-				if matches[i].rec.ChromStart != matches[j].rec.ChromStart {
-					return matches[i].rec.ChromStart < matches[j].rec.ChromStart
-				}
-				return matches[i].order < matches[j].order
-			})
+			// upstream's collapse/distinct value order. stableSortMatches is an
+			// in-place stable sort that allocates nothing (the standard sort
+			// helpers box the slice into an interface on every call).
+			stableSortMatches(matches)
 		}
 
 		// Compute aggregated columns.
-		extras := make([]string, len(opts.Columns))
 		var nonNumVal string // last non-numeric value seen, for the per-row warning
 		var nonNumCol int
 		nonNum := false
 		for i, col := range opts.Columns {
 			op := opts.Ops[i]
-			vals := make([]string, len(matches))
+			if cap(vals) < len(matches) {
+				vals = make([]string, len(matches))
+			} else {
+				vals = vals[:len(matches)]
+			}
 			for j := range matches {
 				vals[j] = matches[j].fields[col-1]
 			}
 			if numericOps[op] {
-				res, lastBad, badCol, sawBad := applyNumericOp(op, col, vals, opts)
+				res, lastBad, badCol, sawBad := applyNumericOp(op, col, vals, opts, &numScratch)
 				if sawBad {
 					nonNum = true
 					nonNumVal = lastBad
@@ -331,10 +354,10 @@ func Map(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, error
 			extras[i] = res
 		}
 
-		// Write A's original columns + extras.
-		out := append([]string(nil), fields...)
-		out = append(out, extras...)
-		if _, err := fmt.Fprintln(bw, strings.Join(out, "\t")); err != nil {
+		// Write A's original columns + extras directly, tab-separated, matching
+		// the former strings.Join(out, "\t") + Fprintln without building the
+		// intermediate []string or the joined string.
+		if err := writeTabbed(bw, fields, extras); err != nil {
 			return count, err
 		}
 		// After all columns of this row, emit the single non-numeric WARNING
@@ -350,13 +373,177 @@ func Map(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, error
 	return count, nil
 }
 
+// matchLess orders matches by (chromStart, B-file order): equal-start records
+// keep B-file input order, matching upstream's collapse/distinct value order.
+func matchLess(a, b rawRecord) bool {
+	if a.rec.ChromStart != b.rec.ChromStart {
+		return a.rec.ChromStart < b.rec.ChromStart
+	}
+	return a.order < b.order
+}
+
+// stableSortMatches stably sorts m in place by matchLess, allocating nothing.
+// It uses a binary-insertion sort: the per-A overlap count is small in practice,
+// and unlike the standard library's sort helpers it does not box the slice into
+// an interface value on every call. The sort is stable, so equal keys retain
+// their pre-sort order (which is already B-file order after the candidate scan).
+func stableSortMatches(m []rawRecord) {
+	for i := 1; i < len(m); i++ {
+		x := m[i]
+		// Find the leftmost position lo in [0,i) where matchLess(x, m[lo]) holds;
+		// inserting before strictly-greater elements only keeps the sort stable.
+		lo, hi := 0, i
+		for lo < hi {
+			mid := int(uint(lo+hi) >> 1)
+			if matchLess(x, m[mid]) {
+				hi = mid
+			} else {
+				lo = mid + 1
+			}
+		}
+		copy(m[lo+1:i+1], m[lo:i])
+		m[lo] = x
+	}
+}
+
+// splitTabsBytes splits line on tab into dst (reusing dst's backing array when
+// it has capacity) and returns the resulting slice. Each element aliases line,
+// so the result is valid only until line's storage is reused; bedmap consumes
+// A's fields within a single iteration, so reusing the scanner buffer is safe.
+func splitTabsBytes(dst [][]byte, line []byte) [][]byte {
+	begin := 0
+	for i := 0; i < len(line); i++ {
+		if line[i] == '\t' {
+			dst = append(dst, line[begin:i])
+			begin = i + 1
+		}
+	}
+	dst = append(dst, line[begin:])
+	return dst
+}
+
+// bytesFieldsToStrings copies each byte field into a string and appends it to
+// dst, returning the slice. It is used only on the -split path, where the
+// existing string-based block parser needs string columns.
+func bytesFieldsToStrings(dst []string, fields [][]byte) []string {
+	for _, f := range fields {
+		dst = append(dst, string(f))
+	}
+	return dst
+}
+
+// bytesTrimCR strips a single trailing carriage return, mirroring
+// strings.TrimRight(line, "\r") for the line-ending handling on CRLF input.
+func bytesTrimCR(b []byte) []byte {
+	for len(b) > 0 && b[len(b)-1] == '\r' {
+		b = b[:len(b)-1]
+	}
+	return b
+}
+
+// bytesTrimSpace trims leading and trailing ASCII whitespace, mirroring
+// strings.TrimSpace for the blank-line and header-prefix tests.
+func bytesTrimSpace(b []byte) []byte {
+	start := 0
+	for start < len(b) && asciiSpace(b[start]) {
+		start++
+	}
+	end := len(b)
+	for end > start && asciiSpace(b[end-1]) {
+		end--
+	}
+	return b[start:end]
+}
+
+func asciiSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' || c == '\r'
+}
+
+// bytesHasPrefix reports whether b begins with the ASCII prefix p.
+func bytesHasPrefix(b []byte, p string) bool {
+	if len(b) < len(p) {
+		return false
+	}
+	for i := 0; i < len(p); i++ {
+		if b[i] != p[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// internStrandBytes maps the byte form of a strand column to a shared string,
+// allocating nothing for the values that occur in practice (+, -, ., empty).
+func internStrandBytes(b []byte) string {
+	switch string(b) {
+	case "":
+		return ""
+	case "+":
+		return "+"
+	case "-":
+		return "-"
+	case ".":
+		return "."
+	}
+	return string(b)
+}
+
+// chromIntern caches the most recently interned chromosome name so a run of
+// records on one chromosome (the sorted-A norm) allocates the name once. The
+// `last == string(b)` compare is allocation-free.
+type chromIntern struct {
+	last string
+}
+
+func (c *chromIntern) intern(b []byte) string {
+	if c.last != "" && c.last == string(b) {
+		return c.last
+	}
+	s := string(b)
+	c.last = s
+	return s
+}
+
+// writeTabbed writes A's original fields followed by the aggregation extras,
+// tab-separated, terminated by a newline — the exact byte layout of the former
+// strings.Join(append(fields, extras...), "\t") + Fprintln, but without the
+// intermediate slice or joined string.
+func writeTabbed(bw *bufio.Writer, fields [][]byte, extras []string) error {
+	for i, f := range fields {
+		if i > 0 {
+			if err := bw.WriteByte('\t'); err != nil {
+				return err
+			}
+		}
+		if _, err := bw.Write(f); err != nil {
+			return err
+		}
+	}
+	for _, e := range extras {
+		// fields always has >= 3 entries here, so a leading tab is always wanted.
+		if err := bw.WriteByte('\t'); err != nil {
+			return err
+		}
+		if _, err := bw.WriteString(e); err != nil {
+			return err
+		}
+	}
+	return bw.WriteByte('\n')
+}
+
 // applyNumericOp computes a numeric aggregation over vals, mirroring upstream
 // KeyListOps: non-numeric values become NaN and are still included in the
 // running computation (so e.g. sum over any non-numeric value is NaN), the
 // last non-numeric value + column are returned so the caller can warn, and a
 // NaN result (including the empty-group case) is rendered as the null value.
-func applyNumericOp(op string, col int, vals []string, opts Options) (result, lastBad string, badCol int, sawBad bool) {
-	nums := make([]float64, len(vals))
+func applyNumericOp(op string, col int, vals []string, opts Options, scratch *[]float64) (result, lastBad string, badCol int, sawBad bool) {
+	var nums []float64
+	if cap(*scratch) >= len(vals) {
+		nums = (*scratch)[:len(vals)]
+	} else {
+		nums = make([]float64, len(vals))
+		*scratch = nums
+	}
 	for i, v := range vals {
 		f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
 		if err != nil {
