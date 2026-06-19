@@ -515,6 +515,7 @@ func callStreaming(in io.Reader, out io.Writer, opts CallOptions, targets []regi
 	}
 
 	count := 0
+	var sc mcallScratch // reused across records by callVariant/mcallEmit
 	for {
 		v, err := src.Read()
 		if err == io.EOF {
@@ -560,7 +561,7 @@ func callStreaming(in io.Reader, out io.Writer, opts CallOptions, targets []regi
 			site.used = true
 		}
 		samplePloidy := perSamplePloidy(opts, sexes, v.Chrom, v.Pos, len(v.Samples))
-		called, keep := callVariant(v, opts, samplePloidy)
+		called, keep := callVariant(v, opts, samplePloidy, &sc)
 		if !keep {
 			continue
 		}
@@ -824,12 +825,12 @@ func augmentCallHeader(hdr *vcf.Header, model CallModel) *vcf.Header {
 //     prior dominates the posterior.)
 //   - The site is emitted iff !opts.VariantsOnly OR the site is variant
 //     OR opts.KeepAlts is set.
-func callVariant(v *vcf.Variant, opts CallOptions, samplePloidy []int) (*vcf.Variant, bool) {
+func callVariant(v *vcf.Variant, opts CallOptions, samplePloidy []int, sc *mcallScratch) (*vcf.Variant, bool) {
 	// The faithful multiallelic caller runs when -m is selected and the
 	// mpileup INFO/QS annotation is present. The synthetic PL-only
 	// fixtures (no QS) fall through to the heuristic path below.
 	if opts.Model == CallModelMultiallelic && hasQS(v) {
-		if out, keep, ok := mcallSite(v, opts, samplePloidy); ok {
+		if out, keep, ok := mcallSite(v, opts, samplePloidy, sc); ok {
 			return out, keep
 		}
 	}
