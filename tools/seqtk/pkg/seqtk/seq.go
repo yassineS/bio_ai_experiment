@@ -200,16 +200,18 @@ func SeqRun(in io.Reader, w io.Writer, opts SeqOptions) error {
 
 	if isFastq {
 		r := fastq.NewReader(br, fastq.Phred33)
+		fr := &fastq.Record{}
+		rec := &seqRecord{}
 		for {
-			fr, err := r.Read()
+			err := r.ReadInto(fr)
 			if err == io.EOF {
 				break
 			}
 			if err != nil {
 				return err
 			}
-			name, comment := splitNameComment(fr.Description)
-			rec := &seqRecord{name: name, comment: comment, seq: fr.Sequence, qual: fr.Quality}
+			rec.name, rec.comment = splitNameComment(fr.Description)
+			rec.seq, rec.qual = fr.Sequence, fr.Quality
 			if err := emit(rec); err != nil {
 				return err
 			}

@@ -8,6 +8,7 @@ package bedmerge
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"math"
@@ -16,6 +17,14 @@ import (
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
+)
+
+// Header/track prefixes recognised on text input, as byte slices so the read
+// loop can test the scanner buffer without allocating a string per line.
+var (
+	trackPrefix         = []byte("track")
+	browserPrefix       = []byte("browser")
+	fileformatVCFPrefix = []byte("##fileformat=VCF")
 )
 
 // inputFormat tags the detected input format of the -i stream.
@@ -92,27 +101,31 @@ func readText(br *bufio.Reader, opts MergeOptions) ([]record, inputFormat, error
 	var format inputFormat
 	formatSet := false
 	headerForcedVCF := false
+	// The full field slice is retained per record only when a column operation
+	// (-c) or a field-echoing output mode needs it; otherwise the fast BED path
+	// avoids allocating and keeping it (see parseBEDFast).
+	keepFields := opts.needsFields()
+	var ci chromInterner
 	for sc.Scan() {
-		line := strings.TrimRight(sc.Text(), "\r")
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
+		lineB := bytes.TrimRight(sc.Bytes(), "\r")
+		trimmed := bytes.TrimSpace(lineB)
+		if len(trimmed) == 0 {
 			continue
 		}
-		if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "track") ||
-			strings.HasPrefix(trimmed, "browser") {
-			if strings.HasPrefix(line, "##fileformat=VCF") {
+		if trimmed[0] == '#' || bytes.HasPrefix(trimmed, trackPrefix) ||
+			bytes.HasPrefix(trimmed, browserPrefix) {
+			if bytes.HasPrefix(lineB, fileformatVCFPrefix) {
 				headerForcedVCF = true
 			}
 			continue
 		}
-		fields := strings.Split(line, "\t")
 		if !formatSet {
 			if headerForcedVCF {
 				format = fmtVCF
 			} else {
-				f, ok := detectFormat(fields)
+				f, ok := detectFormat(strings.Split(string(lineB), "\t"))
 				if !ok {
-					return nil, format, fmt.Errorf("unexpected file format: please use tab-delimited BED, GFF, or VCF (line: %q)", line)
+					return nil, format, fmt.Errorf("unexpected file format: please use tab-delimited BED, GFF, or VCF (line: %q)", string(lineB))
 				}
 				format = f
 			}
@@ -122,7 +135,17 @@ func readText(br *bufio.Reader, opts MergeOptions) ([]record, inputFormat, error
 			}
 			formatSet = true
 		}
-		rec, err := parseTextRecord(fields, format)
+		var (
+			rec record
+			err error
+		)
+		if keepFields || format != fmtBED {
+			// string(lineB) is a fresh copy, so fields retained by the record do
+			// not alias the reused scanner buffer.
+			rec, err = parseTextRecord(strings.Split(string(lineB), "\t"), format)
+		} else {
+			rec, err = parseBEDFast(lineB, opts.StrandSpec || opts.StrandFilter != "", &ci)
+		}
 		if err != nil {
 			return nil, format, err
 		}
@@ -132,6 +155,78 @@ func readText(br *bufio.Reader, opts MergeOptions) ([]record, inputFormat, error
 		return nil, format, err
 	}
 	return out, format, nil
+}
+
+// chromInterner caches the most recently interned chromosome name so a run of
+// records sharing a chromosome (the norm for sorted BED input) allocates the
+// name string once rather than per record. The `c.last == string(b)` compare is
+// allocation-free: the compiler does not heap-allocate a []byte->string
+// conversion used only as a comparison operand.
+type chromInterner struct {
+	last string
+}
+
+func (c *chromInterner) intern(b []byte) string {
+	if c.last != "" && c.last == string(b) {
+		return c.last
+	}
+	s := string(b)
+	c.last = s
+	return s
+}
+
+// internStrand maps the byte form of a strand column to a shared string,
+// allocating nothing for the only values that occur in practice.
+func internStrand(b []byte) string {
+	switch string(b) {
+	case "":
+		return ""
+	case "+":
+		return "+"
+	case "-":
+		return "-"
+	case ".":
+		return "."
+	}
+	return string(b)
+}
+
+// parseBEDFast parses a BED data line directly from the scanner's byte buffer,
+// copying only the chromosome (and the strand, when stranded merging is active)
+// so the line buffer need not be retained. It mirrors parseTextRecord's BED case
+// but skips building and keeping the full field slice, which is unused when no
+// -c column operation or field-echoing output mode is requested. chrom is
+// interned through ci to avoid an allocation per record on runs of one
+// chromosome.
+func parseBEDFast(line []byte, keepStrand bool, ci *chromInterner) (record, error) {
+	var cols [6][]byte
+	n := 0
+	begin := 0
+	for i := 0; i <= len(line); i++ {
+		if i == len(line) || line[i] == '\t' {
+			if n < len(cols) {
+				cols[n] = line[begin:i]
+			}
+			n++
+			begin = i + 1
+		}
+	}
+	if n < 3 {
+		return record{}, fmt.Errorf("BED record must have at least 3 fields, got %d", n)
+	}
+	start, err := parseChrPosBytes(cols[1])
+	if err != nil {
+		return record{}, fmt.Errorf("invalid chromStart %q: %w", cols[1], err)
+	}
+	end, err := parseChrPosBytes(cols[2])
+	if err != nil {
+		return record{}, fmt.Errorf("invalid chromEnd %q: %w", cols[2], err)
+	}
+	strand := ""
+	if keepStrand && n > 5 {
+		strand = internStrand(cols[5])
+	}
+	return record{chrom: ci.intern(cols[0]), start: start, end: end, strand: strand}, nil
 }
 
 // errStrandedVCF is the sentinel for the unsupported "-s with VCF" combination;
@@ -287,6 +382,40 @@ func parseChrPos(s string) (int, error) {
 		return int(math.Trunc(f)), nil
 	}
 	return 0, fmt.Errorf("illegal number %q", s)
+}
+
+// parseChrPosBytes parses a coordinate from a byte slice with the same
+// semantics as parseChrPos, but without allocating a string on the common
+// integer fast path (plain optional-signed digits). Anything else — embedded
+// whitespace, scientific notation, decimals — falls back to parseChrPos.
+func parseChrPosBytes(b []byte) (int, error) {
+	if n := len(b); n > 0 {
+		i := 0
+		neg := false
+		if b[0] == '+' || b[0] == '-' {
+			neg = b[0] == '-'
+			i++
+		}
+		if i < n {
+			val := 0
+			ok := true
+			for ; i < n; i++ {
+				c := b[i]
+				if c < '0' || c > '9' {
+					ok = false
+					break
+				}
+				val = val*10 + int(c-'0')
+			}
+			if ok {
+				if neg {
+					val = -val
+				}
+				return val, nil
+			}
+		}
+	}
+	return parseChrPos(string(b))
 }
 
 // isChrPos reports whether s parses as a coordinate (integer or scientific).
