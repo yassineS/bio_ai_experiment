@@ -394,29 +394,38 @@ func isecStreaming(paths []string, headers []*vcf.Header, mergedContigs []string
 		return 0, err
 	}
 	n := len(paths)
+
+	// Open one forward cursor per input and read each file exactly once: for
+	// each contig (visited in keyFor order, which every input lists its contigs
+	// in — verified by isecMergeContigOrder) pull that contig's contiguous run
+	// from each cursor. A file lacking the contig contributes nothing; its
+	// cursor simply stays parked on its next (later) contig.
+	cursors := make([]*isecCursor, 0, n)
+	closeCursors := func() {
+		for _, c := range cursors {
+			c.close()
+		}
+	}
+	for _, p := range paths {
+		c, err := openIsecCursor(p)
+		if err != nil {
+			closeCursors()
+			_, _ = isecFinalize(state)
+			return state.totalKept, fmt.Errorf("bcftools isec: %s: %w", p, err)
+		}
+		cursors = append(cursors, c)
+	}
+	defer closeCursors()
+
 	for _, contig := range mergedContigs {
 		groups := make([][]*vcf.Variant, n)
-		for i, p := range paths {
-			// Collect this contig's variants. Because each file is
-			// chrom-contiguous (verified), the contig's records form a single
-			// run; we can stop once we have passed it.
-			started := false
-			collectErr := io.EOF // sentinel to stop early via fn error
-			_, err := isecStreamFile(p, func(v *vcf.Variant) error {
-				if v.Chrom == contig {
-					started = true
-					groups[i] = append(groups[i], v)
-					return nil
-				}
-				if started {
-					// Passed the (contiguous) run for this contig.
-					return collectErr
-				}
-				return nil
-			})
-			if err != nil && err != collectErr {
+		for i, c := range cursors {
+			for v := c.peek(); v != nil && v.Chrom == contig; v = c.peek() {
+				groups[i] = append(groups[i], c.pop())
+			}
+			if c.err != nil && c.err != io.EOF {
 				_, _ = isecFinalize(state)
-				return state.totalKept, fmt.Errorf("bcftools isec: %s: %w", p, err)
+				return state.totalKept, fmt.Errorf("bcftools isec: %s: %w", paths[i], c.err)
 			}
 		}
 		if err := isecCore(state, groups); err != nil {
@@ -426,6 +435,81 @@ func isecStreaming(paths []string, headers []*vcf.Header, mergedContigs []string
 	}
 	return isecFinalize(state)
 }
+
+// isecCursor is a forward, peekable pull reader over one input file (VCF or
+// BCF, transparently). It yields owned *vcf.Variant values one at a time so the
+// streaming merge can read each input exactly once.
+type isecCursor struct {
+	closer io.Closer
+	next   func() (*vcf.Variant, error) // returns io.EOF when exhausted
+	head   *vcf.Variant
+	err    error
+}
+
+// openIsecCursor opens path and primes the first record. The reader uses Read
+// (not ReadInto), so each yielded Variant is independently owned and safe to
+// retain in a per-contig group.
+func openIsecCursor(path string) (*isecCursor, error) {
+	in, err := iohelper.OpenReader(path)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	br := bufio.NewReader(in)
+	magic, perr := br.Peek(5)
+	if perr != nil && perr != io.EOF {
+		_ = in.Close()
+		return nil, perr
+	}
+	c := &isecCursor{closer: in}
+	if len(magic) >= 5 && magic[0] == 'B' && magic[1] == 'C' && magic[2] == 'F' {
+		r, err := bcf.NewReader(br)
+		if err != nil {
+			_ = in.Close()
+			return nil, err
+		}
+		bh := r.Header()
+		c.next = func() (*vcf.Variant, error) {
+			rec, err := r.Read()
+			if err != nil {
+				return nil, err
+			}
+			return rec.ToVariant(bh), nil
+		}
+	} else {
+		r := vcf.NewReader(br)
+		if _, err := r.ReadHeader(); err != nil {
+			_ = in.Close()
+			return nil, err
+		}
+		c.next = func() (*vcf.Variant, error) { return r.Read() }
+	}
+	c.advance()
+	return c, nil
+}
+
+func (c *isecCursor) advance() {
+	if c.err != nil {
+		c.head = nil
+		return
+	}
+	v, err := c.next()
+	if err != nil {
+		c.err = err
+		c.head = nil
+		return
+	}
+	c.head = v
+}
+
+func (c *isecCursor) peek() *vcf.Variant { return c.head }
+
+func (c *isecCursor) pop() *vcf.Variant {
+	v := c.head
+	c.advance()
+	return v
+}
+
+func (c *isecCursor) close() { _ = c.closer.Close() }
 
 // isecState holds the open output writers and shared scratch for a single
 // isec run, so the membership/emit core can be applied to either the whole
