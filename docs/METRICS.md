@@ -176,7 +176,7 @@ Remaining hotspots (wall× ≥ 2 — open optimization targets, not wins):
 | samtools mpileup | 3.23 | RSS now **×8.7** (was ×204); CPU ×4.8 (was ×5.2) — see "transformed" |
 | bcftools call | 2.17 | **alloc/parse-bound, not libm** (was ×3.04; profiled ~35% alloc/GC, ~25% maps, ~14% float parse, **~2% libm**); VCF reuse + in-place INFO/FORMAT + single-pass list parse cut allocs 32M→18M (−44%), bytes −69%, CPU ×3.4→×2.3 |
 | bed merge | 3.48 | tiny op (43 ms) — startup-dominated; allocs cut ~103k→23k |
-| bcftools isec | 3.92 | RSS **×108** |
+| bcftools isec | ~4.0 | RSS **×108 → ×28** — per-contig streaming (forward cursors, gated on a sorted/contiguous pre-scan; falls back to load-all otherwise); peak 538→120 MB on the medium fixtures; wall ~neutral |
 
 **Transformed this optimization cycle** (medium tier, before → after):
 
@@ -191,7 +191,7 @@ Remaining hotspots (wall× ≥ 2 — open optimization targets, not wins):
 | bcftools query | ×3.9 | **×1.66** |
 | bcftools call | ×3.04 | **×2.17** (alloc cut, not faster math) |
 | seqtk seq | ×3.12 | **×1.31** |
-| bcftools isec | ×5.1 | ×3.92 |
+| bcftools isec — **RSS** | ×108 | **×28** (peak 538→120 MB; per-contig streaming) |
 | bed merge | ×4.08 | ×3.48 |
 | samtools view BAM→BAM / sort / sickle se | ×0.82 / 0.88 / 0.51 | ×0.72 / 0.74 / 0.42 |
 
