@@ -140,7 +140,10 @@ func Run(input io.Reader, genome *GenomeSize, writer io.Writer, opts Options) er
 	if genome == nil || len(genome.Order) == 0 {
 		return errors.New("genome size info is required")
 	}
-	return runCore(bed.NewReader(input), genome, writer, opts)
+	// The fast BED source parses directly from the scanner buffer, avoiding the
+	// shared reader's per-line string/field-slice allocations. Block columns are
+	// only consumed under -split, so they are parsed only then.
+	return runCore(newFastBEDSource(input, opts.Split), genome, writer, opts)
 }
 
 // runCore is the BED-input coverage pipeline: per-record coverage intervals
@@ -491,18 +494,10 @@ func histogramKey(d int, opts Options) int {
 	return v
 }
 
-// formatDepth renders a (possibly scaled) depth, emitting an integer when the
-// scale is 1.0 (the common case) and a compact float otherwise. Matches
-// bedtools' `%g`-style formatting under `-scale`.
-func formatDepth(d float64, scale float64) string {
-	if scale == 1.0 {
-		return strconv.Itoa(int(d))
-	}
-	return strconv.FormatFloat(d, 'g', 10, 64)
-}
-
 func writeBedGraph(w *bufio.Writer, depth map[string][]int, g *GenomeSize, opts Options) error {
 	includeZero := opts.Mode == ModeBedGraphAll
+	intScale := opts.Scale == 1.0
+	var buf []byte
 	for _, chrom := range g.Order {
 		arr := depth[chrom]
 		i := 0
@@ -513,7 +508,19 @@ func writeBedGraph(w *bufio.Writer, depth map[string][]int, g *GenomeSize, opts 
 				j++
 			}
 			if d != 0 || includeZero {
-				if _, err := fmt.Fprintf(w, "%s\t%d\t%d\t%s\n", chrom, i, j, formatDepth(d, opts.Scale)); err != nil {
+				// chrom\tstart\tend\tdepth\n built into a reusable scratch buffer,
+				// then written once. Avoids fmt.Fprintf's per-call interface
+				// boxing and string allocations.
+				buf = buf[:0]
+				buf = append(buf, chrom...)
+				buf = append(buf, '\t')
+				buf = strconv.AppendInt(buf, int64(i), 10)
+				buf = append(buf, '\t')
+				buf = strconv.AppendInt(buf, int64(j), 10)
+				buf = append(buf, '\t')
+				buf = appendDepth(buf, d, intScale)
+				buf = append(buf, '\n')
+				if _, err := w.Write(buf); err != nil {
 					return err
 				}
 			}
@@ -533,6 +540,11 @@ func writePerBase(w *bufio.Writer, depth map[string][]int, g *GenomeSize, opts O
 	if zeroBased {
 		offset = 0
 	}
+	intScale := opts.Scale == 1.0
+	// One reusable scratch buffer for the whole pass: this path emits one line
+	// per base (millions for vertebrate-scale genomes), so the fmt.Fprintf-per-
+	// line allocations dominated the profile (~99% of allocations in -d/-dz).
+	var buf []byte
 	for _, chrom := range g.Order {
 		arr := depth[chrom]
 		for i, raw := range arr {
@@ -540,7 +552,14 @@ func writePerBase(w *bufio.Writer, depth map[string][]int, g *GenomeSize, opts O
 			if zeroBased && d == 0 {
 				continue
 			}
-			if _, err := fmt.Fprintf(w, "%s\t%d\t%s\n", chrom, i+offset, formatDepth(d, opts.Scale)); err != nil {
+			buf = buf[:0]
+			buf = append(buf, chrom...)
+			buf = append(buf, '\t')
+			buf = strconv.AppendInt(buf, int64(i+offset), 10)
+			buf = append(buf, '\t')
+			buf = appendDepth(buf, d, intScale)
+			buf = append(buf, '\n')
+			if _, err := w.Write(buf); err != nil {
 				return err
 			}
 		}
@@ -548,11 +567,23 @@ func writePerBase(w *bufio.Writer, depth map[string][]int, g *GenomeSize, opts O
 	return nil
 }
 
+// appendDepth appends a (possibly scaled) depth to buf, emitting an integer
+// when the scale is 1.0 (the common case) and a compact float otherwise,
+// matching bedtools' `%g`-style formatting under `-scale`. It writes into a
+// reusable buffer instead of allocating a string per call.
+func appendDepth(buf []byte, d float64, intScale bool) []byte {
+	if intScale {
+		return strconv.AppendInt(buf, int64(d), 10)
+	}
+	return strconv.AppendFloat(buf, d, 'g', 10, 64)
+}
+
 // writeHistogram emits per-chromosome histograms followed by a `genome` row,
 // matching the exact column layout of `bedtools genomecov`.
 func writeHistogram(w *bufio.Writer, depth map[string][]int, g *GenomeSize, opts Options) error {
 	genome := map[int]int{}
 	genomeSize := 0
+	var buf []byte
 	for _, chrom := range g.Order {
 		arr := depth[chrom]
 		counts := map[int]int{}
@@ -569,7 +600,8 @@ func writeHistogram(w *bufio.Writer, depth map[string][]int, g *GenomeSize, opts
 			if chromSize > 0 {
 				frac = float64(n) / float64(chromSize)
 			}
-			if _, err := fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%s\n", chrom, d, n, chromSize, formatFraction(frac)); err != nil {
+			buf = appendHistLine(buf[:0], chrom, d, n, chromSize, frac)
+			if _, err := w.Write(buf); err != nil {
 				return err
 			}
 		}
@@ -580,11 +612,29 @@ func writeHistogram(w *bufio.Writer, depth map[string][]int, g *GenomeSize, opts
 		if genomeSize > 0 {
 			frac = float64(n) / float64(genomeSize)
 		}
-		if _, err := fmt.Fprintf(w, "genome\t%d\t%d\t%d\t%s\n", d, n, genomeSize, formatFraction(frac)); err != nil {
+		buf = appendHistLine(buf[:0], "genome", d, n, genomeSize, frac)
+		if _, err := w.Write(buf); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// appendHistLine appends a histogram row "chrom\tdepth\tcount\tsize\tfrac\n" to
+// buf using strconv.Append* in place of fmt.Fprintf, matching the exact column
+// layout of `bedtools genomecov`.
+func appendHistLine(buf []byte, chrom string, depth, count, size int, frac float64) []byte {
+	buf = append(buf, chrom...)
+	buf = append(buf, '\t')
+	buf = strconv.AppendInt(buf, int64(depth), 10)
+	buf = append(buf, '\t')
+	buf = strconv.AppendInt(buf, int64(count), 10)
+	buf = append(buf, '\t')
+	buf = strconv.AppendInt(buf, int64(size), 10)
+	buf = append(buf, '\t')
+	buf = strconv.AppendFloat(buf, frac, 'g', 6, 64)
+	buf = append(buf, '\n')
+	return buf
 }
 
 // sortedKeys returns the keys of m in ascending order.

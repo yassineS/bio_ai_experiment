@@ -57,6 +57,15 @@ func (o MergeOptions) precision() int {
 	return o.Precision
 }
 
+// needsFields reports whether merged output requires each record's original
+// column slice: true for -c column operations and for the field-echoing output
+// modes (bedGraph and the name/score/strand flags). When false, the input
+// reader can skip building and retaining the per-record field slice.
+func (o MergeOptions) needsFields() bool {
+	return o.ColumnOps != nil || o.OutputFields.BedGraph ||
+		o.OutputFields.Name || o.OutputFields.Score || o.OutputFields.Strand
+}
+
 // Merge reads intervals (BED/GFF/VCF/BAM, auto-detected), sorts them, merges
 // overlapping/adjacent intervals, and writes the result. Returns the number of
 // merged intervals written.

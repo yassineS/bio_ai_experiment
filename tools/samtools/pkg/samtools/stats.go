@@ -672,16 +672,41 @@ func Stats(in io.Reader, out io.Writer, opts StatsOptions) error {
 	// line is NOT consulted; an empty BAM is reported as sorted.
 	c.IsSorted = 1
 
-	for {
-		rec, err := br.Read()
-		if err == io.EOF {
-			break
+	// stats only folds each record into accumulators (never retaining the
+	// record, its Seq/Qual/Cigar/Aux slices, or a pointer to it past observe),
+	// so it uses the reader's allocation-free ReadInto when available (the
+	// single-threaded BAM path) and falls back to Read otherwise (CRAM, SAM,
+	// the threaded reader). This reuses the record's buffers across iterations,
+	// the same win flagstat takes — the per-record decode is the dominant
+	// allocator on this stream.
+	if ri, ok := br.(interface {
+		ReadInto(*sam.Record) error
+	}); ok {
+		var rec sam.Record
+		for {
+			err := ri.ReadInto(&rec)
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return err
+			}
+			if oerr := c.observe(&rec, opts); oerr != nil {
+				return oerr
+			}
 		}
-		if err != nil {
-			return err
-		}
-		if oerr := c.observe(rec, opts); oerr != nil {
-			return oerr
+	} else {
+		for {
+			rec, err := br.Read()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return err
+			}
+			if oerr := c.observe(rec, opts); oerr != nil {
+				return oerr
+			}
 		}
 	}
 	if c.sortBroken {

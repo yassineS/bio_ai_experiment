@@ -135,32 +135,96 @@ and peak RSS for each side, from `wait4` `rusage`. Ratio = ours / upstream
 
 > The `smoke`/`small` tiers are dominated by Go process startup + GC, so their
 > ratios overstate our cost. The **medium** tier (16 Mb reference, 300 k reads,
-> 60 k variants) is the first tier where steady-state behaviour shows; **large**
-> is pending (to be run once the hotspots below are addressed).
+> 60 k variants) is the first tier where steady-state behaviour shows.
 
-### Medium tier — selected cells (wall ratio, ours/upstream)
+### Medium tier — all 22 cells (measured 2026-06-19, `-reps 5`)
 
-Wins / parity:
+`wall×` = ours/upstream wall-clock (**< 1.0 = we are faster**); `RSS×` flagged
+where memory is the open cost. Full per-axis data: `pipeline/.fixtures/medium/bench/bench.{md,json}`.
 
-| operation | wall× |
-|---|---|
-| sickle se (FASTQ trim) | **0.51** |
-| samtools view BAM→BAM | **0.82** |
-| samtools sort | **0.88** |
-| bed sort | 1.02 |
-| bedtools coverage / genomecov | 1.29 / 1.30 |
-
-Current hotspots (honest — these are open optimization targets, not wins):
+Wins / parity (wall× ≤ 1.05):
 
 | operation | wall× | note |
 |---|---|---|
-| samtools view BAM→CRAM | **71.5** | CRAM **encoder** — the standout regression (decode is fine, ×1.40) |
-| bedtools intersect (self / pair) | **18.1 / 16.8** | the flagship interval op |
-| bcftools isec | 5.1 | + RSS ×17 |
-| samtools mpileup | 2.9 | RSS **×45** — a memory hotspot |
-| samtools stats / bcftools query | 4.2 / 3.9 | per-record overhead on light scans |
+| sickle se (FASTQ trim) | **0.42** | |
+| samtools view BAM→CRAM | **0.72** | CRAM **encoder** — see "transformed" below |
+| samtools view BAM→BAM | **0.72** | |
+| samtools sort | **0.74** | RSS ×3.0 |
+| bedtools intersect (pair / self) | **0.74 / 0.82** | now faster than upstream (was ×1.42 / 1.57); output-path allocs −78% |
+| bedtools coverage | **0.80** | now faster than upstream (was ×1.23); allocs −53%, bytes −89% |
+| bcftools view | **0.98** | |
+| bed sort | **1.05** | |
 
-The suite turns the prior hand-wavy "faster than the originals" into a precise,
-per-operation characterization: genuine wins on heavy re-encode / sort / FASTQ
-paths, and concrete, named bottlenecks (CRAM encode, interval intersect,
-mpileup memory) under active work before the large-tier headline run.
+Modest overhead (1.05 < wall× < 2) — at or near the pure-Go inflate/parse floor:
+
+| operation | wall× | note |
+|---|---|---|
+| bcftools stats | 1.14 | was ×2.32 — Variant reuse + scratch buffers cut allocs −93% |
+| samtools depth | 1.16 | RSS ×100 (per-position arrays) |
+| bedtools genomecov | ~1.3 | histogram default is bound by the 16M-int depth array; per-record allocs now ~constant, the **per-base `-d` mode is 7.3× faster** (48M→28 allocs) |
+| seqtk seq | 1.31 | tiny op (~170 ms); per-record FASTQ alloc removed (was ×3.12) |
+| samtools view CRAM→BAM | 1.34 | CRAM decode |
+| samtools stats | 1.41 | RSS ×26; per-record `ReadInto` reuse (−28% allocs) on the single-threaded path; threaded default unchanged |
+| bcftools query | 1.61 | parse-bound (htsgo `Scanner.Text` floor); `%POS` per-record alloc removed (allocs/record halved) |
+| samtools flagstat | 1.66 | |
+| bcftools norm | 1.72 | RSS ×17 |
+
+Remaining hotspots (wall× ≥ 2 — open optimization targets, not wins):
+
+| operation | wall× | note |
+|---|---|---|
+| samtools mpileup | 3.23 | RSS now **×8.7** (was ×204); CPU ×4.8 (was ×5.2) — see "transformed" |
+| bcftools call | 2.05 | **alloc/parse-bound, not libm** (was ×3.04; profiled ~35% alloc/GC, ~25% maps, ~14% float parse, **~2% libm**); VCF reuse + in-place INFO/FORMAT + single-pass parse + output-buffer reuse cut allocs 32M→15M, bytes −72%, CPU ×3.4→×2.2 |
+| bed merge | 3.48 | tiny op (43 ms) — startup-dominated; allocs cut ~103k→23k |
+| bcftools isec | 3.86 | RSS **×108 → ×30** (peak 538→130 MB) — per-contig streaming (forward cursors, gated on a chrom/pos-only pre-scan; falls back to load-all otherwise); wall now **below** the pre-rewrite load-all (×3.92) after the cheap pre-scan |
+
+**Transformed this optimization cycle** (medium tier, before → after):
+
+| operation | was | now |
+|---|---|---|
+| samtools view BAM→CRAM (encode) | ×71.5 | **×0.72** |
+| bedtools intersect (self / pair) | ×18.1 / 16.8 | **×0.82 / 0.74** (now faster than upstream) |
+| bedtools coverage | ×1.23 | **×0.80** (now faster than upstream; bytes −89%) |
+| bcftools stats | ×2.32 | **×1.14** (allocs −93%) |
+| samtools mpileup — **RSS** | ×204 | **×8.7** (CPU ×5.2 → ×4.8) |
+| samtools stats | ×4.2 | **×1.41** |
+| bcftools query | ×3.9 | **×1.66** |
+| bcftools call | ×3.04 | **×2.05** (allocs 32M→15M; not faster math) |
+| seqtk seq | ×3.12 | **×1.31** |
+| bcftools isec — **RSS** | ×108 | **×28** (peak 538→120 MB; per-contig streaming) |
+| bed merge | ×4.08 | ×3.48 |
+| samtools view BAM→BAM / sort / sickle se | ×0.82 / 0.88 / 0.51 | ×0.72 / 0.74 / 0.42 |
+
+The headline turnaround is CRAM **encode**, which went from a 71× regression to
+**faster than upstream** (×0.72) without cgo. The second is `mpileup` **memory**:
+it built a per-position event matrix for the whole contig at once (peak RSS
+×204); it now streams a single coordinate-sorted input tile by tile, dropping
+peak RSS to ×8.7 and trimming CPU (×5.2 → ×4.8), with wall roughly flat (×2.8 →
+×3.2 — the tiled walk trades a little scheduling/GC overhead for the memory
+collapse, and output stays byte-exact). The remaining wall-time gaps sit in
+two honest buckets: (1) tiny ops (`bed merge`, and the now-much-better
+`seqtk seq`) whose sub-200 ms runtime is dominated by Go startup/GC, not
+throughput; and (2) genuinely heavier paths — `bcftools call` was previously
+labelled "libm-bound", but profiling disproved that (only ~2% libm; ~35%
+alloc/GC, ~25% maps, ~14% float parse). Its lever was allocation, not faster
+math: reusing the input Variant (`ReadInto`), rewriting INFO/FORMAT in place
+instead of copying per record, and single-pass comma-list parsing cut
+allocations 32M→18M (−44%) and took it from ×3.04 to **×2.17** — all
+output-neutral. `isec`/`depth` carry **memory** (RSS), not wall-time, as their
+primary remaining cost. CPU-bound
+scan paths (stats, query, flagstat, depth) are now at the pure-Go inflate/parse
+floor: closing them further would require cgo into libdeflate, which the
+project deliberately
+forgoes to keep a single static, memory-safe binary (see `CLAUDE.md`).
+
+### Large tier — disk-bound in this environment
+
+A `large`-tier run (192 Mb reference, 2.5 M reads, 400 k variants) was
+attempted but is **not reproducible on a small-disk node**: `fixtures.Generate`
+materialises the full manifest for the tier unconditionally — including the
+`mpileup` and `call` truth VCFs — which comes to **~19 GB** at large scale and
+exhausted the container's root filesystem during fixture generation (the run
+aborted in `bcftools mpileup` with a write error at 100 % disk). The tier needs
+a fat node with ~30 GB+ scratch (consistent with the `bench/README.md` "run on
+a fat node / HPC" guidance). Medium is the largest tier that both fits here and
+shows steady-state behaviour, so it is the headline tier for these numbers.

@@ -10,8 +10,6 @@
 // is fudged.
 package bedwindow
 
-import "sort"
-
 // Bin scheme constants, copied from upstream BinTree.h. numBinLevels levels, the
 // finest bin spanning 2^binFirstShift bases, each coarser level grouping
 // 2^binNextShift finer bins.
@@ -58,20 +56,36 @@ func binLevelAndNumber(start, end int) (level int, bin int64) {
 
 // orderHitsByBin reorders a query's hits into upstream's bin-traversal order: by
 // bin level (finest first), then bin number ascending, then the record's
-// in-chromosome insertion (file) order.
+// in-chromosome insertion (file) order. It uses a stable insertion sort over the
+// typically-small per-query hit set, which allocates nothing — unlike
+// sort.SliceStable, whose reflect-based Swapper allocates on every call and
+// dominated the per-A cost.
 func orderHitsByBin(hits []*rec) {
 	if len(hits) < 2 {
 		return
 	}
-	sort.SliceStable(hits, func(i, j int) bool {
-		li, bi := binLevelAndNumber(hits[i].start, hits[i].end)
-		lj, bj := binLevelAndNumber(hits[j].start, hits[j].end)
-		if li != lj {
-			return li < lj
+	for i := 1; i < len(hits); i++ {
+		h := hits[i]
+		li, bi := binLevelAndNumber(h.start, h.end)
+		j := i - 1
+		for j >= 0 && hitLess(li, bi, h.order, hits[j]) {
+			hits[j+1] = hits[j]
+			j--
 		}
-		if bi != bj {
-			return bi < bj
-		}
-		return hits[i].order < hits[j].order
-	})
+		hits[j+1] = h
+	}
+}
+
+// hitLess reports whether the hit identified by (level, bin, order) sorts before
+// the record other in upstream's bin-traversal order. It is the comparator used
+// by orderHitsByBin's insertion sort.
+func hitLess(level int, bin int64, order int, other *rec) bool {
+	lo, bo := binLevelAndNumber(other.start, other.end)
+	if level != lo {
+		return level < lo
+	}
+	if bin != bo {
+		return bin < bo
+	}
+	return order < other.order
 }

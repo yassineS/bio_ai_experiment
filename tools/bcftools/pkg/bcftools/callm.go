@@ -82,6 +82,38 @@ type mcallTin struct {
 	// sample uses the global `ploidy` field.
 }
 
+// mcallScratch holds per-record output buffers mcallEmit reuses across the
+// streaming caller's records: the trimmed ALT / PL-reindex / per-sample-group
+// scratch, the output Samples slice, and a one-entry cache of the rebuilt
+// FORMAT (which is identical across the long runs of records that share an
+// input FORMAT and keepPL/GQ state). Each reused buffer is consumed or written
+// before the next record, so aliasing is safe.
+type mcallScratch struct {
+	newAlt    []string
+	plMap     []int
+	sampleGrp []*mcallGroup
+	samples   []vcf.Sample
+	// rebuildFormat cache, keyed by (input FORMAT, keepPL, GQ-appended).
+	fmtIn     []string
+	fmtOut    []string
+	fmtKeepPL bool
+	fmtGQ     bool
+	fmtValid  bool
+}
+
+// sameStrSlice reports whether a and b hold the same strings in order.
+func sameStrSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // computeTheta replicates mcall.c init: theta scaled by the Watterson
 // factor aM over the total number of alleles, then logged.
 func computeTheta(prior float64, ploidy, nsmpl int) float64 {
@@ -386,9 +418,14 @@ func decodePLInts(s string, ngts int) ([]int, bool) {
 	if s == "" || s == "." {
 		return nil, false
 	}
-	parts := strings.Split(s, ",")
-	out := make([]int, len(parts))
-	for i, p := range parts {
+	out := make([]int, strings.Count(s, ",")+1)
+	for i := 0; len(s) > 0; i++ {
+		p := s
+		if j := strings.IndexByte(s, ','); j >= 0 {
+			p, s = s[:j], s[j+1:]
+		} else {
+			s = ""
+		}
 		if p == "." || p == "" {
 			out[i] = plMissing
 			continue
@@ -665,7 +702,7 @@ func mcallBestAlleles(in *mcallTin, grp *mcallGroup) (alsMask int, refLk, lkSum,
 // mcallSite runs the full multiallelic caller on v. It returns the
 // rewritten record and a keep flag. ok is false when the record lacks the
 // QS/PL data the algorithm needs (caller should fall back).
-func mcallSite(v *vcf.Variant, opts CallOptions, samplePloidy []int) (out *vcf.Variant, keep bool, ok bool) {
+func mcallSite(v *vcf.Variant, opts CallOptions, samplePloidy []int, sc *mcallScratch) (out *vcf.Variant, keep bool, ok bool) {
 	if !hasQS(v) {
 		return nil, false, false
 	}
@@ -817,7 +854,7 @@ func mcallSite(v *vcf.Variant, opts CallOptions, samplePloidy []int) (out *vcf.V
 	// PL is retained whenever any ALT survives on output (nals_new>1),
 	// matching mcall.c which only strips PL for the pure ref-only branch.
 	keepPL := nalsNew > 1
-	out = mcallEmit(v, in, opts, alsMap, nalsNew, gts, ac, nAC, maxQual, lkSum, refLk, keepPL)
+	out = mcallEmit(v, in, opts, alsMap, nalsNew, gts, ac, nAC, maxQual, lkSum, refLk, keepPL, sc)
 	return out, true, true
 }
 
@@ -957,19 +994,22 @@ func parseFloatList(s string) []float64 {
 	if s == "" || s == "." {
 		return nil
 	}
-	parts := strings.Split(s, ",")
-	out := make([]float64, len(parts))
-	for i, p := range parts {
+	// Single pass over the comma list, sized up front via Count, so no
+	// intermediate []string is allocated (only the result slice).
+	out := make([]float64, strings.Count(s, ",")+1)
+	for i := 0; len(s) > 0; i++ {
+		p := s
+		if j := strings.IndexByte(s, ','); j >= 0 {
+			p, s = s[:j], s[j+1:]
+		} else {
+			s = ""
+		}
 		if p == "" || p == "." {
-			out[i] = 0
 			continue
 		}
-		f, err := strconv.ParseFloat(p, 64)
-		if err != nil {
-			out[i] = 0
-			continue
+		if f, err := strconv.ParseFloat(p, 64); err == nil {
+			out[i] = f
 		}
-		out[i] = f
 	}
 	return out
 }
@@ -980,15 +1020,17 @@ func parseIntList(s string) []int {
 	if s == "" || s == "." {
 		return nil
 	}
-	parts := strings.Split(s, ",")
-	out := make([]int, len(parts))
-	for i, p := range parts {
-		n, err := strconv.Atoi(strings.TrimSpace(p))
-		if err != nil {
-			out[i] = 0
-			continue
+	out := make([]int, strings.Count(s, ",")+1)
+	for i := 0; len(s) > 0; i++ {
+		p := s
+		if j := strings.IndexByte(s, ','); j >= 0 {
+			p, s = s[:j], s[j+1:]
+		} else {
+			s = ""
 		}
-		out[i] = n
+		if n, err := strconv.Atoi(strings.TrimSpace(p)); err == nil {
+			out[i] = n
+		}
 	}
 	return out
 }
@@ -996,17 +1038,18 @@ func parseIntList(s string) []int {
 // mcallEmit assembles the output record: trimmed alleles, called GT, the
 // re-indexed PL/AD, the QUAL, and the INFO rewrite (AN/AC/DP4/MQ; drop
 // I16/QS). It is the Go analogue of the tail of mcall().
-func mcallEmit(v *vcf.Variant, in *mcallTin, opts CallOptions, alsMap []int, nalsNew int, gts [][2]int, ac []int, nAC int, maxQual, lkSum, refLk float64, keepPL bool) *vcf.Variant {
+func mcallEmit(v *vcf.Variant, in *mcallTin, opts CallOptions, alsMap []int, nalsNew int, gts [][2]int, ac []int, nAC int, maxQual, lkSum, refLk float64, keepPL bool, sc *mcallScratch) *vcf.Variant {
 	out := *v
 	ninf := math.Inf(-1)
 
 	// --- alleles -------------------------------------------------------
-	newAlt := make([]string, 0, nalsNew-1)
+	newAlt := sc.newAlt[:0]
 	for i := 1; i < in.nals; i++ {
 		if alsMap[i] >= 0 {
 			newAlt = append(newAlt, v.Alt[i-1])
 		}
 	}
+	sc.newAlt = newAlt
 	out.Alt = newAlt
 	if len(out.Alt) == 0 {
 		out.Alt = []string{"."}
@@ -1014,9 +1057,8 @@ func mcallEmit(v *vcf.Variant, in *mcallTin, opts CallOptions, alsMap []int, nal
 
 	// --- PL re-index (Number=G), only for variant sites; ref-only sites
 	// drop PL entirely (matching mcall: PL removed when als_new==1). ----
-	ngtsNew := nalsNew * (nalsNew + 1) / 2
 	// pl_map[new k] -> old l
-	plMap := make([]int, 0, ngtsNew)
+	plMap := sc.plMap[:0]
 	{
 		l := 0
 		for i := 0; i < in.nals; i++ {
@@ -1029,11 +1071,22 @@ func mcallEmit(v *vcf.Variant, in *mcallTin, opts CallOptions, alsMap []int, nal
 		}
 	}
 
+	sc.plMap = plMap
+
 	annot := parseCallAnnotateFlags(opts.Annotate)
 	// Build a per-sample → *mcallGroup index for the GQ formula
 	// (each group's local qsum + alsMask drives the per-sample
-	// genotype-posterior calculation).
-	sampleGrp := make([]*mcallGroup, in.nsmpl)
+	// genotype-posterior calculation). Reuse the scratch slice, cleared.
+	sampleGrp := sc.sampleGrp
+	if cap(sampleGrp) < in.nsmpl {
+		sampleGrp = make([]*mcallGroup, in.nsmpl)
+	} else {
+		sampleGrp = sampleGrp[:in.nsmpl]
+		for i := range sampleGrp {
+			sampleGrp[i] = nil
+		}
+	}
+	sc.sampleGrp = sampleGrp
 	for gi := range in.groups {
 		grp := &in.groups[gi]
 		for _, is := range grp.samples {
@@ -1042,9 +1095,24 @@ func mcallEmit(v *vcf.Variant, in *mcallTin, opts CallOptions, alsMap []int, nal
 			}
 		}
 	}
-	out.Samples = make([]vcf.Sample, in.nsmpl)
+	// Reuse the output Samples backing; every element is overwritten below.
+	if cap(sc.samples) < in.nsmpl {
+		sc.samples = make([]vcf.Sample, in.nsmpl)
+	} else {
+		sc.samples = sc.samples[:in.nsmpl]
+	}
+	out.Samples = sc.samples
 	for i, s := range v.Samples {
-		ns := vcf.Sample{Name: s.Name, Data: copyStringMap(s.Data)}
+		// Rewrite the input sample map in place rather than copying it: the
+		// input Variant is reused-and-discarded by the streaming caller, every
+		// read below captures its old value into a local before the matching
+		// write, and distinct samples own distinct maps. A nil map (a sample
+		// with no FORMAT columns) still needs a fresh allocation to write into.
+		data := s.Data
+		if data == nil {
+			data = make(map[string]string)
+		}
+		ns := vcf.Sample{Name: s.Name, Data: data}
 		// GT
 		pl := in.ploidy
 		if i < len(in.smplPloidy) {
@@ -1086,9 +1154,21 @@ func mcallEmit(v *vcf.Variant, in *mcallTin, opts CallOptions, alsMap []int, nal
 	// prepended, then PL removed for ref-only sites. When -a GQ is
 	// set AND PL is retained (variant site), GQ is appended after
 	// PL — mirroring mcall.c which only emits GQ alongside PL.
-	out.Format = rebuildFormat(v.Format, keepPL)
-	if annot.gq && keepPL {
-		out.Format = appendUnique(out.Format, "GQ")
+	gqAppend := annot.gq && keepPL
+	if sc.fmtValid && sc.fmtKeepPL == keepPL && sc.fmtGQ == gqAppend && sameStrSlice(sc.fmtIn, v.Format) {
+		out.Format = sc.fmtOut
+	} else {
+		f := rebuildFormat(v.Format, keepPL)
+		if gqAppend {
+			f = appendUnique(f, "GQ")
+		}
+		out.Format = f
+		// Copy v.Format as the cache key (the input Variant is reused next read).
+		sc.fmtIn = append(sc.fmtIn[:0], v.Format...)
+		sc.fmtOut = f
+		sc.fmtKeepPL = keepPL
+		sc.fmtGQ = gqAppend
+		sc.fmtValid = true
 	}
 
 	// --- QUAL ----------------------------------------------------------
@@ -1109,8 +1189,11 @@ func mcallEmit(v *vcf.Variant, in *mcallTin, opts CallOptions, alsMap []int, nal
 	}
 
 	// --- INFO rewrite --------------------------------------------------
-	out.Info = copyStringMap(v.Info)
-	out.InfoOrder = append([]string(nil), v.InfoOrder...)
+	// out.Info/out.InfoOrder alias v's (from `out := *v`); the input Variant is
+	// reused-and-discarded by the streaming caller, so we rewrite INFO in place
+	// (delInfo/setInfo mutate the maps) instead of copying it every record. The
+	// only later read of the input INFO, v.Info["I16"] just below, happens
+	// before the delInfo calls.
 
 	// Parse I16 before removing it.
 	i16 := parseFloatList(v.Info["I16"])

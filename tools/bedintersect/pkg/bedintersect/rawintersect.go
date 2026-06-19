@@ -25,10 +25,15 @@ type inFinder interface {
 // chromosome but allocation-free in setup; the default for modest inputs.
 type linearFinder struct {
 	byChrom map[string][]*inRecord
+	// hitBuf is a reusable result buffer reused across A-record queries; the
+	// returned hits are consumed (emitted) before the next query, so reusing the
+	// backing array avoids a per-A allocation. The -sortout path copies the hits
+	// before retaining them, so reuse is safe there too.
+	hitBuf []rawHit
 }
 
-func (f linearFinder) overlaps(a *inRecord, opts IntersectOptions) []rawHit {
-	return rawOverlaps(a, f.byChrom[a.chrom], opts)
+func (f *linearFinder) overlaps(a *inRecord, opts IntersectOptions) []rawHit {
+	return rawOverlaps(a, f.byChrom[a.chrom], opts, &f.hitBuf)
 }
 
 // treeFinder answers overlap queries with one augmented interval tree per
@@ -37,24 +42,46 @@ func (f linearFinder) overlaps(a *inRecord, opts IntersectOptions) []rawHit {
 // the fraction/strand filters run, preserving upstream's B-file output order.
 type treeFinder struct {
 	trees map[string]*inIntervalTree
+	// candBuf and hitBuf are reusable scratch buffers for the per-A query
+	// candidate set and the resulting hits, reused across queries to avoid a
+	// per-A allocation (the results are consumed before the next query).
+	candBuf []*inRecord
+	hitBuf  []rawHit
 }
 
-func newTreeFinder(byChrom map[string][]*inRecord) treeFinder {
+func newTreeFinder(byChrom map[string][]*inRecord) *treeFinder {
 	trees := make(map[string]*inIntervalTree, len(byChrom))
 	for chrom, recs := range byChrom {
 		trees[chrom] = newInIntervalTree(recs)
 	}
-	return treeFinder{trees: trees}
+	return &treeFinder{trees: trees}
 }
 
-func (f treeFinder) overlaps(a *inRecord, opts IntersectOptions) []rawHit {
+func (f *treeFinder) overlaps(a *inRecord, opts IntersectOptions) []rawHit {
 	tree, ok := f.trees[a.chrom]
 	if !ok {
 		return nil
 	}
-	cands := tree.query(a)
-	sort.Slice(cands, func(i, j int) bool { return cands[i].order < cands[j].order })
-	return rawOverlaps(a, cands, opts)
+	cands := tree.queryBuf(a, f.candBuf[:0])
+	f.candBuf = cands
+	sortRecsByOrder(cands)
+	return rawOverlaps(a, cands, opts, &f.hitBuf)
+}
+
+// sortRecsByOrder orders candidate B records by their in-chromosome insertion
+// order, restoring B-file order after an out-of-order tree query. It uses an
+// insertion sort over the typically-small candidate set, avoiding the reflect
+// Swapper allocation sort.Slice incurs per call.
+func sortRecsByOrder(recs []*inRecord) {
+	for i := 1; i < len(recs); i++ {
+		r := recs[i]
+		j := i - 1
+		for j >= 0 && recs[j].order > r.order {
+			recs[j+1] = recs[j]
+			j--
+		}
+		recs[j+1] = r
+	}
 }
 
 // newFinder picks the tree- or linear-scan B index based on opts.UseTree, and
@@ -78,7 +105,7 @@ func newFinder(bRecords []*inRecord, opts IntersectOptions) inFinder {
 	if opts.UseTree || len(bRecords) >= autoTreeThreshold {
 		return newTreeFinder(byChrom)
 	}
-	return linearFinder{byChrom: byChrom}
+	return &linearFinder{byChrom: byChrom}
 }
 
 // autoTreeThreshold is the B-record count at or above which newFinder switches
@@ -134,12 +161,18 @@ func buildInTree(recs []*inRecord, lo, hi int) *inIntervalNode {
 // query returns every record whose span overlaps a's span (half-open). The
 // chromosome is implied by the tree, so it is not re-compared here.
 func (t *inIntervalTree) query(a *inRecord) []*inRecord {
+	return t.queryBuf(a, nil)
+}
+
+// queryBuf is query but appends into the caller-provided buffer (pass buf[:0] to
+// reuse the backing array), letting the tree finder recycle its candidate slice
+// across A-record queries instead of allocating one per query.
+func (t *inIntervalTree) queryBuf(a *inRecord, buf []*inRecord) []*inRecord {
 	if t.root == nil {
-		return nil
+		return buf
 	}
-	var out []*inRecord
-	queryInNode(t.root, a, &out)
-	return out
+	queryInNode(t.root, a, &buf)
+	return buf
 }
 
 func queryInNode(node *inIntervalNode, a *inRecord, out *[]*inRecord) {
@@ -254,6 +287,9 @@ type emitter struct {
 	dbFields int
 	opts     IntersectOptions
 	count    int
+	// scratch is a reusable byte buffer for formatting integers without a
+	// per-write allocation (see writeInt).
+	scratch []byte
 }
 
 func (e *emitter) line(s string) error {
@@ -265,6 +301,122 @@ func (e *emitter) line(s string) error {
 	}
 	e.count++
 	return nil
+}
+
+// writeClipped writes A's original line clipped to the overlap span [s,e)
+// directly to the buffered writer, replacing only the coordinate columns
+// (cols 2,3 for BED; cols 4,5 for GFF; VCF is echoed verbatim). It produces the
+// exact bytes inRecord.clippedLine would, but without copying the field slice,
+// joining, or allocating the integer strings — the dominant default-mode
+// allocations. trailing, when non-empty, is appended after the clipped line
+// before the newline (e.g. the "\t"+B columns under -wb).
+func (e *emitter) writeClipped(a *inRecord, s, e2 int, trailing string) error {
+	if a.format == fmtVCF {
+		// VCF records are never clipped; echo the full original line.
+		if err := e.writeLineParts(a.line, trailing); err != nil {
+			return err
+		}
+		return nil
+	}
+	// BED replaces columns 2,3 (0-based field idx 1,2); GFF replaces columns
+	// 4,5 (idx 3,4) and uses s+1 for the 1-based GFF start.
+	var startIdx, endIdx int
+	startVal := s
+	if a.format == fmtGFF {
+		startIdx, endIdx = 3, 4
+		startVal = s + 1
+	} else {
+		startIdx, endIdx = 1, 2
+	}
+	// Locate the byte offsets of the start/end columns within a.line. The line is
+	// the fields tab-joined, so column k starts after k tabs.
+	line := a.line
+	startBeg, startEnd := fieldSpan(line, startIdx)
+	endBeg, endEnd := fieldSpan(line, endIdx)
+	if startBeg < 0 || endBeg < 0 || startBeg > endBeg {
+		// Defensive fallback: line did not have the expected columns. Use the
+		// allocating renderer so behaviour is never wrong.
+		return e.writeLineParts(a.clippedLine(s, e2), trailing)
+	}
+	if _, err := e.bw.WriteString(line[:startBeg]); err != nil {
+		return wErr(err)
+	}
+	if err := e.writeInt(startVal); err != nil {
+		return err
+	}
+	if _, err := e.bw.WriteString(line[startEnd:endBeg]); err != nil {
+		return wErr(err)
+	}
+	if err := e.writeInt(e2); err != nil {
+		return err
+	}
+	if _, err := e.bw.WriteString(line[endEnd:]); err != nil {
+		return wErr(err)
+	}
+	if trailing != "" {
+		if _, err := e.bw.WriteString(trailing); err != nil {
+			return wErr(err)
+		}
+	}
+	if err := e.bw.WriteByte('\n'); err != nil {
+		return wErr(err)
+	}
+	e.count++
+	return nil
+}
+
+// writeLineParts writes s followed by trailing then a newline, counting one
+// output line. It is the writer-side equivalent of e.line(s+trailing).
+func (e *emitter) writeLineParts(s, trailing string) error {
+	if _, err := e.bw.WriteString(s); err != nil {
+		return wErr(err)
+	}
+	if trailing != "" {
+		if _, err := e.bw.WriteString(trailing); err != nil {
+			return wErr(err)
+		}
+	}
+	if err := e.bw.WriteByte('\n'); err != nil {
+		return wErr(err)
+	}
+	e.count++
+	return nil
+}
+
+// writeInt appends the base-10 form of n to the writer without allocating a
+// string, using the emitter's reusable scratch buffer.
+func (e *emitter) writeInt(n int) error {
+	e.scratch = strconv.AppendInt(e.scratch[:0], int64(n), 10)
+	if _, err := e.bw.Write(e.scratch); err != nil {
+		return wErr(err)
+	}
+	return nil
+}
+
+// wErr wraps a write error with the standard message.
+func wErr(err error) error {
+	return fmt.Errorf("error writing result: %w", err)
+}
+
+// fieldSpan returns the [begin,end) byte offsets of the idx-th tab-delimited
+// column in line (0-based column index), or (-1,-1) when the line has fewer
+// columns. It scans for tab separators without allocating.
+func fieldSpan(line string, idx int) (int, int) {
+	beg := 0
+	col := 0
+	for i := 0; i < len(line); i++ {
+		if line[i] == '\t' {
+			if col == idx {
+				return beg, i
+			}
+			col++
+			beg = i + 1
+		}
+	}
+	if col == idx {
+		return beg, len(line)
+	}
+	return -1, -1
 }
 
 // emit writes the output for one A record under the active output mode.
@@ -290,19 +442,21 @@ func (e *emitter) emit(a *inRecord, hits []rawHit) error {
 	default:
 		// Default / -wa / -wb (without -wa).
 		for _, h := range hits {
-			var s string
 			switch {
 			case opts.WriteB:
 				// -wb alone: A clipped to the overlap, then the DB-id column (if
 				// multiple B files) and the full original B.
-				s = a.clippedLine(h.start, h.end) + "\t" + e.bWithLabel(h.b)
+				if err := e.writeClipped(a, h.start, h.end, "\t"+e.bWithLabel(h.b)); err != nil {
+					return err
+				}
 			case opts.WriteA:
-				s = a.line
+				if err := e.line(a.line); err != nil {
+					return err
+				}
 			default:
-				s = a.clippedLine(h.start, h.end)
-			}
-			if err := e.line(s); err != nil {
-				return err
+				if err := e.writeClipped(a, h.start, h.end, ""); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
@@ -411,14 +565,14 @@ type rawHit struct {
 // intersection (used to clip A in default mode); the overlapping base count is
 // the split-aware non-redundant count under -split, else the whole-span overlap,
 // with the zero-length correction undone so -wo/-wao report upstream's value.
-func rawOverlaps(a *inRecord, bRecords []*inRecord, opts IntersectOptions) []rawHit {
+func rawOverlaps(a *inRecord, bRecords []*inRecord, opts IntersectOptions, buf *[]rawHit) []rawHit {
 	if a.unmapped {
 		return nil // an unmapped alignment never overlaps anything
 	}
 	if opts.Split {
 		return rawOverlapsSplit(a, bRecords, opts)
 	}
-	var hits []rawHit
+	hits := (*buf)[:0]
 	aLen := a.end - a.start
 	aStart, aEnd, aZero := effectiveBounds(a.start, a.end)
 	for _, b := range bRecords {
@@ -462,6 +616,7 @@ func rawOverlaps(a *inRecord, bRecords []*inRecord, opts IntersectOptions) []raw
 			overlapBases: overlapBases,
 		})
 	}
+	*buf = hits
 	return hits
 }
 

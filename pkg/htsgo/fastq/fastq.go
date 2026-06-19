@@ -13,7 +13,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"strings"
 )
 
 // QualityEncoding represents the quality score encoding format.
@@ -57,74 +56,99 @@ func NewReader(r io.Reader, encoding QualityEncoding) *Reader {
 // Read reads the next FASTQ record.
 // Returns io.EOF when no more records are available.
 func (r *Reader) Read() (*Record, error) {
+	rec := &Record{}
+	if err := r.ReadInto(rec); err != nil {
+		return nil, err
+	}
+	return rec, nil
+}
+
+// ReadInto reads the next FASTQ record into rec, reusing rec's Sequence and
+// Quality buffers (their backing arrays are overwritten, not reallocated) to
+// avoid the per-record allocations of Read. The caller must not retain rec's
+// slices across calls. Returns io.EOF when no more records are available.
+func (r *Reader) ReadInto(rec *Record) error {
 	if r.err != nil {
-		return nil, r.err
+		return r.err
 	}
 
-	// Read line 1: header (starts with '@')
+	// Read line 1: header (starts with '@').
 	if !r.scanner.Scan() {
 		if err := r.scanner.Err(); err != nil {
 			r.err = err
-			return nil, err
+			return err
 		}
 		r.err = io.EOF
-		return nil, io.EOF
+		return io.EOF
 	}
-	header := r.scanner.Text()
-	if !strings.HasPrefix(header, "@") {
-		return nil, fmt.Errorf("expected '@' at start of FASTQ header, got: %s", header)
+	header := r.scanner.Bytes()
+	if len(header) == 0 || header[0] != '@' {
+		return fmt.Errorf("expected '@' at start of FASTQ header, got: %s", header)
 	}
-	description := strings.TrimPrefix(header, "@")
+	// Description is everything after '@' (one short allocation); ID is its
+	// first whitespace-delimited field, taken as a substring (no allocation).
+	rec.Description = string(header[1:])
+	rec.ID = firstField(rec.Description)
 
-	// Extract ID (first word)
-	fields := strings.Fields(description)
-	var id string
-	if len(fields) > 0 {
-		id = fields[0]
-	}
-
-	// Read line 2: sequence
+	// Read line 2: sequence (reuse buffer).
 	if !r.scanner.Scan() {
 		if err := r.scanner.Err(); err != nil {
-			return nil, err
+			return err
 		}
-		return nil, fmt.Errorf("unexpected EOF reading sequence for record %s", id)
+		return fmt.Errorf("unexpected EOF reading sequence for record %s", rec.ID)
 	}
-	sequence := []byte(r.scanner.Text())
+	rec.Sequence = append(rec.Sequence[:0], r.scanner.Bytes()...)
 
-	// Read line 3: separator (starts with '+')
+	// Read line 3: separator (starts with '+').
 	if !r.scanner.Scan() {
 		if err := r.scanner.Err(); err != nil {
-			return nil, err
+			return err
 		}
-		return nil, fmt.Errorf("unexpected EOF reading separator for record %s", id)
+		return fmt.Errorf("unexpected EOF reading separator for record %s", rec.ID)
 	}
-	separator := r.scanner.Text()
-	if !strings.HasPrefix(separator, "+") {
-		return nil, fmt.Errorf("expected '+' separator, got: %s", separator)
+	if sep := r.scanner.Bytes(); len(sep) == 0 || sep[0] != '+' {
+		return fmt.Errorf("expected '+' separator, got: %s", sep)
 	}
 
-	// Read line 4: quality scores
+	// Read line 4: quality scores (reuse buffer).
 	if !r.scanner.Scan() {
 		if err := r.scanner.Err(); err != nil {
-			return nil, err
+			return err
 		}
-		return nil, fmt.Errorf("unexpected EOF reading quality for record %s", id)
+		return fmt.Errorf("unexpected EOF reading quality for record %s", rec.ID)
 	}
-	quality := []byte(r.scanner.Text())
+	rec.Quality = append(rec.Quality[:0], r.scanner.Bytes()...)
 
-	// Validate that sequence and quality have same length
-	if len(sequence) != len(quality) {
-		return nil, fmt.Errorf("sequence and quality length mismatch for record %s: %d vs %d",
-			id, len(sequence), len(quality))
+	// Validate that sequence and quality have same length.
+	if len(rec.Sequence) != len(rec.Quality) {
+		return fmt.Errorf("sequence and quality length mismatch for record %s: %d vs %d",
+			rec.ID, len(rec.Sequence), len(rec.Quality))
 	}
+	return nil
+}
 
-	return &Record{
-		ID:          id,
-		Description: description,
-		Sequence:    sequence,
-		Quality:     quality,
-	}, nil
+// firstField returns the first whitespace-delimited field of s, matching the
+// ID that strings.Fields(s)[0] would yield, without allocating a slice.
+func firstField(s string) string {
+	start := 0
+	for start < len(s) && asciiSpace(s[start]) {
+		start++
+	}
+	end := start
+	for end < len(s) && !asciiSpace(s[end]) {
+		end++
+	}
+	return s[start:end]
+}
+
+// asciiSpace reports whether b is an ASCII whitespace byte (the set
+// strings.Fields treats as a separator for the byte range it covers).
+func asciiSpace(b byte) bool {
+	switch b {
+	case ' ', '\t', '\n', '\v', '\f', '\r':
+		return true
+	}
+	return false
 }
 
 // ReadAll reads all FASTQ records from the reader.

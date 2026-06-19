@@ -815,11 +815,20 @@ func emitRecord(w io.Writer, tokens []FormatToken, v *vcf.Variant, sampleFilter 
 		case TokenLiteral:
 			sb.WriteString(t.Text)
 		case TokenPlaceholder:
-			sb.WriteString(formatPlaceholder(t.Text, v, -1, headerSamples))
+			writePlaceholder(sb, t.Text, v, -1, headerSamples)
 		case TokenSample:
 			indexes := sampleFilter
+			var scratch [16]int
 			if indexes == nil {
-				indexes = make([]int, len(v.Samples))
+				// Natural sample order. Use a small stack-backed scratch slice
+				// to avoid allocating a fresh []int per record in the common
+				// case (≤16 samples); fall back to a heap slice for wider VCFs.
+				n := len(v.Samples)
+				if n <= len(scratch) {
+					indexes = scratch[:n]
+				} else {
+					indexes = make([]int, n)
+				}
 				for i := range v.Samples {
 					indexes[i] = i
 				}
@@ -834,7 +843,7 @@ func emitRecord(w io.Writer, tokens []FormatToken, v *vcf.Variant, sampleFilter 
 					case TokenLiteral:
 						sb.WriteString(inner.Text)
 					case TokenPlaceholder:
-						sb.WriteString(formatPlaceholder(inner.Text, v, idx, headerSamples))
+						writePlaceholder(sb, inner.Text, v, idx, headerSamples)
 					}
 				}
 			}
@@ -843,6 +852,36 @@ func emitRecord(w io.Writer, tokens []FormatToken, v *vcf.Variant, sampleFilter 
 	_, err := w.Write(sb.Bytes())
 	emitBufPool.Put(sb)
 	return err
+}
+
+// writePlaceholder appends the formatted value of a placeholder to sb. It
+// special-cases the integer-valued tokens so their values are rendered
+// directly into the output buffer with strconv.AppendInt — this avoids the
+// per-record string allocation that strconv.Itoa (inside formatPlaceholder)
+// would otherwise incur on every emitted record. All other tokens delegate to
+// formatPlaceholder, whose result is written through unchanged (the returned
+// string usually aliases existing variant fields and does not allocate).
+func writePlaceholder(sb *bytes.Buffer, name string, v *vcf.Variant, sampleIdx int, headerSamples []string) {
+	switch name {
+	case "POS":
+		appendInt(sb, v.Pos)
+	case "POS0":
+		appendInt(sb, v.Pos-1)
+	case "END":
+		appendInt(sb, queryVariantEnd(v))
+	case "END0":
+		appendInt(sb, queryVariantEnd(v)-1)
+	default:
+		sb.WriteString(formatPlaceholder(name, v, sampleIdx, headerSamples))
+	}
+}
+
+// appendInt writes the base-10 decimal of n into sb without allocating an
+// intermediate string. A reusable stack array backs strconv.AppendInt so no
+// heap allocation occurs.
+func appendInt(sb *bytes.Buffer, n int) {
+	var buf [20]byte
+	sb.Write(strconv.AppendInt(buf[:0], int64(n), 10))
 }
 
 // formatPlaceholder resolves a single placeholder against v. sampleIdx is the
