@@ -94,9 +94,47 @@ type pileupEvent struct {
 // per-input pileup events, and emits one text mpileup line per position
 // that has at least one read (or every position when opts.AllPositions /
 // AllPositionsAllChroms is set, or the position is in posFilter).
+// mpileupScratch holds the per-window buffers emitMpileupWindow reuses across
+// tiles: the per-input, per-position event matrix and the per-position depth
+// slice. Reusing them keeps tiling from re-allocating (and re-zeroing) a fresh
+// event matrix for every tile, which would otherwise dominate the tiled path's
+// CPU.
+type mpileupScratch struct {
+	events [][][]pileupEvent // [input][column][event]
+	depths []int
+}
+
+// reset prepares the scratch for a window of nIn inputs and the given width,
+// growing the buffers when needed and truncating each per-position event slice
+// to length zero while keeping its backing array for reuse.
+func (s *mpileupScratch) reset(nIn, width int) {
+	if cap(s.depths) < nIn {
+		s.depths = make([]int, nIn)
+	}
+	s.depths = s.depths[:nIn]
+	if cap(s.events) < nIn {
+		s.events = make([][][]pileupEvent, nIn)
+	}
+	s.events = s.events[:nIn]
+	for i := 0; i < nIn; i++ {
+		if cap(s.events[i]) < width {
+			s.events[i] = make([][]pileupEvent, width)
+		} else {
+			s.events[i] = s.events[i][:width]
+		}
+		for c := 0; c < width; c++ {
+			s.events[i][c] = s.events[i][c][:0]
+		}
+	}
+}
+
+// emitMpileupWindow writes the pileup rows for [beg0, end0). contig, when
+// non-nil, is the whole-chromosome reference sequence (uppercased, newline
+// stripped) and is sliced for the per-row reference base instead of re-fetching
+// from refFA each tile; sc is reusable scratch shared across the window's tiles.
 func emitMpileupWindow(bw *bufio.Writer, chrom string, beg0, end0, refLen int,
-	perInputChromRecs [][]*sam.Record, refFA *fasta.RandomAccess, posFilter *positionFilter,
-	opts MpileupOptions) error {
+	perInputChromRecs [][]*sam.Record, contig []byte, refFA *fasta.RandomAccess,
+	posFilter *positionFilter, opts MpileupOptions, sc *mpileupScratch) error {
 
 	nIn := len(perInputChromRecs)
 
@@ -105,9 +143,9 @@ func emitMpileupWindow(bw *bufio.Writer, chrom string, beg0, end0, refLen int,
 	// event to events[pos-beg0]. width can be very large for chrom-wide
 	// scans; for typical region queries it is small.
 	width := end0 - beg0
-	events := make([][][]pileupEvent, nIn)
+	sc.reset(nIn, width)
+	events := sc.events
 	for i := 0; i < nIn; i++ {
-		events[i] = make([][]pileupEvent, width)
 		for ridx, rec := range perInputChromRecs[i] {
 			accumulateRecordEvents(rec, ridx, beg0, end0, events[i], opts, refFA, chrom)
 		}
@@ -123,7 +161,11 @@ func emitMpileupWindow(bw *bufio.Writer, chrom string, beg0, end0, refLen int,
 	// Optionally fetch a reference slab so each line can carry the right
 	// refbase column. Empty when no FASTA was supplied (upstream emits 'N').
 	var refSlab []byte
-	if refFA != nil {
+	switch {
+	case contig != nil && end0 <= len(contig):
+		// Slice the pre-fetched whole-chromosome reference (no per-tile I/O).
+		refSlab = contig[beg0:end0]
+	case refFA != nil:
 		// Coerce [beg0, end0) onto the contig length already done by the
 		// caller, so this Fetch is always in-range.
 		b, err := refFA.Fetch(chrom, int64(beg0), int64(end0))
@@ -133,10 +175,11 @@ func emitMpileupWindow(bw *bufio.Writer, chrom string, beg0, end0, refLen int,
 		refSlab = b
 	}
 
+	depths := sc.depths
 	for pos0 := beg0; pos0 < end0; pos0++ {
 		col := pos0 - beg0
-		// Gather depths per input.
-		depths := make([]int, nIn)
+		// Gather depths per input (depths is reused; every entry is overwritten
+		// below before use).
 		any := false
 		spanned := false
 		for i := 0; i < nIn; i++ {

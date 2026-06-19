@@ -190,6 +190,16 @@ func runMpileup(readers []sam.Reader, out io.Writer, opts MpileupOptions, refFA 
 		opts.MaxDepth = DefaultMpileupMaxDepth
 	}
 
+	// Fast path: a single coordinate-sorted input with no region/positions
+	// restriction and no all-positions mode can be piled up by streaming the
+	// records tile by tile, so peak memory is O(tile width x depth) rather than
+	// the whole file. It feeds emitMpileupWindow exactly the per-tile record
+	// sets the buffered path below would, so the output is byte-identical.
+	if len(readers) == 1 && posFilter == nil && len(opts.Regions) == 0 &&
+		!opts.AllPositions && !opts.AllPositionsAllChroms && headerIsCoordinateSorted(hdr) {
+		return runMpileupStreaming(readers[0], out, opts, refFA)
+	}
+
 	// Resolve region restrictions.
 	regions, _, err := region.ResolveRegions(opts.Regions, func(name string) int { return hdr.RefIndex(name) })
 	if err != nil {
@@ -272,6 +282,7 @@ func runMpileup(readers []sam.Reader, out io.Writer, opts MpileupOptions, refFA 
 		}
 	}
 
+	var sc mpileupScratch
 	for _, chrom := range chromsToWalk {
 		refLen := int(refLengthForName(hdr, chrom))
 		if refLen <= 0 {
@@ -289,6 +300,17 @@ func runMpileup(readers []sam.Reader, out io.Writer, opts MpileupOptions, refFA 
 		var perInputChromRecs [][]*sam.Record
 		for _, recs := range perInputRecs {
 			perInputChromRecs = append(perInputChromRecs, recs[chrom])
+		}
+
+		// Fetch the contig once for the per-row reference base, so the tiled
+		// emit slices it instead of issuing a Fetch per tile.
+		var contig []byte
+		if refFA != nil {
+			b, err := refFA.Fetch(chrom, 0, refFA.Length(chrom))
+			if err != nil {
+				return fmt.Errorf("samtools mpileup: fetch %s: %w", chrom, err)
+			}
+			contig = b
 		}
 
 		for _, w := range windows {
@@ -328,7 +350,7 @@ func runMpileup(readers []sam.Reader, out io.Writer, opts MpileupOptions, refFA 
 					}
 				}
 				if err := emitMpileupWindow(bw, chrom, tBeg, tEnd, refLen,
-					active, refFA, posFilter, opts); err != nil {
+					active, contig, refFA, posFilter, opts, &sc); err != nil {
 					return err
 				}
 			}
@@ -340,7 +362,145 @@ func runMpileup(readers []sam.Reader, out io.Writer, opts MpileupOptions, refFA 
 // mpileupTileWidth is the reference span of one pileup tile. It bounds the
 // per-position event matrix (and the live read set) emitMpileupWindow holds at
 // once, so peak memory is O(tile width x depth) rather than O(contig length).
-const mpileupTileWidth = 64 * 1024
+const mpileupTileWidth = 16 * 1024
+
+// runMpileupStreaming piles up a single coordinate-sorted input without ever
+// buffering the whole file: records are pulled from a peekable, pre-filtered
+// source tile by tile, BAQ is applied to each read as it enters the active set,
+// and reads are dropped once the pileup column passes their end. Peak memory is
+// therefore the reads overlapping one tile, matching upstream's streaming
+// pileup. The per-tile record sets handed to emitMpileupWindow are identical to
+// those the buffered path produces for a coordinate-sorted input, so output is
+// byte-for-byte the same.
+func runMpileupStreaming(rd sam.Reader, out io.Writer, opts MpileupOptions, refFA *fasta.RandomAccess) error {
+	hdr := rd.Header()
+	bw := bufio.NewWriter(out)
+	defer bw.Flush()
+
+	doBAQ := refFA != nil && !opts.NoBAQ
+	baqFlag := textMpileupBAQFlag(opts)
+	src := newMpileupSource(rd, opts, hdr)
+	var sc mpileupScratch
+
+	for {
+		head := src.peek()
+		if head == nil {
+			break
+		}
+		chrom := head.RName
+		refLen := int(refLengthForName(hdr, chrom))
+		if refLen <= 0 {
+			// Chromosome absent from the header (or zero length): its records
+			// are never emitted, exactly as in the buffered walk. Drop them.
+			for p := src.peek(); p != nil && p.RName == chrom; p = src.peek() {
+				src.pop()
+			}
+			continue
+		}
+
+		// Fetch the whole contig once: it serves both BAQ and the per-row
+		// reference base (emitMpileupWindow slices it instead of re-fetching).
+		var contig []byte
+		if refFA != nil {
+			seq, err := refFA.Fetch(chrom, 0, refFA.Length(chrom))
+			if err != nil {
+				return fmt.Errorf("samtools mpileup: fetch %s: %w", chrom, err)
+			}
+			contig = seq
+		}
+
+		var active []*sam.Record
+		for tBeg := 0; tBeg < refLen; tBeg += mpileupTileWidth {
+			tEnd := tBeg + mpileupTileWidth
+			if tEnd > refLen {
+				tEnd = refLen
+			}
+			active = pruneEndedBefore(active, tBeg)
+			for {
+				p := src.peek()
+				if p == nil || p.RName != chrom || int(p.Pos)-1 >= tEnd {
+					break
+				}
+				if doBAQ {
+					if r := baq.SamProbRealn(p, contig, baqFlag); r < -3 {
+						return fmt.Errorf("samtools mpileup: BAQ alignment failed for read %q", p.QName)
+					}
+				}
+				active = append(active, p)
+				src.pop()
+			}
+			if err := emitMpileupWindow(bw, chrom, tBeg, tEnd, refLen,
+				[][]*sam.Record{active}, contig, refFA, nil, opts, &sc); err != nil {
+				return err
+			}
+		}
+		// Defensive: discard any stragglers positioned beyond the contig so the
+		// outer loop advances to the next chromosome rather than spinning.
+		for p := src.peek(); p != nil && p.RName == chrom; p = src.peek() {
+			src.pop()
+		}
+		if src.err != nil {
+			return src.err
+		}
+	}
+	return src.err
+}
+
+// mpileupSource is a peekable stream of mpileup-eligible records from one input.
+// advance applies the same record-level filters as the buffered bucketByChrom,
+// so the pileup sees an identical record set.
+type mpileupSource struct {
+	rd   sam.Reader
+	opts MpileupOptions
+	hdr0 *sam.Header
+	head *sam.Record // next record to yield; nil at EOF or after an error
+	err  error
+}
+
+func newMpileupSource(rd sam.Reader, opts MpileupOptions, hdr0 *sam.Header) *mpileupSource {
+	s := &mpileupSource{rd: rd, opts: opts, hdr0: hdr0}
+	s.advance()
+	return s
+}
+
+func (s *mpileupSource) advance() {
+	for {
+		rec, err := s.rd.Read()
+		if err == io.EOF {
+			s.head = nil
+			return
+		}
+		if err != nil {
+			s.err = err
+			s.head = nil
+			return
+		}
+		if !keepMpileupRecord(rec, s.opts, s.hdr0) {
+			continue
+		}
+		s.head = rec
+		return
+	}
+}
+
+func (s *mpileupSource) peek() *sam.Record { return s.head }
+
+func (s *mpileupSource) pop() *sam.Record {
+	r := s.head
+	s.advance()
+	return r
+}
+
+// headerIsCoordinateSorted reports whether the @HD line declares SO:coordinate,
+// the precondition for the streaming pileup (records arrive in reference order).
+func headerIsCoordinateSorted(hdr *sam.Header) bool {
+	for _, f := range hdr.HDFields {
+		if f.Tag == "SO" {
+			return f.Value == "coordinate"
+		}
+	}
+	return false
+}
 
 // pruneEndedBefore drops records whose alignment ends at or before tBeg (0-based
 // half-open end), i.e. reads that no longer overlap the upcoming tile. It
