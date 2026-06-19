@@ -24,6 +24,7 @@ package bedwindow
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"strconv"
@@ -94,7 +95,10 @@ func Window(aR, bR io.Reader, w io.Writer, opts Options) (int, error) {
 		return 0, fmt.Errorf("StrandSpec (-sm) and InverseStrand (-Sm) are mutually exclusive")
 	}
 
-	bRecs, err := readAll(bR)
+	// We need B's strand only when a strand filter is active; skip interning it
+	// otherwise. The chrom is always needed for the per-chromosome index.
+	keepBStrand := opts.StrandSpec || opts.InverseStrand
+	bRecs, err := readAll(bR, keepBStrand)
 	if err != nil {
 		return 0, fmt.Errorf("reading B: %w", err)
 	}
@@ -103,7 +107,8 @@ func Window(aR, bR io.Reader, w io.Writer, opts Options) (int, error) {
 	// order so the bin tie-break can restore it. Upstream bins B by its
 	// ORIGINAL coordinates.
 	byChrom := make(map[string][]*rec)
-	for _, b := range bRecs {
+	for i := range bRecs {
+		b := &bRecs[i]
 		b.order = len(byChrom[b.chrom])
 		byChrom[b.chrom] = append(byChrom[b.chrom], b)
 	}
@@ -114,22 +119,28 @@ func Window(aR, bR io.Reader, w io.Writer, opts Options) (int, error) {
 	aReader := bufio.NewScanner(aR)
 	aReader.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	written := 0
+	// Reusable scratch for the A record (parsed from the scanner buffer), the
+	// per-A hit buffer, and integer formatting, so the hot loop allocates
+	// nothing per record beyond what output requires.
+	var a rec
+	var hits []*rec
+	var aCI chromInterner
+	var scratch []byte
+	// A strand is needed only when a strand filter is active.
+	keepAStrand := keepBStrand
 	for aReader.Scan() {
-		raw := aReader.Text()
-		trimmed := strings.TrimSpace(raw)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") ||
-			strings.HasPrefix(trimmed, "track") || strings.HasPrefix(trimmed, "browser") {
+		lineB := bytes.TrimRight(aReader.Bytes(), "\r")
+		if isHeaderOrBlank(lineB) {
 			continue
 		}
-		a, perr := parseRec(raw)
-		if perr != nil {
+		if perr := parseRecBytes(lineB, keepAStrand, &aCI, &a); perr != nil {
 			return written, fmt.Errorf("reading A: %w", perr)
 		}
 
 		// Expand A's interval by the requested window to form the search range.
-		winStart, winEnd := addWindow(a, opts)
+		winStart, winEnd := addWindow(&a, opts)
 
-		hits := findHits(a, winStart, winEnd, byChrom[a.chrom], opts)
+		hits = findHitsInto(&a, winStart, winEnd, byChrom[a.chrom], opts, hits[:0])
 
 		switch {
 		case opts.Invert:
@@ -140,7 +151,11 @@ func Window(aR, bR io.Reader, w io.Writer, opts Options) (int, error) {
 				written++
 			}
 		case opts.Count:
-			if err := writeLine(bw, a.line+"\t"+strconv.Itoa(len(hits))); err != nil {
+			scratch = scratch[:0]
+			scratch = append(scratch, a.line...)
+			scratch = append(scratch, '\t')
+			scratch = strconv.AppendInt(scratch, int64(len(hits)), 10)
+			if err := writeLineBytes(bw, scratch); err != nil {
 				return written, err
 			}
 			written++
@@ -153,18 +168,22 @@ func Window(aR, bR io.Reader, w io.Writer, opts Options) (int, error) {
 			}
 		default:
 			for _, h := range hits {
-				var out string
 				switch {
 				case opts.WriteB:
-					out = h.line
+					if err := writeLine(bw, h.line); err != nil {
+						return written, err
+					}
 				case opts.WriteA:
-					out = a.line
+					if err := writeLine(bw, a.line); err != nil {
+						return written, err
+					}
 				default:
-					// Default and -wa+-wb both emit A<TAB>B.
-					out = a.line + "\t" + h.line
-				}
-				if err := writeLine(bw, out); err != nil {
-					return written, err
+					// Default and -wa+-wb both emit A<TAB>B. Emit the two parts
+					// directly to the writer to avoid concatenating a fresh
+					// string per hit.
+					if err := writeAB(bw, a.line, h.line); err != nil {
+						return written, err
+					}
 				}
 				written++
 			}
@@ -174,6 +193,42 @@ func Window(aR, bR io.Reader, w io.Writer, opts Options) (int, error) {
 		return written, fmt.Errorf("reading A: %w", err)
 	}
 	return written, nil
+}
+
+// isHeaderOrBlank reports whether a raw line is blank or a comment/track/browser
+// header line that the reader skips, testing the byte buffer without allocating.
+func isHeaderOrBlank(line []byte) bool {
+	trimmed := bytes.TrimSpace(line)
+	return len(trimmed) == 0 || trimmed[0] == '#' ||
+		bytes.HasPrefix(trimmed, trackPrefix) || bytes.HasPrefix(trimmed, browserPrefix)
+}
+
+var (
+	trackPrefix   = []byte("track")
+	browserPrefix = []byte("browser")
+)
+
+// writeLineBytes writes a byte slice followed by a newline.
+func writeLineBytes(bw *bufio.Writer, b []byte) error {
+	if _, err := bw.Write(b); err != nil {
+		return err
+	}
+	return bw.WriteByte('\n')
+}
+
+// writeAB writes `a<TAB>b\n` directly to the writer without allocating the
+// concatenated string, the dominant default-mode allocation.
+func writeAB(bw *bufio.Writer, a, b string) error {
+	if _, err := bw.WriteString(a); err != nil {
+		return err
+	}
+	if err := bw.WriteByte('\t'); err != nil {
+		return err
+	}
+	if _, err := bw.WriteString(b); err != nil {
+		return err
+	}
+	return bw.WriteByte('\n')
 }
 
 // addWindow expands A's interval by the requested slop, mirroring upstream
@@ -194,14 +249,16 @@ func addWindow(a *rec, opts Options) (start, end int) {
 	return start, end
 }
 
-// findHits returns the B records overlapping A's window [winStart, winEnd),
+// findHitsInto returns the B records overlapping A's window [winStart, winEnd),
 // applying the strand filter, in upstream's bin-traversal order. The overlap
 // test matches upstream FindWindowOverlaps: a positive intersection of the B
 // record with the window, and a positive overlap fraction relative to A's
-// original length.
-func findHits(a *rec, winStart, winEnd int, bRecs []*rec, opts Options) []*rec {
+// original length. Hits are appended into dst (pass hits[:0] to reuse the
+// backing array across A-record queries), which is returned so the caller can
+// recycle it.
+func findHitsInto(a *rec, winStart, winEnd int, bRecs []*rec, opts Options, dst []*rec) []*rec {
 	aLen := a.end - a.start
-	var hits []*rec
+	hits := dst
 	for _, b := range bRecs {
 		s := winStart
 		if b.start > s {
@@ -247,21 +304,23 @@ func strandOK(aStrand, bStrand string, opts Options) bool {
 	return !same
 }
 
-// readAll loads every BED record from r into raw recs, preserving the verbatim
-// line text.
-func readAll(r io.Reader) ([]*rec, error) {
+// readAll loads every BED record from r into a flat slice of recs, preserving
+// the verbatim line text. The records are stored by value (one backing slice
+// growth rather than a heap allocation per record); callers take &slice[i] to
+// build the per-chromosome index. keepStrand controls whether column 6 is
+// interned (only the strand-filtered modes need it).
+func readAll(r io.Reader, keepStrand bool) ([]rec, error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
-	var out []*rec
+	var out []rec
+	var ci chromInterner
 	for sc.Scan() {
-		raw := sc.Text()
-		trimmed := strings.TrimSpace(raw)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") ||
-			strings.HasPrefix(trimmed, "track") || strings.HasPrefix(trimmed, "browser") {
+		lineB := bytes.TrimRight(sc.Bytes(), "\r")
+		if isHeaderOrBlank(lineB) {
 			continue
 		}
-		rc, err := parseRec(raw)
-		if err != nil {
+		var rc rec
+		if err := parseRecBytes(lineB, keepStrand, &ci, &rc); err != nil {
 			return nil, err
 		}
 		out = append(out, rc)
@@ -272,26 +331,115 @@ func readAll(r io.Reader) ([]*rec, error) {
 	return out, nil
 }
 
-// parseRec parses the chrom/start/end (and strand, if present at column 6) from
-// a raw BED line while retaining the full text for verbatim output.
-func parseRec(raw string) (*rec, error) {
-	fields := strings.Split(raw, "\t")
-	if len(fields) < 3 {
-		return nil, fmt.Errorf("BED record must have at least 3 fields, got %d: %q", len(fields), raw)
+// parseRecBytes parses chrom/start/end (and strand, when keepStrand) directly
+// from the scanner's byte buffer into dst, avoiding the strings.Split field
+// slice and the per-coordinate Atoi string allocations of the old path. The
+// verbatim line is copied (string(lineB) is a fresh allocation) so it does not
+// alias the reused scanner buffer; the chromosome name is interned through ci so
+// a run of records on one chromosome allocates the name once.
+func parseRecBytes(lineB []byte, keepStrand bool, ci *chromInterner, dst *rec) error {
+	// Locate the first up-to-6 tab-delimited columns without allocating a slice.
+	var cols [6][]byte
+	n := 0
+	begin := 0
+	for i := 0; i <= len(lineB); i++ {
+		if i == len(lineB) || lineB[i] == '\t' {
+			if n < len(cols) {
+				cols[n] = lineB[begin:i]
+			}
+			n++
+			begin = i + 1
+		}
 	}
-	start, err := strconv.Atoi(strings.TrimSpace(fields[1]))
+	if n < 3 {
+		return fmt.Errorf("BED record must have at least 3 fields, got %d: %q", n, string(lineB))
+	}
+	start, err := parsePosBytes(cols[1])
 	if err != nil {
-		return nil, fmt.Errorf("invalid chromStart %q: %w", fields[1], err)
+		return fmt.Errorf("invalid chromStart %q: %w", cols[1], err)
 	}
-	end, err := strconv.Atoi(strings.TrimSpace(fields[2]))
+	end, err := parsePosBytes(cols[2])
 	if err != nil {
-		return nil, fmt.Errorf("invalid chromEnd %q: %w", fields[2], err)
+		return fmt.Errorf("invalid chromEnd %q: %w", cols[2], err)
 	}
-	rc := &rec{line: raw, chrom: fields[0], start: start, end: end}
-	if len(fields) >= 6 {
-		rc.strand = strings.TrimSpace(fields[5])
+	dst.line = string(lineB)
+	dst.chrom = ci.intern(cols[0])
+	dst.start = start
+	dst.end = end
+	dst.strand = ""
+	dst.order = 0
+	if keepStrand && n >= 6 {
+		dst.strand = internStrand(cols[5])
 	}
-	return rc, nil
+	return nil
+}
+
+// chromInterner caches the most recently interned chromosome name so a run of
+// records sharing a chromosome (the norm for sorted BED input) allocates the
+// name once rather than per record. The `c.last == string(b)` compare is
+// allocation-free: the compiler does not heap-allocate a []byte->string
+// conversion used only as a comparison operand.
+type chromInterner struct {
+	last string
+}
+
+func (c *chromInterner) intern(b []byte) string {
+	if c.last != "" && c.last == string(b) {
+		return c.last
+	}
+	s := string(b)
+	c.last = s
+	return s
+}
+
+// internStrand maps the byte form of a strand column to a shared string,
+// allocating nothing for the only values that occur in practice.
+func internStrand(b []byte) string {
+	switch string(b) {
+	case "":
+		return ""
+	case "+":
+		return "+"
+	case "-":
+		return "-"
+	case ".":
+		return "."
+	}
+	return string(b)
+}
+
+// parsePosBytes parses a BED coordinate from a byte slice. The fast path is
+// plain optional-signed digits (no allocation); anything else — embedded
+// whitespace, etc. — falls back to the trimming Atoi the old path used so
+// behaviour and error text round-trip.
+func parsePosBytes(b []byte) (int, error) {
+	if len(b) > 0 {
+		i := 0
+		neg := false
+		if b[0] == '+' || b[0] == '-' {
+			neg = b[0] == '-'
+			i++
+		}
+		if i < len(b) {
+			val := 0
+			ok := true
+			for ; i < len(b); i++ {
+				c := b[i]
+				if c < '0' || c > '9' {
+					ok = false
+					break
+				}
+				val = val*10 + int(c-'0')
+			}
+			if ok {
+				if neg {
+					val = -val
+				}
+				return val, nil
+			}
+		}
+	}
+	return strconv.Atoi(strings.TrimSpace(string(b)))
 }
 
 func writeLine(bw *bufio.Writer, s string) error {
