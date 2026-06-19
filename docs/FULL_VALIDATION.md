@@ -73,22 +73,36 @@ go run ./pipeline/cmd/full-validation -scales=medium,large -reps=5 \
 
 - **Parity** `report.md` lists every cell with PASS / SIMILAR / DIVERGE / SKIP /
   ERROR. The gate is **DIVERGE == 0 && ERROR == 0** (SIMILAR is an accepted
-  numeric-tolerance match; the one standing SIMILAR is `bcftools call` QUAL — a
-  glibc libm last-ULP difference, documented in `docs/METRICS.md` §5).
+  numeric-tolerance match). At medium the standing SIMILARs are `bcftools call`
+  QUAL — a glibc libm last-ULP difference, documented in `docs/METRICS.md` §5 —
+  and the three `bedgenomecov` default-histogram cells, whose only divergence is
+  a `%g` round-half last-digit flip in the fraction column (integer columns are
+  byte-identical; see `pipeline/matrix/bedtools.go`).
 - **Round-trip** `roundtrip.md` lists each format check PASS / FAIL / SKIP.
 - **Bench** `bench.md` is the wall/CPU/RSS table (ratios = ours/upstream).
 
-## Known finding surfaced by this flow
+## Findings surfaced by this flow (resolved)
 
-The round-trip stage currently reports **one FAIL: `bam-via-cram` (CRAM)**. It is
-a **pre-existing** CRAM *encoder* edge case (reproduces on the pre-`#428` base),
-not a regression — and it is exactly the kind of bug single-operation parity
-missed: the medium tier happens to encode byte-identically to upstream, so
-`view BAM→CRAM` passes there, but on the smoke fixture our `view -C` produces a
-CRAM whose SEQ cannot be reconstructed (our decode → `NNNN`, upstream decode →
-`====`). Isolation (2×2 encode/decode matrix) shows our **decoder is correct**
-(it decodes upstream's CRAM byte-for-byte) — the fault is in our CRAM **encoder**
-on small inputs. Tracked for a dedicated fix; the round-trip check is written to
-compare our round-trip against upstream's (the correct oracle for a
-reference-driven format), so it will pass automatically once the encoder is
-fixed.
+The first full-validation passes surfaced a batch of divergences that
+single-operation parity had missed. All are now fixed and the medium tier runs
+clean (parity **0 DIVERGE / 0 ERROR**, round-trip **0 FAIL**):
+
+- **CRAM round-trip FAIL (`bam-via-cram`)** — a CRAM *encoder* edge case (not a
+  regression; reproduced on the pre-`#428` base). Single-operation parity missed
+  it because the medium tier happens to encode byte-identically to upstream, but
+  the round-trip's reconstructed SEQ came back as `NNNN`. Two encoder bugs:
+  multi-reference slices (a slice must be single-reference or the decoder can't
+  find the embedded reference) and the `RR` preservation-map flag always written
+  as 0. Fixed by flushing a slice at every reference change and emitting `RR`
+  only for reference-free containers. Our **decoder** was already correct (it
+  decodes upstream's CRAM byte-for-byte); the round-trip check compares our
+  round-trip against upstream's (the correct oracle for a reference-driven
+  format), so it now passes.
+- **skewer 3' adapter (3 cells)** — our gap-free adapter detector diverged from
+  upstream's bit-parallel Myers k-difference aligner on a read with interior `N`
+  bases in the adapter. Fixed by porting `cAdapter::align` (`align.go`).
+- **bcftools `roh` / `consensus` / `norm -m+` (3 cells)** — interleaved ST/RG
+  emit order, the variant overlap/freeze model, and joined-multiallelic FILTER
+  union, respectively, each reconciled to upstream.
+- **bedgenomecov histogram (3 cells)** — a `%g` round-half last-digit flip in
+  the fraction column, reclassified as a numeric tolerance (Similarity).
