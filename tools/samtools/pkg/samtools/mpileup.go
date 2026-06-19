@@ -303,13 +303,56 @@ func runMpileup(readers []sam.Reader, out io.Writer, opts MpileupOptions, refFA 
 			if beg0 >= end0 {
 				continue
 			}
-			if err := emitMpileupWindow(bw, chrom, beg0, end0, refLen,
-				perInputChromRecs, refFA, posFilter, opts); err != nil {
-				return err
+			// Tile the window into fixed-width sub-windows so the per-position
+			// event matrix emitMpileupWindow builds is bounded by the tile width
+			// rather than the whole contig (which for a chromosome-wide scan was
+			// the dominant memory cost). Records are coordinate-sorted, so a
+			// per-input sliding active set yields exactly the reads overlapping
+			// each tile; reads spanning a tile boundary are carried into the next
+			// tile, where accumulateRecordEvents places only their in-tile
+			// columns — making the tiled output byte-identical to a single
+			// whole-window pass. BAQ is already applied to every record above,
+			// so tiling does not perturb base qualities.
+			nextIdx := make([]int, len(perInputChromRecs))
+			active := make([][]*sam.Record, len(perInputChromRecs))
+			for tBeg := beg0; tBeg < end0; tBeg += mpileupTileWidth {
+				tEnd := tBeg + mpileupTileWidth
+				if tEnd > end0 {
+					tEnd = end0
+				}
+				for i, recs := range perInputChromRecs {
+					active[i] = pruneEndedBefore(active[i], tBeg)
+					for nextIdx[i] < len(recs) && int(recs[nextIdx[i]].Pos)-1 < tEnd {
+						active[i] = append(active[i], recs[nextIdx[i]])
+						nextIdx[i]++
+					}
+				}
+				if err := emitMpileupWindow(bw, chrom, tBeg, tEnd, refLen,
+					active, refFA, posFilter, opts); err != nil {
+					return err
+				}
 			}
 		}
 	}
 	return nil
+}
+
+// mpileupTileWidth is the reference span of one pileup tile. It bounds the
+// per-position event matrix (and the live read set) emitMpileupWindow holds at
+// once, so peak memory is O(tile width x depth) rather than O(contig length).
+const mpileupTileWidth = 64 * 1024
+
+// pruneEndedBefore drops records whose alignment ends at or before tBeg (0-based
+// half-open end), i.e. reads that no longer overlap the upcoming tile. It
+// compacts in place, preserving the coordinate order of the survivors.
+func pruneEndedBefore(active []*sam.Record, tBeg int) []*sam.Record {
+	kept := active[:0]
+	for _, r := range active {
+		if int(r.EndPosition()) > tBeg {
+			kept = append(kept, r)
+		}
+	}
+	return kept
 }
 
 // textMpileupBAQFlag derives the realn flag passed to baq.SamProbRealn.
