@@ -386,9 +386,14 @@ func decodePLInts(s string, ngts int) ([]int, bool) {
 	if s == "" || s == "." {
 		return nil, false
 	}
-	parts := strings.Split(s, ",")
-	out := make([]int, len(parts))
-	for i, p := range parts {
+	out := make([]int, strings.Count(s, ",")+1)
+	for i := 0; len(s) > 0; i++ {
+		p := s
+		if j := strings.IndexByte(s, ','); j >= 0 {
+			p, s = s[:j], s[j+1:]
+		} else {
+			s = ""
+		}
 		if p == "." || p == "" {
 			out[i] = plMissing
 			continue
@@ -957,19 +962,22 @@ func parseFloatList(s string) []float64 {
 	if s == "" || s == "." {
 		return nil
 	}
-	parts := strings.Split(s, ",")
-	out := make([]float64, len(parts))
-	for i, p := range parts {
+	// Single pass over the comma list, sized up front via Count, so no
+	// intermediate []string is allocated (only the result slice).
+	out := make([]float64, strings.Count(s, ",")+1)
+	for i := 0; len(s) > 0; i++ {
+		p := s
+		if j := strings.IndexByte(s, ','); j >= 0 {
+			p, s = s[:j], s[j+1:]
+		} else {
+			s = ""
+		}
 		if p == "" || p == "." {
-			out[i] = 0
 			continue
 		}
-		f, err := strconv.ParseFloat(p, 64)
-		if err != nil {
-			out[i] = 0
-			continue
+		if f, err := strconv.ParseFloat(p, 64); err == nil {
+			out[i] = f
 		}
-		out[i] = f
 	}
 	return out
 }
@@ -980,15 +988,17 @@ func parseIntList(s string) []int {
 	if s == "" || s == "." {
 		return nil
 	}
-	parts := strings.Split(s, ",")
-	out := make([]int, len(parts))
-	for i, p := range parts {
-		n, err := strconv.Atoi(strings.TrimSpace(p))
-		if err != nil {
-			out[i] = 0
-			continue
+	out := make([]int, strings.Count(s, ",")+1)
+	for i := 0; len(s) > 0; i++ {
+		p := s
+		if j := strings.IndexByte(s, ','); j >= 0 {
+			p, s = s[:j], s[j+1:]
+		} else {
+			s = ""
 		}
-		out[i] = n
+		if n, err := strconv.Atoi(strings.TrimSpace(p)); err == nil {
+			out[i] = n
+		}
 	}
 	return out
 }
