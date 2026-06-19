@@ -2,12 +2,15 @@ package cram
 
 import (
 	"bytes"
-	"compress/gzip"
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
 	"io"
 	"os"
+	"runtime"
+	"sync"
+
+	kgzip "github.com/klauspost/compress/gzip"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/cram/codec"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
@@ -183,6 +186,33 @@ type RecordWriter struct {
 	closed bool
 	// err latches the first write error; every later call returns it.
 	err error
+
+	// encodeThreads is the number of containers encoded concurrently. The
+	// encode of a container — dominated by per-block DEFLATE — is the writer's
+	// hot path, and containers are independent, so they are farmed to a worker
+	// pool and written back in submission order. The emitted bytes are
+	// identical for any thread count. 1 keeps the legacy synchronous path.
+	encodeThreads int
+	// Pipeline state, lazily started on the first asynchronous flush:
+	pipeStarted bool
+	jobs        chan *encodeJob        // submitted to workers, in order
+	ordered     chan chan encodeResult // result channels, in submission order
+	pipeDone    chan struct{}          // closed when the writer goroutine exits
+	pipeWG      sync.WaitGroup         // tracks encode workers
+	pipeErr     error                  // first encode/write error from the pipeline
+}
+
+// encodeJob is one container's worth of work handed to an encode worker.
+type encodeJob struct {
+	records []*sam.Record
+	counter int64
+	out     chan encodeResult
+}
+
+// encodeResult carries an encoded container (or the error that produced none).
+type encodeResult struct {
+	data []byte
+	err  error
 }
 
 // NewRecordWriter returns a RecordWriter that encodes records to w as a
@@ -233,6 +263,10 @@ type WriterOptions struct {
 	// reference-free: every read's bases are carried literally, so the file
 	// is self-contained and decodes without a FASTA.
 	Reference map[string][]byte
+	// EncodeThreads sets how many containers are encoded concurrently. The
+	// emitted file is byte-identical for any value. 0 (the default) auto-sizes
+	// to the machine's CPU count (capped); 1 forces the synchronous path.
+	EncodeThreads int
 }
 
 // NewRecordWriterOpts returns a RecordWriter that encodes records to w as
@@ -266,6 +300,7 @@ func NewRecordWriterOpts(w io.Writer, h *sam.Header, opts WriterOptions) (*Recor
 		version:         opts.Version,
 		binning:         opts.Binning,
 		reference:       opts.Reference,
+		encodeThreads:   resolveEncodeThreads(opts.EncodeThreads),
 		refIndex:        make(map[string]int32, len(h.Refs)),
 		recordsPerSlice: defaultRecordsPerSlice,
 	}
@@ -384,6 +419,11 @@ func (rw *RecordWriter) Close() error {
 	if rw.err == nil && len(rw.buf) > 0 {
 		rw.flushContainer()
 	}
+	// Drain the async encode pipeline (if any) so every container is written
+	// before the EOF marker, and surface the first error it latched.
+	if perr := rw.finishPipeline(); perr != nil && rw.err == nil {
+		rw.err = perr
+	}
 	if rw.err == nil {
 		marker := eofMarkerV3
 		if rw.version.usesUint7() {
@@ -489,10 +529,29 @@ func (rw *RecordWriter) writeFileHeader() error {
 	return nil
 }
 
-// flushContainer encodes every buffered record into one data container
-// (a compression-header block plus a single slice) and writes it to the
-// underlying writer. The buffer is cleared and the record counter
-// advanced on success.
+// resolveEncodeThreads turns the WriterOptions value into a concrete worker
+// count: a positive value is honoured; 0 auto-sizes to the CPU count, capped at
+// 8 to bound the number of in-flight containers (and their memory).
+func resolveEncodeThreads(n int) int {
+	if n > 0 {
+		return n
+	}
+	c := runtime.NumCPU()
+	if c > 8 {
+		c = 8
+	}
+	if c < 1 {
+		c = 1
+	}
+	return c
+}
+
+// flushContainer encodes every buffered record into one data container (a
+// compression-header block plus a single slice) and writes it to the
+// underlying writer. With encodeThreads == 1 it does so synchronously; with
+// more it hands the container off to the worker pool (see startPipeline),
+// which encodes containers concurrently and writes them in submission order.
+// Either way the buffer ownership is released and the record counter advanced.
 func (rw *RecordWriter) flushContainer() error {
 	if rw.err != nil {
 		return rw.err
@@ -500,18 +559,88 @@ func (rw *RecordWriter) flushContainer() error {
 	if len(rw.buf) == 0 {
 		return nil
 	}
-	container, err := encodeContainer(rw.version, rw.binning, rw.buf, rw.refIndex, rw.reference, rw.recordCounter)
-	if err != nil {
-		rw.err = err
-		return err
+	if rw.encodeThreads <= 1 {
+		container, err := encodeContainer(rw.version, rw.binning, rw.buf, rw.refIndex, rw.reference, rw.recordCounter)
+		if err != nil {
+			rw.err = err
+			return err
+		}
+		if _, err := rw.w.Write(container); err != nil {
+			rw.err = fmt.Errorf("cram: writing container: %w", err)
+			return rw.err
+		}
+		rw.recordCounter += int64(len(rw.buf))
+		rw.buf = rw.buf[:0]
+		return nil
 	}
-	if _, err := rw.w.Write(container); err != nil {
-		rw.err = fmt.Errorf("cram: writing container: %w", err)
-		return rw.err
+
+	if !rw.pipeStarted {
+		rw.startPipeline()
 	}
+	// Hand the buffered records off to the pool and take a fresh buffer; the
+	// records must remain stable until encoded, which holds under the same
+	// caller contract as the synchronous path (records are already retained
+	// across a whole slice). Order is preserved by pushing the result channel
+	// onto rw.ordered before the writer can reach it.
+	job := &encodeJob{records: rw.buf, counter: rw.recordCounter, out: make(chan encodeResult, 1)}
+	rw.ordered <- job.out
+	rw.jobs <- job
 	rw.recordCounter += int64(len(rw.buf))
-	rw.buf = rw.buf[:0]
-	return nil
+	rw.buf = make([]*sam.Record, 0, rw.recordsPerSlice)
+	return rw.err
+}
+
+// startPipeline spins up the encode worker pool and the single ordered-writer
+// goroutine. Workers pull jobs and encode containers concurrently; the writer
+// consumes result channels in submission order and writes each container,
+// latching the first error into pipeErr.
+func (rw *RecordWriter) startPipeline() {
+	rw.pipeStarted = true
+	rw.jobs = make(chan *encodeJob, rw.encodeThreads)
+	rw.ordered = make(chan chan encodeResult, 2*rw.encodeThreads)
+	rw.pipeDone = make(chan struct{})
+
+	for i := 0; i < rw.encodeThreads; i++ {
+		rw.pipeWG.Add(1)
+		go func() {
+			defer rw.pipeWG.Done()
+			for job := range rw.jobs {
+				data, err := encodeContainer(rw.version, rw.binning, job.records, rw.refIndex, rw.reference, job.counter)
+				job.out <- encodeResult{data: data, err: err}
+			}
+		}()
+	}
+	go func() {
+		defer close(rw.pipeDone)
+		for out := range rw.ordered {
+			res := <-out
+			if rw.pipeErr != nil {
+				continue // drain remaining results after an error
+			}
+			if res.err != nil {
+				rw.pipeErr = res.err
+				continue
+			}
+			if _, err := rw.w.Write(res.data); err != nil {
+				rw.pipeErr = fmt.Errorf("cram: writing container: %w", err)
+			}
+		}
+	}()
+}
+
+// finishPipeline drains the encode pipeline: it stops the workers, waits for
+// the ordered writer to flush every remaining container, and returns the first
+// error any of them latched. It is a no-op when the pipeline never started.
+func (rw *RecordWriter) finishPipeline() error {
+	if !rw.pipeStarted {
+		return nil
+	}
+	close(rw.jobs)    // workers exit once the in-flight jobs drain
+	rw.pipeWG.Wait()  // all results have now been sent
+	close(rw.ordered) // writer exits once it has consumed them in order
+	<-rw.pipeDone
+	rw.pipeStarted = false
+	return rw.pipeErr
 }
 
 // encodeBlock assembles a complete on-disk CRAM block from a content
@@ -576,18 +705,42 @@ func chooseBlockCompression(version Version, payload []byte) (CompressionMethod,
 	return method, stored
 }
 
+// cramGzipLevel is the klauspost deflate level used for CRAM gzip blocks.
+// klauspost's level scale differs from the stdlib's: its level 7 reproduces the
+// ratio of stdlib gzip's default (level 6) — which the writer targeted before —
+// whereas klauspost level 6 trades a large chunk of ratio for speed. Level 7
+// keeps the CRAM size on par with upstream while decoding/encoding faster.
+const cramGzipLevel = 7
+
+// gzipWriterPool recycles gzip writers across blocks. A CRAM container holds
+// many series blocks and chooseBlockCompression gzips every one, so without
+// pooling the deflate state (the bulk of the per-block allocation) would be
+// re-allocated thousands of times per file.
+var gzipWriterPool = sync.Pool{
+	New: func() any {
+		zw, _ := kgzip.NewWriterLevel(io.Discard, cramGzipLevel)
+		return zw
+	},
+}
+
 // gzipCompress returns the gzip (RFC 1952) compression of in. It is the
-// encode-side counterpart of block.go's gunzip.
+// encode-side counterpart of block.go's gunzip. It uses the klauspost/compress
+// gzip backend — the same faster, pure-Go DEFLATE implementation BGZF I/O uses
+// — emitting a standard gzip stream that the stdlib reader and upstream htslib
+// both decode, and recycles the writer through gzipWriterPool.
 func gzipCompress(in []byte) []byte {
-	var buf bytes.Buffer
-	zw := gzip.NewWriter(&buf)
+	buf := bytes.NewBuffer(make([]byte, 0, len(in)/2+64))
+	zw := gzipWriterPool.Get().(*kgzip.Writer)
+	zw.Reset(buf)
 	if _, err := zw.Write(in); err != nil {
-		// gzip.Writer over a bytes.Buffer cannot fail; fall back to raw.
+		gzipWriterPool.Put(zw)
 		return in
 	}
 	if err := zw.Close(); err != nil {
+		gzipWriterPool.Put(zw)
 		return in
 	}
+	gzipWriterPool.Put(zw)
 	return buf.Bytes()
 }
 
