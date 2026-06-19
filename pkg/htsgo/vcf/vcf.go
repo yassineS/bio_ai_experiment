@@ -47,6 +47,12 @@ type Reader struct {
 	scanner *bufio.Scanner
 	header  *Header
 	err     error
+	// fieldsBuf and valuesBuf are reused tab/colon split scratch slices, so a
+	// record parse does not allocate them anew. They hold substrings of the
+	// current line and are overwritten on the next Read, so callers must not
+	// retain them.
+	fieldsBuf []string
+	valuesBuf []string
 }
 
 // NewReader creates a new VCF reader from an io.Reader.
@@ -99,91 +105,175 @@ func (r *Reader) ReadHeader() (*Header, error) {
 // Read reads the next variant record.
 // Returns io.EOF when no more records are available.
 func (r *Reader) Read() (*Variant, error) {
+	v := &Variant{}
+	if err := r.readInto(v); err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+// ReadInto parses the next variant into v, reusing v's Info/Sample maps and its
+// Alt/Filter/Format/InfoOrder/Samples slices instead of allocating fresh ones.
+// It is for consume-and-discard scans (bcftools view, query): the caller must
+// not retain v — or any string it exposes — across calls, since the next
+// ReadInto overwrites them. It returns io.EOF at end of input, like Read.
+func (r *Reader) ReadInto(v *Variant) error {
+	return r.readInto(v)
+}
+
+// readInto advances to the next data line (skipping blanks and comments) and
+// parses it into v. It is the shared body of Read and ReadInto.
+func (r *Reader) readInto(v *Variant) error {
 	if r.err != nil {
-		return nil, r.err
+		return r.err
 	}
-
 	if r.header == nil || len(r.header.MetaInfo) == 0 {
-		return nil, fmt.Errorf("header not read; call ReadHeader() first")
+		return fmt.Errorf("header not read; call ReadHeader() first")
 	}
-
-	if !r.scanner.Scan() {
-		if err := r.scanner.Err(); err != nil {
-			r.err = err
-			return nil, err
+	for {
+		if !r.scanner.Scan() {
+			if err := r.scanner.Err(); err != nil {
+				r.err = err
+				return err
+			}
+			r.err = io.EOF
+			return io.EOF
 		}
-		r.err = io.EOF
-		return nil, io.EOF
+		line := r.scanner.Text()
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		return r.parseLine(line, v)
 	}
+}
 
-	line := r.scanner.Text()
-	// Skip empty lines and comments
-	if line == "" || strings.HasPrefix(line, "#") {
-		return r.Read()
-	}
-
-	fields := strings.Split(line, "\t")
+// parseLine fills v from a single VCF data line, reusing v's existing maps and
+// slices. The string fields reference line, which is valid until the next read.
+func (r *Reader) parseLine(line string, v *Variant) error {
+	r.fieldsBuf = splitInto(r.fieldsBuf, line, '\t')
+	fields := r.fieldsBuf
 	if len(fields) < 8 {
-		return nil, fmt.Errorf("invalid VCF record: insufficient fields: %s", line)
+		return fmt.Errorf("invalid VCF record: insufficient fields: %s", line)
 	}
-
-	// Parse required fields
-	info, infoOrder := parseInfoWithOrder(fields[7])
-	variant := &Variant{
-		Chrom:     fields[0],
-		ID:        fields[2],
-		Ref:       fields[3],
-		Filter:    parseFilter(fields[6]),
-		Info:      info,
-		InfoOrder: infoOrder,
-	}
-
-	// Parse position
 	pos, err := strconv.Atoi(fields[1])
 	if err != nil {
-		return nil, fmt.Errorf("invalid position %s: %v", fields[1], err)
+		return fmt.Errorf("invalid position %s: %v", fields[1], err)
 	}
-	variant.Pos = pos
-
-	// Parse alternate alleles
-	variant.Alt = strings.Split(fields[4], ",")
-
-	// Parse quality
+	v.Chrom = fields[0]
+	v.Pos = pos
+	v.ID = fields[2]
+	v.Ref = fields[3]
+	v.Alt = splitInto(v.Alt, fields[4], ',')
 	if fields[5] == "." {
-		variant.Qual = -1
+		v.Qual = -1
 	} else {
 		qual, err := strconv.ParseFloat(fields[5], 64)
 		if err != nil {
-			return nil, fmt.Errorf("invalid quality %s: %v", fields[5], err)
+			return fmt.Errorf("invalid quality %s: %v", fields[5], err)
 		}
-		variant.Qual = qual
+		v.Qual = qual
 	}
+	v.Filter = parseFilterInto(v.Filter, fields[6])
+	v.InfoOrder, v.Info = parseInfoInto(v.InfoOrder, v.Info, fields[7])
 
-	// Parse FORMAT and sample data if present
 	if len(fields) > 8 {
-		variant.Format = strings.Split(fields[8], ":")
-		variant.Samples = make([]Sample, len(r.header.Samples))
-
-		for i, sampleData := range fields[9:] {
-			if i >= len(r.header.Samples) {
-				break
+		v.Format = splitInto(v.Format, fields[8], ':')
+		n := len(r.header.Samples)
+		if cap(v.Samples) >= n {
+			v.Samples = v.Samples[:n]
+		} else {
+			v.Samples = make([]Sample, n)
+		}
+		for i := 0; i < n; i++ {
+			s := &v.Samples[i]
+			if 9+i >= len(fields) {
+				// Fewer sample columns than header samples: match Read's
+				// fresh make, which leaves a zero-value Sample here.
+				s.Name, s.Data = "", nil
+				continue
 			}
-			sample := Sample{
-				Name: r.header.Samples[i],
-				Data: make(map[string]string),
+			s.Name = r.header.Samples[i]
+			if s.Data == nil {
+				s.Data = make(map[string]string, len(v.Format))
+			} else {
+				clear(s.Data)
 			}
-
-			values := strings.Split(sampleData, ":")
-			for j, format := range variant.Format {
-				if j < len(values) {
-					sample.Data[format] = values[j]
+			r.valuesBuf = splitInto(r.valuesBuf, fields[9+i], ':')
+			for j, format := range v.Format {
+				if j < len(r.valuesBuf) {
+					s.Data[format] = r.valuesBuf[j]
 				}
 			}
-			variant.Samples[i] = sample
+		}
+	} else {
+		v.Format = v.Format[:0]
+		v.Samples = v.Samples[:0]
+	}
+	return nil
+}
+
+// splitInto splits s on the single byte sep, appending the substrings into
+// dst[:0] (reusing its backing array). It matches strings.Split for a one-byte
+// separator. The substrings reference s, so they live only as long as s.
+func splitInto(dst []string, s string, sep byte) []string {
+	dst = dst[:0]
+	for {
+		i := strings.IndexByte(s, sep)
+		if i < 0 {
+			return append(dst, s)
+		}
+		dst = append(dst, s[:i])
+		s = s[i+1:]
+	}
+}
+
+// parseFilterInto is parseFilter writing into the reused slice dst.
+func parseFilterInto(dst []string, filter string) []string {
+	dst = dst[:0]
+	if filter == "." || filter == "PASS" {
+		return append(dst, filter)
+	}
+	return splitInto(dst, filter, ';')
+}
+
+// parseInfoInto is parseInfoWithOrder reusing the order slice and m map (m is
+// cleared, or allocated when nil). It reproduces parseInfoWithOrder exactly:
+// keys in first-seen order, "=" splits on the first '=', a bare key maps to "".
+func parseInfoInto(order []string, m map[string]string, info string) ([]string, map[string]string) {
+	if m == nil {
+		m = make(map[string]string)
+	} else {
+		clear(m)
+	}
+	order = order[:0]
+	if info == "." || info == "" {
+		return order, m
+	}
+	rest := info
+	for len(rest) > 0 {
+		pair := rest
+		if i := strings.IndexByte(rest, ';'); i >= 0 {
+			pair, rest = rest[:i], rest[i+1:]
+		} else {
+			rest = ""
+		}
+		k, val, hasVal := pair, "", false
+		if e := strings.IndexByte(pair, '='); e >= 0 {
+			k, val, hasVal = pair[:e], pair[e+1:], true
+		}
+		if k == "" {
+			continue
+		}
+		if _, seen := m[k]; !seen {
+			order = append(order, k)
+		}
+		if hasVal {
+			m[k] = val
+		} else {
+			m[k] = ""
 		}
 	}
-
-	return variant, nil
+	return order, m
 }
 
 // ReadAll reads all variant records from the reader.

@@ -213,18 +213,21 @@ func queryVCFStream(in io.Reader, out io.Writer, opts QueryOptions, applyTargets
 	}
 	sampleFilter := buildSampleFilter(opts.Samples, hdr.Samples)
 	count := 0
+	// Reuse one Variant across the scan (see the note in viewStreaming): query
+	// filters and emits each record without retaining it.
+	var v vcf.Variant
 	for {
-		v, err := r.Read()
+		err := r.ReadInto(&v)
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			return count, err
 		}
-		if !keepQueryVariant(v, opts, includeF, excludeF, applyTargets, targets) {
+		if !keepQueryVariant(&v, opts, includeF, excludeF, applyTargets, targets) {
 			continue
 		}
-		if err := emitRecord(bw, tokens, v, sampleFilter, hdr.Samples); err != nil {
+		if err := emitRecord(bw, tokens, &v, sampleFilter, hdr.Samples); err != nil {
 			return count, err
 		}
 		count++
