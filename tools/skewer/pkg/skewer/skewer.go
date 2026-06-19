@@ -20,6 +20,7 @@ type TrimOptions struct {
 	QualThreshold    int     // Quality threshold for trimming
 	MinOverlap       int     // Minimum overlap for adapter detection
 	ErrorRate        float64 // Maximum error rate for adapter matching
+	IndelRate        float64 // Maximum indel error rate for adapter matching (skewer -d; default 0.03)
 	TrimBothEnds     bool    // Trim adapters from both ends
 	AutoDetect       bool    // Auto-detect adapters from reads
 	AutoDetectReads  int     // Number of reads to analyze for auto-detection
@@ -39,6 +40,7 @@ func DefaultTrimOptions() TrimOptions {
 		QualThreshold:    0,
 		MinOverlap:       3,
 		ErrorRate:        0.1,
+		IndelRate:        0.03,
 		TrimBothEnds:     false,
 		AutoDetect:       false,
 		AutoDetectReads:  1000,
@@ -472,8 +474,14 @@ func trimPairWithMatrix(record1, record2 *fastq.Record, opts TrimOptions, stats 
 		return trimRecord(record1, opts, stats), trimRecord(record2, opts, stats)
 	}
 
-	pos1 := findAdapterWithQual(seq1, opts.Adapter3, qual1, opts.MinOverlap, opts.ErrorRate)
-	pos2 := findAdapterWithQual(seq2, opts.Adapter3, qual2, opts.MinOverlap, opts.ErrorRate)
+	pos1 := -1
+	if p, found := alignTrimTail(seq1, opts.Adapter3, qual1, opts.MinOverlap, opts.ErrorRate, opts.IndelRate); found {
+		pos1 = p
+	}
+	pos2 := -1
+	if p, found := alignTrimTail(seq2, opts.Adapter3, qual2, opts.MinOverlap, opts.ErrorRate, opts.IndelRate); found {
+		pos2 = p
+	}
 
 	// detectPairedTrim returns the trim positions sanctioned by the matrix
 	// gate; -1 means "leave that mate untrimmed".
@@ -632,10 +640,14 @@ func trimRecord(record *fastq.Record, opts TrimOptions, stats *TrimStats) *fastq
 		}
 	}
 
-	// Trim 3' adapter if specified
+	// Trim 3' adapter if specified. This uses the faithful bit-parallel
+	// k-difference port (alignTrimTail), which reproduces upstream skewer's
+	// indel-aware cut position byte-for-byte — including the rightward drift
+	// of the reported INDEX.pos across indel moves that the older gap-free
+	// scanner could not match (see align.go).
 	if opts.Adapter3 != "" {
-		pos := findAdapterWithQual(seq[start:], opts.Adapter3, qual[start:], opts.MinOverlap, opts.ErrorRate)
-		if pos >= 0 {
+		pos, found := alignTrimTail(seq[start:], opts.Adapter3, qual[start:], opts.MinOverlap, opts.ErrorRate, opts.IndelRate)
+		if found {
 			// Found 3' adapter - trim from adapter position to end
 			end = start + pos
 			if stats != nil {
