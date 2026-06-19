@@ -34,6 +34,30 @@ const minimalSAM = `@HD	VN:1.6
 r1	0	chr1	10	60	5M	*	0	0	ACGTA	IIIII
 `
 
+// TestMpileup_StreamingMatchesBuffered verifies the single-input streaming fast
+// path (triggered by an SO:coordinate header) produces output byte-identical to
+// the buffered path (triggered by the absence of SO:coordinate) on the same
+// coordinate-sorted records — including a read that spans the 16 kb tile
+// boundary, which exercises the streaming active-set carry-over.
+func TestMpileup_StreamingMatchesBuffered(t *testing.T) {
+	body := strings.Join([]string{
+		"r1\t0\tchr1\t100\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII",
+		"r2\t0\tchr1\t105\t60\t10M\t*\t0\t0\tTTTTTTTTTT\tIIIIIIIIII",
+		// r3 starts at 16380 and covers 16380..16391, crossing the 16384 tile edge.
+		"r3\t0\tchr1\t16380\t60\t12M\t*\t0\t0\tGGGGGGGGGGGG\tIIIIIIIIIIII",
+		"r4\t0\tchr1\t16385\t60\t8M\t*\t0\t0\tCCCCCCCC\tIIIIIIII",
+	}, "\n") + "\n"
+	sq := "@SQ\tSN:chr1\tLN:20000\n"
+	streamed := runMpileupOnSAM(t, []string{"@HD\tVN:1.6\tSO:coordinate\n" + sq + body}, MpileupOptions{}, nil, nil)
+	buffered := runMpileupOnSAM(t, []string{"@HD\tVN:1.6\n" + sq + body}, MpileupOptions{}, nil, nil)
+	if streamed == "" {
+		t.Fatal("streaming path produced no output")
+	}
+	if streamed != buffered {
+		t.Errorf("streaming output differs from buffered:\n--- streamed ---\n%s\n--- buffered ---\n%s", streamed, buffered)
+	}
+}
+
 func TestMpileup_SingleRead_MatchesAtEachPosition(t *testing.T) {
 	out := runMpileupOnSAM(t, []string{minimalSAM}, MpileupOptions{}, nil, nil)
 	// Should emit lines for positions 10..14. ref column is N (no FASTA),
