@@ -174,7 +174,7 @@ Remaining hotspots (wall× ≥ 2 — open optimization targets, not wins):
 |---|---|---|
 | bcftools stats | 2.32 | |
 | samtools mpileup | 3.23 | RSS now **×8.7** (was ×204); CPU ×4.8 (was ×5.2) — see "transformed" |
-| bcftools call | 3.04 | **alloc/parse-bound, not libm** (profiled: ~35% alloc/GC, ~25% maps, ~14% float parse, **~2% libm**); per-record VCF reuse cut allocs ~25% |
+| bcftools call | 2.17 | **alloc/parse-bound, not libm** (was ×3.04; profiled ~35% alloc/GC, ~25% maps, ~14% float parse, **~2% libm**); VCF reuse + in-place INFO/FORMAT + single-pass list parse cut allocs 32M→18M (−44%), bytes −69%, CPU ×3.4→×2.3 |
 | bed merge | 3.48 | tiny op (43 ms) — startup-dominated; allocs cut ~103k→23k |
 | bcftools isec | 3.92 | RSS **×108** |
 
@@ -187,6 +187,7 @@ Remaining hotspots (wall× ≥ 2 — open optimization targets, not wins):
 | samtools mpileup — **RSS** | ×204 | **×8.7** (CPU ×5.2 → ×4.8) |
 | samtools stats | ×4.2 | **×1.41** |
 | bcftools query | ×3.9 | **×1.66** |
+| bcftools call | ×3.04 | **×2.17** (alloc cut, not faster math) |
 | seqtk seq | ×3.12 | **×1.31** |
 | bcftools isec | ×5.1 | ×3.92 |
 | bed merge | ×4.08 | ×3.48 |
@@ -202,10 +203,13 @@ collapse, and output stays byte-exact). The remaining wall-time gaps sit in
 two honest buckets: (1) tiny ops (`bed merge`, and the now-much-better
 `seqtk seq`) whose sub-200 ms runtime is dominated by Go startup/GC, not
 throughput; and (2) genuinely heavier paths — `bcftools call` was previously
-labelled "libm-bound", but profiling disproved that: it is **allocation- and
-parse-bound** (~35% alloc/GC, ~25% map ops, ~14% float parsing, only ~2% libm),
-so its lever is per-record VCF reuse, not faster math; and `isec`/`depth` carry
-**memory** (RSS), not wall-time, as their primary remaining cost. CPU-bound
+labelled "libm-bound", but profiling disproved that (only ~2% libm; ~35%
+alloc/GC, ~25% maps, ~14% float parse). Its lever was allocation, not faster
+math: reusing the input Variant (`ReadInto`), rewriting INFO/FORMAT in place
+instead of copying per record, and single-pass comma-list parsing cut
+allocations 32M→18M (−44%) and took it from ×3.04 to **×2.17** — all
+output-neutral. `isec`/`depth` carry **memory** (RSS), not wall-time, as their
+primary remaining cost. CPU-bound
 scan paths (stats, query, flagstat, depth) are now at the pure-Go inflate/parse
 floor: closing them further would require cgo into libdeflate, which the
 project deliberately
