@@ -98,6 +98,33 @@ type mrCloseReader struct {
 // Close tears down the parallel BGZF decode workers.
 func (m *mrCloseReader) Close() error { return m.mr.Close() }
 
+// ReadInto forwards an allocation-free decode to the wrapped BAM reader when it
+// supports one, so consume-and-discard scans (flagstat, depth) keep their
+// per-record reuse on the parallel BGZF path.
+func (m *mrCloseReader) ReadInto(dst *sam.Record) error {
+	if ri, ok := m.Reader.(interface{ ReadInto(*sam.Record) error }); ok {
+		return ri.ReadInto(dst)
+	}
+	rec, err := m.Reader.Read()
+	if err != nil {
+		return err
+	}
+	*dst = *rec
+	return nil
+}
+
+// ReadShallowInto forwards a shallow (fixed-prefix only) decode to the wrapped
+// BAM reader when it supports one. This lets counters that touch only flags,
+// MAPQ and the mate reference (e.g. flagstat) skip the variable-length region
+// even on the parallel BGZF path. It falls back to a full ReadInto/Read when
+// the wrapped reader does not expose a shallow decode.
+func (m *mrCloseReader) ReadShallowInto(dst *sam.Record) error {
+	if rs, ok := m.Reader.(interface{ ReadShallowInto(*sam.Record) error }); ok {
+		return rs.ReadShallowInto(dst)
+	}
+	return m.ReadInto(dst)
+}
+
 // OpenReaderThreaded opens the alignment file at path and returns a Reader for
 // it, engaging block-parallel BGZF input decode when threads >= 2 and the file
 // is a BGZF-wrapped BAM. It is the thread-aware analogue of OpenReader: SAM, BAM
@@ -186,6 +213,29 @@ type threadedSamReader struct {
 	sam.Reader
 	mr  *bgzf.MultiReader
 	src io.Closer
+}
+
+// ReadInto forwards an allocation-free decode to the wrapped BAM reader when it
+// supports one, keeping per-record reuse on the parallel BGZF path.
+func (s *threadedSamReader) ReadInto(dst *sam.Record) error {
+	if ri, ok := s.Reader.(interface{ ReadInto(*sam.Record) error }); ok {
+		return ri.ReadInto(dst)
+	}
+	rec, err := s.Reader.Read()
+	if err != nil {
+		return err
+	}
+	*dst = *rec
+	return nil
+}
+
+// ReadShallowInto forwards a shallow (fixed-prefix only) decode to the wrapped
+// BAM reader when it supports one, falling back to a full ReadInto/Read.
+func (s *threadedSamReader) ReadShallowInto(dst *sam.Record) error {
+	if rs, ok := s.Reader.(interface{ ReadShallowInto(*sam.Record) error }); ok {
+		return rs.ReadShallowInto(dst)
+	}
+	return s.ReadInto(dst)
 }
 
 // Close releases the parallel BGZF decode workers and the underlying file

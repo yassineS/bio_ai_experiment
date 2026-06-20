@@ -263,6 +263,97 @@ func (br *BAMReader) ReadInto(dst *Record) error {
 	return br.decodeInto(dst, br.scrat)
 }
 
+// ReadShallowInto decodes only the fixed-prefix fields of the next record
+// into dst — RName/Pos/MapQ/Flag/RNext/PNext/TLen — and skips the entire
+// variable-length region (read name, CIGAR, SEQ, QUAL, aux) without parsing
+// it. The variable fields on dst (QName, Cigar, Seq, Qual, Aux) are reset to
+// empty/zero so a reused record never carries stale data from a previous
+// decode. The stream is advanced past the full record, exactly as ReadInto
+// would advance it.
+//
+// It is meant for counters that touch only flags, mapping quality and the
+// mate reference (e.g. samtools flagstat), where decoding the read name and
+// expanding the packed SEQ nibbles is pure waste. Like ReadInto, it is
+// allocation-free across calls and the caller must not retain dst past the
+// next call. It returns io.EOF at end of stream.
+func (br *BAMReader) ReadShallowInto(dst *Record) error {
+	if br.err != nil {
+		return br.err
+	}
+	var blockSize int32
+	if err := binary.Read(br.src, binary.LittleEndian, &blockSize); err != nil {
+		if err == io.EOF {
+			br.err = io.EOF
+		}
+		return err
+	}
+	if blockSize < 32 {
+		return fmt.Errorf("sam: BAM block too small (%d)", blockSize)
+	}
+	if cap(br.scrat) < int(blockSize) {
+		br.scrat = make([]byte, blockSize)
+	} else {
+		br.scrat = br.scrat[:blockSize]
+	}
+	if _, err := io.ReadFull(br.src, br.scrat); err != nil {
+		return err
+	}
+	return br.decodeShallowInto(dst, br.scrat)
+}
+
+// decodeShallowInto deserialises only the 32-byte fixed prefix of a BAM record
+// body into dst, leaving the variable-length region unparsed. The fields it
+// does not populate are reset so a reused record never leaks stale data.
+func (br *BAMReader) decodeShallowInto(dst *Record, buf []byte) error {
+	if len(buf) < 32 {
+		return fmt.Errorf("sam: BAM record body too small (%d)", len(buf))
+	}
+	refID := int32(binary.LittleEndian.Uint32(buf[0:4]))
+	pos := int32(binary.LittleEndian.Uint32(buf[4:8]))
+	mapq := buf[9]
+	flag := binary.LittleEndian.Uint16(buf[14:16])
+	nextRefID := int32(binary.LittleEndian.Uint32(buf[20:24]))
+	nextPos := int32(binary.LittleEndian.Uint32(buf[24:28]))
+	tlen := int32(binary.LittleEndian.Uint32(buf[28:32]))
+
+	// Clear the variable-length fields so a reused record never carries stale
+	// data from a previous (possibly full) decode.
+	dst.QName, dst.Seq = "", ""
+	dst.Cigar = dst.Cigar[:0]
+	dst.Qual = dst.Qual[:0]
+	dst.Aux = dst.Aux[:0]
+	dst.auxIndex = nil
+	dst.RName, dst.RNext = "", ""
+
+	// Reference resolution (mirrors decodeInto).
+	if refID >= 0 && int(refID) < len(br.refs) {
+		dst.RName = br.refs[refID].Name
+	}
+	if nextRefID >= 0 && int(nextRefID) < len(br.refs) {
+		if nextRefID == refID {
+			dst.RNext = "="
+		} else {
+			dst.RNext = br.refs[nextRefID].Name
+		}
+	}
+
+	dst.Flag = flag
+	dst.MapQ = mapq
+	// BAM POS is 0-based; SAM POS is 1-based. -1 → 0.
+	if pos >= 0 {
+		dst.Pos = pos + 1
+	} else {
+		dst.Pos = 0
+	}
+	if nextPos >= 0 {
+		dst.PNext = nextPos + 1
+	} else {
+		dst.PNext = 0
+	}
+	dst.TLen = tlen
+	return nil
+}
+
 // decodeRecord deserialises one BAM record body (everything after block_size)
 // into a freshly allocated Record.
 func (br *BAMReader) decodeRecord(buf []byte) (*Record, error) {

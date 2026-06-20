@@ -201,3 +201,30 @@ type samReader struct {
 
 // Close releases the underlying file handle.
 func (s *samReader) Close() error { return s.src.Close() }
+
+// ReadInto forwards an allocation-free decode to the wrapped reader when it
+// supports one (the BAM path), so consume-and-discard scans keep their
+// per-record reuse. It returns false-free; an absent ReadInto falls back to a
+// fresh Read with a struct copy.
+func (s *samReader) ReadInto(dst *sam.Record) error {
+	if ri, ok := s.Reader.(interface{ ReadInto(*sam.Record) error }); ok {
+		return ri.ReadInto(dst)
+	}
+	rec, err := s.Reader.Read()
+	if err != nil {
+		return err
+	}
+	*dst = *rec
+	return nil
+}
+
+// ReadShallowInto forwards a shallow (fixed-prefix only) decode to the wrapped
+// reader when it supports one (the BAM path), so flag-only counters such as
+// flagstat skip the variable-length region. It falls back to a full
+// ReadInto/Read otherwise.
+func (s *samReader) ReadShallowInto(dst *sam.Record) error {
+	if rs, ok := s.Reader.(interface{ ReadShallowInto(*sam.Record) error }); ok {
+		return rs.ReadShallowInto(dst)
+	}
+	return s.ReadInto(dst)
+}
