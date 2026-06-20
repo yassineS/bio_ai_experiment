@@ -99,6 +99,89 @@ type mcallScratch struct {
 	fmtKeepPL bool
 	fmtGQ     bool
 	fmtValid  bool
+
+	// Per-record parse scratch, reused across records to avoid re-allocating
+	// the same short slices every site. Each is consumed (read into longer-
+	// lived state, or fully iterated) before the next use, so aliasing within
+	// a single record is safe.
+	//
+	//   floatList / intList — transient comma-list parse results (QS, I16,
+	//     per-group AD, AC). The caller copies out before the next parse.
+	//   plInts              — decoded PL ints, consumed by setPdg / mcallEmit.
+	//   tin                 — the mcallTin struct (one live per record).
+	//   pdgArena            — backing for the per-sample pdg vectors; sliced
+	//     into in.pdg[i] views of length ngts.
+	//   pdgRows             — the [][]float64 header reused for in.pdg.
+	//   qsum                — in.qsum backing.
+	//   groups / grpSamples / grpQsum — buildMcallGroups output arenas.
+	floatList  []float64
+	intList    []int
+	plInts     []int
+	tin        mcallTin
+	pdgArena   []float64
+	pdgRows    [][]float64
+	qsum       []float64
+	groups     []mcallGroup
+	grpSamples []int
+	grpQsum    []float64
+	// mcallSite per-record scratch (allele map, per-allele AC, per-sample GT).
+	alsMap []int
+	ac     []int
+	gts    [][2]int
+	// samplePloidy is the per-record per-sample ploidy buffer (reused when no
+	// PloidyTable is configured).
+	samplePloidy []int
+}
+
+// pdgRowsReuse returns a [][]float64 header of length n, reusing rows's backing
+// array when it has the capacity (clearing reused entries so stale rows from a
+// previous, larger record cannot leak through).
+func pdgRowsReuse(rows [][]float64, n int) [][]float64 {
+	if cap(rows) >= n {
+		rows = rows[:n]
+	} else {
+		rows = make([][]float64, n)
+	}
+	return rows
+}
+
+// ensureFloat returns a zeroed []float64 of length n, reusing dst's backing
+// array when it is large enough.
+func ensureFloat(dst []float64, n int) []float64 {
+	if cap(dst) >= n {
+		dst = dst[:n]
+		for i := range dst {
+			dst[i] = 0
+		}
+		return dst
+	}
+	return make([]float64, n)
+}
+
+// ensureGts returns a zeroed [][2]int of length n, reusing dst's backing array
+// when it is large enough.
+func ensureGts(dst [][2]int, n int) [][2]int {
+	if cap(dst) >= n {
+		dst = dst[:n]
+		for i := range dst {
+			dst[i] = [2]int{}
+		}
+		return dst
+	}
+	return make([][2]int, n)
+}
+
+// ensureInt returns a zeroed []int of length n, reusing dst's backing array
+// when it is large enough.
+func ensureInt(dst []int, n int) []int {
+	if cap(dst) >= n {
+		dst = dst[:n]
+		for i := range dst {
+			dst[i] = 0
+		}
+		return dst
+	}
+	return make([]int, n)
 }
 
 // sameStrSlice reports whether a and b hold the same strings in order.
@@ -161,7 +244,7 @@ func hasQS(v *vcf.Variant) bool {
 // values, which selects which EM branch (haploid vs diploid HWE) runs
 // — the per-sample value is consulted in genotype assignment, AC/AN,
 // and the per-sample HWE weighting via in.smplPloidy.
-func parseMcallInputs(v *vcf.Variant, opts CallOptions, samplePloidy []int) *mcallTin {
+func parseMcallInputs(v *vcf.Variant, opts CallOptions, samplePloidy []int, sc *mcallScratch) *mcallTin {
 	ploidy := 2
 	if opts.Ploidy == PloidyHaploid {
 		ploidy = 1
@@ -198,40 +281,91 @@ func parseMcallInputs(v *vcf.Variant, opts CallOptions, samplePloidy []int) *mca
 		}
 	}
 
-	in := &mcallTin{
-		nals:       nals,
-		ngts:       ngts,
-		ploidy:     ploidy,
-		nsmpl:      len(v.Samples),
-		unseen:     unseen,
-		pdg:        make([][]float64, len(v.Samples)),
-		smplPloidy: samplePloidy,
+	nsmpl := len(v.Samples)
+	// Reuse sc.tin and its slice arenas when a scratch is supplied (the
+	// streaming hot path). Each field is fully reset below, so stale state
+	// from the previous record cannot leak. When sc is nil (tests / one-off
+	// callers) everything is freshly allocated.
+	var in *mcallTin
+	if sc != nil {
+		in = &sc.tin
+		*in = mcallTin{} // reset scalar fields; slice arenas reused below
+		in.pdg = pdgRowsReuse(sc.pdgRows, nsmpl)
+		sc.pdgRows = in.pdg
+		// Per-sample pdg vectors are sliced out of a single contiguous arena.
+		need := nsmpl * ngts
+		if cap(sc.pdgArena) < need {
+			sc.pdgArena = make([]float64, need)
+		}
+		arena := sc.pdgArena[:need]
+		for i := range arena {
+			arena[i] = 0
+		}
+		for i := 0; i < nsmpl; i++ {
+			in.pdg[i] = arena[i*ngts : (i+1)*ngts : (i+1)*ngts]
+		}
+	} else {
+		in = &mcallTin{pdg: make([][]float64, nsmpl)}
 	}
+	in.nals = nals
+	in.ngts = ngts
+	in.ploidy = ploidy
+	in.nsmpl = nsmpl
+	in.unseen = unseen
+	in.smplPloidy = samplePloidy
 	// Watterson aM in mcall.c uses the per-sample ploidy at INIT time
 	// (which is `ploidy_max(table)` across every sample, not the
 	// per-record value). With a PloidyTable that's ploidy_max; without
 	// it that's the global Ploidy.
-	totAlleles := ploidy * len(v.Samples)
+	totAlleles := ploidy * nsmpl
 	if opts.PloidyTable != nil {
-		totAlleles = opts.PloidyTable.MaxPloidy() * len(v.Samples)
+		totAlleles = opts.PloidyTable.MaxPloidy() * nsmpl
 	}
 	in.thetaLn = computeThetaN(opts.Prior, totAlleles)
 
 	for i, s := range v.Samples {
-		pls, ok := decodePLInts(s.Data["PL"], ngts)
+		var plsBuf, plsCopyBuf []int
+		if sc != nil {
+			plsBuf, plsCopyBuf = sc.plInts, sc.intList
+		}
+		pls, ok := decodePLIntsInto(plsBuf, s.Data["PL"], ngts)
+		if sc != nil {
+			sc.plInts = pls[:0]
+		}
 		if !ok {
-			in.pdg[i] = make([]float64, ngts) // all-zero -> treated as missing
+			// in.pdg[i] is already an all-zero arena row -> treated as missing.
+			// (For the sc==nil path it is still nil; allocate to match.)
+			if sc == nil {
+				in.pdg[i] = make([]float64, ngts)
+			}
 			continue
 		}
-		in.pdg[i] = setPdg(pls, ngts, nals, in.unseen)
+		if sc != nil {
+			// pdg row is pre-zeroed arena; setPdgInto writes in place.
+			in.pdg[i] = setPdgInto(in.pdg[i], plsCopyBuf, pls, ngts, nals, in.unseen)
+		} else {
+			in.pdg[i] = setPdg(pls, ngts, nals, in.unseen)
+		}
 	}
 
 	// INFO/QS -> qsum (raw allele frequencies). Missing trailing alleles
 	// (typical ref-only <*> site) get qsum=0. This pooled view is kept
 	// as the always-available default; per-group qsums (when -G is
 	// active) replace it via buildGroupQsums below.
-	qs := parseFloatList(v.Info["QS"])
-	in.qsum = make([]float64, nals)
+	var qsBuf []float64
+	if sc != nil {
+		qsBuf = sc.floatList
+	}
+	qs := parseFloatListInto(qsBuf, v.Info["QS"])
+	if sc != nil {
+		sc.floatList = qs[:0]
+	}
+	if sc != nil {
+		in.qsum = ensureFloat(sc.qsum, nals)
+		sc.qsum = in.qsum
+	} else {
+		in.qsum = make([]float64, nals)
+	}
 	for i := 0; i < nals && i < len(qs); i++ {
 		in.qsum[i] = qs[i]
 	}
@@ -249,13 +383,13 @@ func parseMcallInputs(v *vcf.Variant, opts CallOptions, samplePloidy []int) *mca
 	// caller still sees a single group covering every sample, with
 	// the pooled qsum cloned in. Mirrors mcall.c's nsmpl_grp==1
 	// fast path.
-	in.groups = buildMcallGroups(v, opts, in.nals, in.qsum)
+	in.groups = buildMcallGroups(v, opts, in.nals, in.qsum, sc)
 	// -F AN,AC: when prior allele frequencies are supplied via INFO
 	// tags, reweight every group's qsum by (qsum + 0.5*ac) / (nsmpl
 	// + 0.5*an), then re-normalise so each group's qsum sums to 1.
 	// Matches mcall.c:1498-1528.
 	if opts.PriorAN != "" && opts.PriorAC != "" {
-		applyPriorFreqs(v, in, opts.PriorAN, opts.PriorAC)
+		applyPriorFreqs(v, in, opts.PriorAN, opts.PriorAC, sc)
 	}
 	return in
 }
@@ -263,7 +397,7 @@ func parseMcallInputs(v *vcf.Variant, opts CallOptions, samplePloidy []int) *mca
 // applyPriorFreqs reweights every group's qsum using the INFO/<AN>
 // and INFO/<AC> values supplied via `-F AN,AC`. The reweighting
 // formula mirrors upstream mcall.c:1511-1518.
-func applyPriorFreqs(v *vcf.Variant, in *mcallTin, anTag, acTag string) {
+func applyPriorFreqs(v *vcf.Variant, in *mcallTin, anTag, acTag string, sc *mcallScratch) {
 	if v == nil || in == nil {
 		return
 	}
@@ -279,7 +413,14 @@ func applyPriorFreqs(v *vcf.Variant, in *mcallTin, anTag, acTag string) {
 	if !ok {
 		return
 	}
-	ac := parseIntList(acStr)
+	var acBuf []int
+	if sc != nil {
+		acBuf = sc.intList
+	}
+	ac := parseIntListInto(acBuf, acStr)
+	if sc != nil {
+		sc.intList = ac[:0]
+	}
 	if len(ac) != in.nals-1 {
 		return
 	}
@@ -319,8 +460,25 @@ func applyPriorFreqs(v *vcf.Variant, in *mcallTin, anTag, acTag string) {
 // When opts.sampleGroups is nil, a single group covering every
 // sample with the pooled qsum is returned — keeping the original
 // single-group code path bit-equal.
-func buildMcallGroups(v *vcf.Variant, opts CallOptions, nals int, pooledQS []float64) []mcallGroup {
+func buildMcallGroups(v *vcf.Variant, opts CallOptions, nals int, pooledQS []float64, sc *mcallScratch) []mcallGroup {
 	if opts.sampleGroups == nil {
+		// Single group covering every sample is the overwhelmingly common
+		// path. Reuse sc's group/samples/qsum arenas across records so it is
+		// allocation-free after warmup.
+		if sc != nil {
+			groups := sc.groups[:0]
+			samples := ensureInt(sc.grpSamples, len(v.Samples))
+			for i := range v.Samples {
+				samples[i] = i
+			}
+			qsum := ensureFloat(sc.grpQsum, len(pooledQS))
+			copy(qsum, pooledQS)
+			groups = append(groups, mcallGroup{samples: samples, qsum: qsum})
+			sc.groups = groups
+			sc.grpSamples = samples
+			sc.grpQsum = qsum
+			return groups
+		}
 		g := mcallGroup{samples: make([]int, len(v.Samples))}
 		for i := range v.Samples {
 			g.samples[i] = i
@@ -415,10 +573,23 @@ func headerSamplesFromVariant(v *vcf.Variant) []string {
 // decodePLInts parses a "0,15,100" PL string into ints. Missing entries
 // ("." / "") become a sentinel matching bcf_int32_missing handling.
 func decodePLInts(s string, ngts int) ([]int, bool) {
+	return decodePLIntsInto(nil, s, ngts)
+}
+
+// decodePLIntsInto is decodePLInts writing into dst[:0] (reusing its backing
+// array). On a parse error it returns (nil, false) and leaves dst's contents
+// undefined. The result is overwritten on the next call sharing dst, so callers
+// must consume it before reusing the buffer. dst may be nil.
+func decodePLIntsInto(dst []int, s string, ngts int) ([]int, bool) {
 	if s == "" || s == "." {
 		return nil, false
 	}
-	out := make([]int, strings.Count(s, ",")+1)
+	n := strings.Count(s, ",") + 1
+	if cap(dst) >= n {
+		dst = dst[:n]
+	} else {
+		dst = make([]int, n)
+	}
 	for i := 0; len(s) > 0; i++ {
 		p := s
 		if j := strings.IndexByte(s, ','); j >= 0 {
@@ -427,16 +598,16 @@ func decodePLInts(s string, ngts int) ([]int, bool) {
 			s = ""
 		}
 		if p == "." || p == "" {
-			out[i] = plMissing
+			dst[i] = plMissing
 			continue
 		}
-		n, err := strconv.Atoi(p)
+		v, err := strconv.Atoi(p)
 		if err != nil {
 			return nil, false
 		}
-		out[i] = n
+		dst[i] = v
 	}
-	return out, true
+	return dst, true
 }
 
 const plMissing = -2147483647 // stand-in for bcf_int32_missing
@@ -445,7 +616,17 @@ const plMissing = -2147483647 // stand-in for bcf_int32_missing
 // probabilities and normalizes them to sum to 1. For the unseen-allele
 // filling we follow the unseen>=0 branch (mpileup always provides <*>).
 func setPdg(pls []int, ngts, nals, unseen int) []float64 {
-	pdg := make([]float64, ngts)
+	return setPdgInto(make([]float64, ngts), nil, pls, ngts, nals, unseen)
+}
+
+// setPdgInto is setPdg writing into the caller-provided dst, which MUST have
+// length ngts and be zero-filled on entry (the fresh / arena-sliced rows the
+// caller hands in satisfy this). plsBuf is an optional scratch slice for the
+// unseen-fill branch's working copy of pls; pass nil to let it allocate. It
+// returns dst (left zero for the all-missing cases), so the per-sample pdg
+// vectors share the caller's arena rather than allocating one each.
+func setPdgInto(dst []float64, plsBuf []int, pls []int, ngts, nals, unseen int) []float64 {
+	pdg := dst
 	// A PL vector shorter than ngts is the text-VCF analogue of
 	// bcf_int32_vector_end on a diploid record — upstream treats it
 	// as "expect diploid GLs; if not diploid treat as missing", which
@@ -463,8 +644,8 @@ func setPdg(pls []int, ngts, nals, unseen int) []float64 {
 		sum += pdg[j]
 	}
 	if j == 0 {
-		// all missing
-		return make([]float64, ngts)
+		// all missing — dst was untouched (first entry was missing), still zero.
+		return pdg
 	}
 	if j < ngts {
 		// Missing values present; fill from the unseen allele's PLs.
@@ -481,10 +662,15 @@ func setPdg(pls []int, ngts, nals, unseen int) []float64 {
 		} else {
 			sum = 0
 			k := 0
-			plsCopy := make([]int, ngts)
+			var plsCopy []int
+			if cap(plsBuf) >= ngts {
+				plsCopy = plsBuf[:ngts]
+			} else {
+				plsCopy = make([]int, ngts)
+			}
 			copy(plsCopy, pls)
-			for len(plsCopy) < ngts {
-				plsCopy = append(plsCopy, plMissing)
+			for i := len(pls); i < ngts; i++ {
+				plsCopy[i] = plMissing
 			}
 			for ia := 0; ia < nals; ia++ {
 				for ib := 0; ib <= ia; ib++ {
@@ -510,8 +696,11 @@ func setPdg(pls []int, ngts, nals, unseen int) []float64 {
 		}
 	}
 	if sum == float64(ngts) {
-		// all missing
-		return make([]float64, ngts)
+		// all missing — re-zero dst (it was filled with pl2p values above).
+		for k := 0; k < ngts; k++ {
+			pdg[k] = 0
+		}
+		return pdg
 	}
 	for k := 0; k < ngts; k++ {
 		pdg[k] /= sum
@@ -706,7 +895,7 @@ func mcallSite(v *vcf.Variant, opts CallOptions, samplePloidy []int, sc *mcallSc
 	if !hasQS(v) {
 		return nil, false, false
 	}
-	in := parseMcallInputs(v, opts, samplePloidy)
+	in := parseMcallInputs(v, opts, samplePloidy, sc)
 	if in == nil {
 		return nil, false, false
 	}
@@ -782,7 +971,8 @@ func mcallSite(v *vcf.Variant, opts CallOptions, samplePloidy []int, sc *mcallSc
 	}
 
 	// als_map: old allele index -> new index (or -1 if dropped).
-	alsMap := make([]int, nalsOri)
+	alsMap := ensureInt(sc.alsMap, nalsOri)
+	sc.alsMap = alsMap
 	nalsNew := 0
 	for i := 0; i < nalsOri; i++ {
 		if newMask&(1<<i) != 0 {
@@ -799,8 +989,10 @@ func mcallSite(v *vcf.Variant, opts CallOptions, samplePloidy []int, sc *mcallSc
 	callGenotypes := isVariant && nalsNew > 1
 
 	// Per-sample genotypes + AC.
-	ac := make([]int, nalsNew)
-	gts := make([][2]int, in.nsmpl)
+	ac := ensureInt(sc.ac, nalsNew)
+	sc.ac = ac
+	gts := ensureGts(sc.gts, in.nsmpl)
+	sc.gts = gts
 	nAC := 0
 	if !callGenotypes {
 		// All-ref: GT 0/0 (or . if no data).
@@ -991,12 +1183,27 @@ func appendUnique(keys []string, s string) []string {
 // parseFloatList parses a comma-separated float list ("1,0" or
 // "0.165116,0.834884,0"). Non-numeric entries (e.g. ".") become 0.
 func parseFloatList(s string) []float64 {
+	return parseFloatListInto(nil, s)
+}
+
+// parseFloatListInto is parseFloatList writing into dst[:0] (reusing its
+// backing array). The result is overwritten on the next call sharing dst, so
+// callers must consume it before reusing the buffer. dst may be nil.
+func parseFloatListInto(dst []float64, s string) []float64 {
 	if s == "" || s == "." {
 		return nil
 	}
 	// Single pass over the comma list, sized up front via Count, so no
-	// intermediate []string is allocated (only the result slice).
-	out := make([]float64, strings.Count(s, ",")+1)
+	// intermediate []string is allocated and the result reuses dst.
+	n := strings.Count(s, ",") + 1
+	if cap(dst) >= n {
+		dst = dst[:n]
+		for i := range dst {
+			dst[i] = 0
+		}
+	} else {
+		dst = make([]float64, n)
+	}
 	for i := 0; len(s) > 0; i++ {
 		p := s
 		if j := strings.IndexByte(s, ','); j >= 0 {
@@ -1008,19 +1215,34 @@ func parseFloatList(s string) []float64 {
 			continue
 		}
 		if f, err := strconv.ParseFloat(p, 64); err == nil {
-			out[i] = f
+			dst[i] = f
 		}
 	}
-	return out
+	return dst
 }
 
 // parseIntList parses a comma-separated int list ("5,0,0,0"). Non-numeric
 // entries become 0.
 func parseIntList(s string) []int {
+	return parseIntListInto(nil, s)
+}
+
+// parseIntListInto is parseIntList writing into dst[:0] (reusing its backing
+// array). The result is overwritten on the next call sharing dst, so callers
+// must consume it before reusing the buffer. dst may be nil.
+func parseIntListInto(dst []int, s string) []int {
 	if s == "" || s == "." {
 		return nil
 	}
-	out := make([]int, strings.Count(s, ",")+1)
+	n := strings.Count(s, ",") + 1
+	if cap(dst) >= n {
+		dst = dst[:n]
+		for i := range dst {
+			dst[i] = 0
+		}
+	} else {
+		dst = make([]int, n)
+	}
 	for i := 0; len(s) > 0; i++ {
 		p := s
 		if j := strings.IndexByte(s, ','); j >= 0 {
@@ -1028,11 +1250,11 @@ func parseIntList(s string) []int {
 		} else {
 			s = ""
 		}
-		if n, err := strconv.Atoi(strings.TrimSpace(p)); err == nil {
-			out[i] = n
+		if v, err := strconv.Atoi(strings.TrimSpace(p)); err == nil {
+			dst[i] = v
 		}
 	}
-	return out
+	return dst
 }
 
 // mcallEmit assembles the output record: trimmed alleles, called GT, the
@@ -1121,13 +1343,16 @@ func mcallEmit(v *vcf.Variant, in *mcallTin, opts CallOptions, alsMap []int, nal
 		ns.Data["GT"] = renderGT(gts[i], pl)
 		// AD (Number=R) re-index
 		if ad, okAD := s.Data["AD"]; okAD {
-			ns.Data["AD"] = reindexNumberR(ad, in.nals, alsMap)
+			var adStr string
+			adStr, sc.intList = reindexNumberR(ad, in.nals, alsMap, sc.intList)
+			ns.Data["AD"] = adStr
 		}
 		// PL re-index or drop.
 		if keepPL {
 			if _, okPL := s.Data["PL"]; okPL {
-				pls, ok := decodePLInts(s.Data["PL"], in.ngts)
+				pls, ok := decodePLIntsInto(sc.plInts, s.Data["PL"], in.ngts)
 				if ok {
+					sc.plInts = pls[:0]
 					nb := make([]string, len(plMap))
 					for k, l := range plMap {
 						if l < len(pls) && pls[l] != plMissing {
@@ -1196,7 +1421,8 @@ func mcallEmit(v *vcf.Variant, in *mcallTin, opts CallOptions, alsMap []int, nal
 	// before the delInfo calls.
 
 	// Parse I16 before removing it.
-	i16 := parseFloatList(v.Info["I16"])
+	i16 := parseFloatListInto(sc.floatList, v.Info["I16"])
+	sc.floatList = i16[:0]
 
 	delInfo(&out, "I16")
 	delInfo(&out, "QS")
@@ -1254,9 +1480,11 @@ func renderGT(g [2]int, ploidy int) string {
 }
 
 // reindexNumberR re-orders a Number=R field (e.g. AD) by als_map and drops
-// dropped alleles. nalsOri is the original allele count.
-func reindexNumberR(field string, nalsOri int, alsMap []int) string {
-	vals := parseIntList(field)
+// dropped alleles. nalsOri is the original allele count. intBuf is an optional
+// scratch buffer for the parsed int list (reused across samples; may be nil);
+// the (possibly grown) buffer is returned so the caller can keep reusing it.
+func reindexNumberR(field string, nalsOri int, alsMap []int, intBuf []int) (string, []int) {
+	vals := parseIntListInto(intBuf, field)
 	nNew := 0
 	for _, m := range alsMap {
 		if m >= 0 {
@@ -1275,7 +1503,7 @@ func reindexNumberR(field string, nalsOri int, alsMap []int) string {
 			out[l] = "0"
 		}
 	}
-	return strings.Join(out, ",")
+	return strings.Join(out, ","), vals
 }
 
 // rebuildFormat returns the FORMAT key order: GT first, then the input
