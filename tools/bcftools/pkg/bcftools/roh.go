@@ -114,6 +114,12 @@ type RohSite struct {
 	State  int     // 0 = HW, 1 = AZ
 	Qual   float64 // forward-backward phred score
 	AF     float64
+	// seq is the monotonic emit order assigned when the line is produced.
+	// Upstream interleaves ST and RG lines in a single output stream (an RG
+	// region row is written at the site where the autozygous run closes, not
+	// batched at the end), so writeRoh merges Sites and Regions by seq to
+	// reproduce that ordering byte-for-byte.
+	seq uint64
 }
 
 // RohRegion captures a contiguous AZ run for one sample. Qual is the
@@ -127,12 +133,23 @@ type RohRegion struct {
 	Length     int
 	NumMarkers int
 	Qual       float64
+	// seq is the monotonic emit order; see RohSite.seq.
+	seq uint64
 }
 
 // RohResult is the full pile of (per-site, per-region) outputs.
 type RohResult struct {
 	Sites   []RohSite
 	Regions []RohRegion
+	// emitSeq is the running counter stamped onto each Site/Region as it is
+	// produced, so writeRoh can interleave the two streams in upstream order.
+	emitSeq uint64
+}
+
+// nextSeq returns the next monotonic emit-order value.
+func (r *RohResult) nextSeq() uint64 {
+	r.emitSeq++
+	return r.emitSeq
 }
 
 const (
@@ -507,6 +524,7 @@ func (a *rohRegionAccum) finish(result *RohResult) {
 		Length:     a.end - a.start + 1,
 		NumMarkers: a.markers,
 		Qual:       a.qual / float64(a.markers),
+		seq:        result.nextSeq(),
 	})
 	a.open = false
 }
@@ -527,6 +545,7 @@ func appendRohSites(result *RohResult, acc *rohRegionAccum, sample, chrom string
 			result.Sites = append(result.Sites, RohSite{
 				Sample: sample, Chrom: chrom, Pos: m.pos,
 				State: state, Qual: qual,
+				seq: result.nextSeq(),
 			})
 		}
 		if !wantRG {
@@ -837,18 +856,49 @@ func writeRoh(out io.Writer, r RohResult, types string) error {
 			return err
 		}
 	}
-	if wantST {
+	writeST := func(s RohSite) error {
+		_, err := fmt.Fprintf(w, "ST\t%s\t%s\t%d\t%d\t%.1f\n",
+			s.Sample, s.Chrom, s.Pos, s.State, s.Qual)
+		return err
+	}
+	writeRG := func(reg RohRegion) error {
+		_, err := fmt.Fprintf(w, "RG\t%s\t%s\t%d\t%d\t%d\t%d\t%.1f\n",
+			reg.Sample, reg.Chrom, reg.Start, reg.End, reg.Length, reg.NumMarkers, reg.Qual)
+		return err
+	}
+
+	switch {
+	case wantST && wantRG:
+		// Upstream emits ST and RG rows into a single stream in production
+		// order: an RG row appears at the site where its autozygous run
+		// closes (or at end-of-chromosome if still open), interleaved with
+		// the ST rows. Merge the two slices by the emit-order seq stamped
+		// when each row was produced to reproduce that ordering exactly.
+		si, ri := 0, 0
+		for si < len(r.Sites) || ri < len(r.Regions) {
+			useSite := ri >= len(r.Regions) ||
+				(si < len(r.Sites) && r.Sites[si].seq < r.Regions[ri].seq)
+			if useSite {
+				if err := writeST(r.Sites[si]); err != nil {
+					return err
+				}
+				si++
+			} else {
+				if err := writeRG(r.Regions[ri]); err != nil {
+					return err
+				}
+				ri++
+			}
+		}
+	case wantST:
 		for _, s := range r.Sites {
-			if _, err := fmt.Fprintf(w, "ST\t%s\t%s\t%d\t%d\t%.1f\n",
-				s.Sample, s.Chrom, s.Pos, s.State, s.Qual); err != nil {
+			if err := writeST(s); err != nil {
 				return err
 			}
 		}
-	}
-	if wantRG {
+	case wantRG:
 		for _, reg := range r.Regions {
-			if _, err := fmt.Fprintf(w, "RG\t%s\t%s\t%d\t%d\t%d\t%d\t%.1f\n",
-				reg.Sample, reg.Chrom, reg.Start, reg.End, reg.Length, reg.NumMarkers, reg.Qual); err != nil {
+			if err := writeRG(reg); err != nil {
 				return err
 			}
 		}

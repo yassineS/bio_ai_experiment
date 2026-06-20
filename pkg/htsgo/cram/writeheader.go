@@ -126,21 +126,42 @@ func (e encSpec) params(iw intWriter) []byte {
 // RI data series). tagDict is the TD preservation-map entry; tagKeys
 // lists every distinct auxiliary tag, in the order their content ids
 // were assigned.
-func encodeCompressionHeader(version Version, multiRef bool, tagDict []byte, tagKeys []tagKey) []byte {
+//
+// refBased reports whether the records are diffed against an external
+// reference (the reference-based encoding, where match runs are stored
+// implicitly and reconstructed from the reference on decode). It selects
+// the RR (reference-required) preservation-map entry: a reference-based
+// container omits RR entirely, so the decoder defaults to "reference
+// required" and loads the external reference (htslib only writes RR — as
+// RR=0 — for the reference-free / embedded-reference cases). A
+// reference-free container writes RR=0 so the decoder knows not to look
+// for an external reference. Emitting RR=0 for reference-based data is
+// the bug that made htslib decode our slices as all-'=' (it honours
+// RR=0 and skips loading the reference); our own decoder ignored RR and
+// loaded the reference by RefSeqID, which masked the divergence.
+func encodeCompressionHeader(version Version, multiRef, refBased bool, tagDict []byte, tagKeys []tagKey) []byte {
 	iw := newIntWriter(version)
 	var out []byte
-	out = append(out, encodePreservationMap(iw, tagDict)...)
+	out = append(out, encodePreservationMap(iw, refBased, tagDict)...)
 	out = append(out, encodeDataSeriesMap(version, iw, multiRef, tagKeys)...)
 	out = append(out, encodeTagEncodingMap(version, iw, tagKeys)...)
 	return out
 }
 
 // encodePreservationMap serialises the preservation map. The writer
-// preserves read names (RN true), stores alignment positions absolutely
-// (AP false) and produces reference-free CRAM (RR false); it emits the
-// default substitution matrix (SM) and the tag-combination dictionary
-// (TD). The TD byte count and the map frame are integer-framed through iw.
-func encodePreservationMap(iw intWriter, tagDict []byte) []byte {
+// preserves read names (RN true) and stores alignment positions
+// absolutely (AP false); it emits the default substitution matrix (SM)
+// and the tag-combination dictionary (TD). The TD byte count and the map
+// frame are integer-framed through iw.
+//
+// The RR (reference-required) entry follows htslib: it is emitted, as
+// RR=0, ONLY for reference-free data (refBased false) — telling the
+// decoder not to fetch an external reference. A reference-based container
+// (refBased true) omits RR entirely, leaving the decoder's default of
+// "reference required" so it loads the external reference and
+// reconstructs the implicit match runs. Writing RR=0 for reference-based
+// data makes htslib skip the reference load and emit all-'=' SEQ.
+func encodePreservationMap(iw intWriter, refBased bool, tagDict []byte) []byte {
 	var entries []byte
 	count := int32(0)
 
@@ -148,8 +169,10 @@ func encodePreservationMap(iw intWriter, tagDict []byte) []byte {
 	count++
 	entries = append(entries, 'A', 'P', 0) // alignment positions absolute.
 	count++
-	entries = append(entries, 'R', 'R', 0) // reference not required.
-	count++
+	if !refBased {
+		entries = append(entries, 'R', 'R', 0) // reference not required (reference-free data).
+		count++
+	}
 	// SM: the default substitution matrix (codes map straight to
 	// candidates), five bytes of 0x1B.
 	entries = append(entries, 'S', 'M', 0x1b, 0x1b, 0x1b, 0x1b, 0x1b)

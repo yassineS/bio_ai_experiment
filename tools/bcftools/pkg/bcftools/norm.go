@@ -819,6 +819,15 @@ func mergeBiallelicsToMultiallelic(records []*vcf.Variant, m MultiallelicMode) *
 	dst.Ref = als[0]
 	dst.Alt = als[1:]
 
+	// FILTER: accumulate the filters across all joined records, mirroring
+	// vcfnorm.c merge_lines + htslib bcf_add_filter. The merged site starts
+	// from the first record's FILTER and then unions in every later record's
+	// non-PASS filters (deduplicated, first-seen order). A "PASS" entry on a
+	// later record is skipped in the default (non-strict) mode, and adding any
+	// real filter drops a lone "PASS" — so a PASS+q10 join becomes q10, while
+	// a PASS+PASS join stays PASS.
+	dst.Filter = mergeJoinFilters(records)
+
 	// QUAL: take the maximum across records (missing QUAL is -1 in our model).
 	dst.Qual = maxQual(records)
 
@@ -832,6 +841,58 @@ func mergeBiallelicsToMultiallelic(records []*vcf.Variant, m MultiallelicMode) *
 		mergeFormatGenotype(dst, records, maps)
 	}
 	return dst
+}
+
+// mergeJoinFilters combines the FILTER columns of the records joined into one
+// multiallelic site, reproducing vcfnorm.c merge_lines together with htslib's
+// bcf_add_filter set semantics (default, non-strict -m+ behaviour):
+//
+//   - The merged set starts from the first record's FILTER.
+//   - For every later record, each of its filters is added in turn: a "PASS"
+//     entry is skipped, and any non-PASS filter is unioned in (deduplicated,
+//     first-seen order). Adding a real filter to a set that is exactly {PASS}
+//     replaces the PASS — PASS and real filters are mutually exclusive.
+//   - The missing value "." behaves like a normal filter token (it is not
+//     special-cased by bcf_add_filter), so it is unioned like any other.
+//
+// The net effect: the join is "PASS" only when every record is PASS; otherwise
+// it is the ordered union of all non-PASS filters.
+func mergeJoinFilters(records []*vcf.Variant) []string {
+	out := append([]string{}, records[0].Filter...)
+	seen := map[string]bool{}
+	for _, f := range out {
+		seen[f] = true
+	}
+	addFilter := func(f string) {
+		if seen[f] {
+			return
+		}
+		if f == "PASS" {
+			// Setting PASS clears everything else.
+			out = []string{"PASS"}
+			seen = map[string]bool{"PASS": true}
+			return
+		}
+		if len(out) == 1 && out[0] == "PASS" {
+			// Replace a lone PASS with the first real filter.
+			out[0] = f
+			delete(seen, "PASS")
+			seen[f] = true
+			return
+		}
+		out = append(out, f)
+		seen[f] = true
+	}
+	for i := 1; i < len(records); i++ {
+		for _, f := range records[i].Filter {
+			if f == "PASS" {
+				// Non-strict: a later PASS is ignored.
+				continue
+			}
+			addFilter(f)
+		}
+	}
+	return out
 }
 
 // maxQual returns the maximum QUAL across records, treating -1 as missing.

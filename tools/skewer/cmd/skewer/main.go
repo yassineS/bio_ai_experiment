@@ -101,6 +101,7 @@ func runSingleEnd() {
 		qualThreshold int
 		minOverlap    int
 		errorRate     float64
+		indelRate     float64
 		quiet         bool
 		compress      bool
 		autoDetect    bool
@@ -120,6 +121,7 @@ func runSingleEnd() {
 	cliflag.IntVar(fs, &qualThreshold, "q", "qual-threshold", 0, "Quality threshold for trimming (default: 0)")
 	cliflag.IntVar(fs, &minOverlap, "m", "min-overlap", 3, "Minimum overlap for adapter detection (default: 3)")
 	cliflag.Float64Var(fs, &errorRate, "r", "error-rate", 0.1, "Maximum error rate (default: 0.1)")
+	cliflag.Float64Var(fs, &indelRate, "d", "indel-rate", 0.03, "Maximum indel error rate (default: 0.03)")
 	cliflag.BoolVar(fs, &compress, "z", "compress", false, "Gzip-compress the output stream (upstream -z)")
 	cliflag.BoolVar(fs, &quiet, "", "quiet", false, "Don't print statistics")
 	cliflag.BoolVar(fs, &autoDetect, "a", "auto-detect", false, "Auto-detect adapter sequences")
@@ -199,6 +201,7 @@ func runSingleEnd() {
 		QualThreshold:    qualThreshold,
 		MinOverlap:       minOverlap,
 		ErrorRate:        errorRate,
+		IndelRate:        indelRate,
 		AutoDetect:       autoDetect,
 		ProgressReport:   progress,
 		ProgressInterval: 100000,
@@ -252,6 +255,7 @@ func runPairedEnd() {
 		qualThreshold int
 		minOverlap    int
 		errorRate     float64
+		indelRate     float64
 		quiet         bool
 		compress      bool
 		autoDetect    bool
@@ -274,6 +278,7 @@ func runPairedEnd() {
 	cliflag.IntVar(fs, &qualThreshold, "q", "qual-threshold", 0, "Quality threshold for trimming (default: 0)")
 	cliflag.IntVar(fs, &minOverlap, "m", "min-overlap", 3, "Minimum overlap for adapter detection (default: 3)")
 	cliflag.Float64Var(fs, &errorRate, "r", "error-rate", 0.1, "Maximum error rate (default: 0.1)")
+	cliflag.Float64Var(fs, &indelRate, "d", "indel-rate", 0.03, "Maximum indel error rate (default: 0.03)")
 	cliflag.BoolVar(fs, &compress, "z", "compress", false, "Gzip-compress the output streams (upstream -z)")
 	cliflag.BoolVar(fs, &quiet, "", "quiet", false, "Don't print statistics")
 	cliflag.BoolVar(fs, &autoDetect, "a", "auto-detect", false, "Auto-detect adapter sequences")
@@ -386,6 +391,7 @@ func runPairedEnd() {
 		QualThreshold:    qualThreshold,
 		MinOverlap:       minOverlap,
 		ErrorRate:        errorRate,
+		IndelRate:        indelRate,
 		AutoDetect:       autoDetect,
 		ProgressReport:   progress,
 		ProgressInterval: 100000,
@@ -474,6 +480,7 @@ func runBatch() {
 		qualThreshold int
 		minOverlap    int
 		errorRate     float64
+		indelRate     float64
 		workers       int
 		quiet         bool
 		autoDetect    bool
@@ -489,6 +496,7 @@ func runBatch() {
 	cliflag.IntVar(fs, &qualThreshold, "q", "qual-threshold", 0, "Quality threshold for trimming")
 	cliflag.IntVar(fs, &minOverlap, "m", "min-overlap", 3, "Minimum overlap for adapter detection")
 	cliflag.Float64Var(fs, &errorRate, "r", "error-rate", 0.1, "Maximum error rate")
+	cliflag.Float64Var(fs, &indelRate, "", "indel-rate", 0.03, "Maximum indel error rate")
 	cliflag.IntVar(fs, &workers, "w", "workers", 4, "Number of parallel workers (default: 4)")
 	cliflag.BoolVar(fs, &quiet, "", "quiet", false, "Don't print statistics")
 	cliflag.BoolVar(fs, &autoDetect, "a", "auto-detect", false, "Auto-detect adapter sequences")
@@ -574,6 +582,7 @@ func runBatch() {
 		QualThreshold: qualThreshold,
 		MinOverlap:    minOverlap,
 		ErrorRate:     errorRate,
+		IndelRate:     indelRate,
 		AutoDetect:    autoDetect,
 		PEMatrixMode:  true,
 	}

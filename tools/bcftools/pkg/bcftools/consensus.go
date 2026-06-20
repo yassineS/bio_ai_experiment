@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -347,7 +348,25 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) (int, error) 
 		// so we maintain an offset relative to the original reference.
 		sort.SliceStable(vars, func(i, j int) bool { return vars[i].Pos < vars[j].Pos })
 		offset := 0
-		lastEnd := 0
+		// frzPos mirrors upstream consensus.c's args->fa_frz_pos: the last
+		// 0-based reference position consumed by an applied variant
+		// (rec->pos + rec->rlen - 1). It starts at -1 (nothing consumed).
+		// prevIsInsert mirrors args->prev_is_insert: whether the most
+		// recently applied variant was a net insertion. Together they drive
+		// the overlap/skip decision so the port reproduces upstream's
+		// "The site CHR:POS overlaps with another variant, skipping..."
+		// behaviour byte-for-byte: a record at pos <= frzPos is skipped
+		// unless it is a clean insertion (trim_beg, non-zero length delta)
+		// landing exactly on frzPos and not following another insertion.
+		frzPos := -1
+		prevIsInsert := false
+		// prevBasePos mirrors upstream args->prev_base_pos: the 0-based
+		// genomic position of the last reference base that a previous variant
+		// occupied (its last consumed base for substitutions/deletions, or its
+		// anchor base for insertions). It drives the ibeg trim below, which
+		// keeps an insertion from overwriting the bases an earlier
+		// same-position variant already edited (consensus.c lines 1029-1037).
+		prevBasePos := -1
 		// chain accumulates the liftover blocks for this sequence when
 		// -c/--chain is requested. The reference origin is 0 because the
 		// port emits whole contigs (no -r region windowing).
@@ -356,17 +375,40 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) (int, error) 
 			chain = NewChain(0)
 		}
 		for _, v := range vars {
-			// Skip overlapping variants (upstream emits a warning; we
-			// follow the "first wins" rule for v1 to keep coordinates
-			// well-defined).
-			if v.Pos <= lastEnd {
-				continue
-			}
 			alt, ok := selectAllele(v, sampleIdx, iupacSamples, opts)
 			if !ok {
 				continue
 			}
 			ref := v.Ref
+			// Upstream returns early when the reference allele is selected
+			// (ialt==0): it neither edits the sequence nor advances the
+			// freeze position (unless --absent, which we honour by restoring
+			// the REF bases below). A selected allele identical to REF is the
+			// ref-allele case, so it must not freeze the position — otherwise
+			// a following insertion at the same coordinate would be wrongly
+			// skipped as overlapping.
+			isRefAllele := alt == ref
+			// Overlap handling mirrors apply_variant() in consensus.c. The
+			// length delta of the applied event (positive=insertion,
+			// negative=deletion, zero=substitution) and trim_beg (whether the
+			// indel carries the shared anchor base) decide whether a record
+			// landing within the frozen region is dropped.
+			lenDelta := len(alt) - len(ref)
+			isIndel := lenDelta != 0
+			trimBeg := isIndel && len(ref) > 0 && len(alt) > 0 &&
+				lowerByte(ref[0]) == lowerByte(alt[0])
+			origStartCheck := v.Pos - 1
+			if !isRefAllele && origStartCheck <= frzPos {
+				// pos <= frz: only a clean insertion exactly on frz, not
+				// following another insertion and not landing on a base a real
+				// edit already changed, may proceed; everything else overlaps
+				// and is skipped (upstream prints a warning here).
+				overlap := origStartCheck < frzPos || !trimBeg || lenDelta == 0 || prevIsInsert
+				if overlap {
+					fmt.Fprintf(os.Stderr, "The site %s:%d overlaps with another variant, skipping...\n", v.Chrom, v.Pos)
+					continue
+				}
+			}
 			// 1-based VCF POS -> 0-based ref index, adjusted for prior
 			// indel-induced shifts. We also use the un-shifted POS to
 			// drive opts.Absent's "fill the original ref" logic when
@@ -381,22 +423,52 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) (int, error) 
 			if start < 0 || end > len(seq) {
 				continue
 			}
+			if isRefAllele {
+				// Reference allele selected (upstream ialt==0): the sequence
+				// is left unchanged, but the freeze position still advances to
+				// the last reference base the record spans (verified against
+				// upstream: a 0/0 record at a position causes a subsequent
+				// same-position substitution to be dropped as overlapping,
+				// while a clean insertion there is still applied). A ref
+				// allele is never a net insertion, so prevIsInsert is false.
+				if newFrz := origStart + len(ref) - 1; newFrz > frzPos {
+					frzPos = newFrz
+					prevIsInsert = false
+				}
+				continue
+			}
 			// Apply highlight casing if requested.
 			alt = applyMarks(ref, alt, opts)
-			newSeq := make([]byte, 0, len(seq)+len(alt)-len(ref))
-			newSeq = append(newSeq, seq[:start]...)
 			emitted := len(alt)
+			// ibeg is the count of leading ALT bases that coincide with the
+			// reference anchor of a previous same-position variant and must be
+			// preserved rather than rewritten. For a net insertion that lands
+			// on bases an earlier variant already edited (e.g. a substitution
+			// at the same POS turning the anchor into an IUPAC code), upstream
+			// skips writing those shared leading bases so the prior edit
+			// survives and only the truly inserted bases are added. For all
+			// other cases ibeg is 0 and the full ALT replaces the REF run.
+			ibeg := 0
+			if lenDelta > 0 {
+				for ibeg < len(alt) && ibeg < len(ref) &&
+					lowerByte(ref[ibeg]) == lowerByte(alt[ibeg]) &&
+					origStart+ibeg <= prevBasePos {
+					ibeg++
+				}
+			}
+			newSeq := make([]byte, 0, len(seq)+len(alt)-len(ref))
+			newSeq = append(newSeq, seq[:start+ibeg]...)
 			if opts.MarkDel.Mode == MarkChar && len(alt) < len(ref) {
 				// Pad the deletion with a literal character so the
 				// downstream coordinates stay aligned. The total
 				// emitted length equals len(ref).
-				newSeq = append(newSeq, alt...)
+				newSeq = append(newSeq, alt[ibeg:]...)
 				for i := 0; i < len(ref)-len(alt); i++ {
 					newSeq = append(newSeq, opts.MarkDel.Char)
 				}
 				emitted = len(ref)
 			} else {
-				newSeq = append(newSeq, alt...)
+				newSeq = append(newSeq, alt[ibeg:]...)
 			}
 			newSeq = append(newSeq, seq[end:]...)
 			seq = newSeq
@@ -421,7 +493,18 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) (int, error) 
 			// vs. ref consumed. With mark-del padding, emitted==len(ref)
 			// so offset is unchanged (downstream coordinates align).
 			offset += emitted - len(ref)
-			lastEnd = origStart + len(ref)
+			// Advance the freeze position to the last reference base this
+			// record consumed (upstream args->fa_frz_pos = rec->pos +
+			// rec->rlen - 1) and record whether it was a net insertion.
+			frzPos = origStart + len(ref) - 1
+			prevIsInsert = lenDelta > 0
+			if lenDelta > 0 {
+				// Insertion: the anchor base is the only reference position it
+				// occupies (upstream prev_base_pos = rec->pos).
+				prevBasePos = origStart
+			} else {
+				prevBasePos = origStart + len(ref) - 1
+			}
 			applied++
 		}
 		if chain != nil {

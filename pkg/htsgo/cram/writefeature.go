@@ -78,6 +78,10 @@ func (e *recordEncoder) encodeFeatures(rec *sam.Record, readLen int) error {
 			start := int(rec.Pos) - 1
 			if start >= 0 && start+referenceSpan(rec.Cigar) <= len(r) {
 				ref = r
+				// Record that this container used the external reference, so
+				// its compression header omits RR (reference required) and the
+				// decoder loads the reference to fill the implicit match runs.
+				e.usedReference = true
 			}
 		}
 	}
