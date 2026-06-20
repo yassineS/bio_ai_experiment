@@ -35,13 +35,24 @@ jobs:
         run: go vet ./...
 
   # Coverage over the whole module WITHOUT -race. The tool test suites are NOT
-  # hermetic: their live-parity helpers build the upstream binary on demand and
-  # compare against it, so the job checks out the (11 kept) submodules and installs
-  # the C build deps — WITHOUT libdeflate, so htslib uses the zlib deflate backend
-  # the parity goldens were generated against (libdeflate changes BGZF bytes).
+  # hermetic: their live-parity helpers compare against the real upstream
+  # binary, so the job checks out the (11 kept) submodules and installs the C
+  # build deps — WITHOUT libdeflate, so htslib uses the zlib deflate backend the
+  # parity goldens were generated against (libdeflate changes BGZF bytes).
   # -race is applied separately (the `race` job) to the concurrent code, because
   # -race makes the sequential tool-parity suites (mosdepth/samtools) exceed the
   # test timeout for no race-coverage benefit.
+  #
+  # The upstream binaries are pre-built ONCE, serially, before `go test`. This
+  # is required for correctness, not just speed: `go test ./...` runs package
+  # test binaries in parallel, and ~22 bed* parity packages each build the
+  # SHARED reference_code/bedtools tree on demand. Concurrent `make` invocations
+  # in one source tree clobber each other's objects and can leave a corrupt
+  # binary that runs but emits nothing (observed as spurious bedcoverage/bedmap
+  # "parity" failures where upstream output was empty). Pre-building the binary
+  # makes every on-demand builder short-circuit on os.Stat(bin), so no test
+  # races to build it. It also gives the bcftools/samtools cli-rollout tests the
+  # pre-built binary they expect (they don't build on demand).
   test:
     name: test + cover
     runs-on: ubuntu-latest
@@ -58,6 +69,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential autoconf automake libtool \
             pkg-config perl zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev
+      - name: Pre-build upstream binaries (serial — avoids the concurrent-make race)
+        run: |
+          (cd reference_code/htslib && autoreconf -i && ./configure && make -j"$(nproc)")
+          (cd reference_code/bcftools && make -j"$(nproc)")
+          (cd reference_code/samtools && make -j"$(nproc)")
+          (cd reference_code/bedtools && make -j"$(nproc)")
       - name: go test
         run: go test -coverprofile=coverage.txt -covermode=atomic -timeout 35m ./...
       - name: Upload coverage
@@ -89,6 +106,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential autoconf automake libtool \
             pkg-config perl zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev
+      # Pre-build serially for the same reason as the `test` job: several pkg
+      # parity tests (bgzf/tabix/fasta -> htslib, bcf -> bcftools, cram ->
+      # samtools) build these SHARED trees on demand, and running them in
+      # parallel under `go test ./pkg/...` would race in `make`.
+      - name: Pre-build upstream binaries (serial — avoids the concurrent-make race)
+        run: |
+          (cd reference_code/htslib && autoreconf -i && ./configure && make -j"$(nproc)")
+          (cd reference_code/bcftools && make -j"$(nproc)")
+          (cd reference_code/samtools && make -j"$(nproc)")
       - name: go test -race
         run: go test -race -timeout 20m ./pkg/...
 
