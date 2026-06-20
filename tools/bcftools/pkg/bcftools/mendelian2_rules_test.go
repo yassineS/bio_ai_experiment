@@ -168,7 +168,7 @@ func upstreamBcftoolsMendelian2(t *testing.T) (bin, pluginDir string) {
 		upstreamBcftoolsMendelian2Dir = plug
 	})
 	if upstreamBcftoolsMendelian2Bin == "" {
-		t.Fatalf("could not locate upstream bcftools binary")
+		t.Skipf("could not locate upstream bcftools binary")
 	}
 	if _, err := os.Stat(upstreamBcftoolsMendelian2Bin); err != nil {
 		t.Skipf("upstream bcftools not built at %s: %v\n"+
