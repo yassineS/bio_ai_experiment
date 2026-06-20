@@ -34,7 +34,7 @@ func buildMultiBlockBAM(t *testing.T, n int) []byte {
 	for i := 0; i < n; i++ {
 		rec := &sam.Record{
 			QName: fmt.Sprintf("read%06d", i),
-			Flag:  0, RName: "chr1", Pos: int32((i*37)%99999000 + 1), MapQ: 60,
+			Flag:  0, RName: "chr1", Pos: int64((i*37)%99999000 + 1), MapQ: 60,
 			Cigar: cig, Seq: string(seq), Qual: qual,
 			RNext: "*", PNext: 0, TLen: 0,
 		}

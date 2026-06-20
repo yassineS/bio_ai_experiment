@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"io"
+	"math"
 	"testing"
 )
 
@@ -41,6 +42,63 @@ func firstDeflateBlockIsStored(t *testing.T, bam []byte) bool {
 	deflateByte := bam[18]
 	btype := (deflateByte >> 1) & 0x3
 	return btype == 0
+}
+
+// TestBAMWriterLongPositionErrors verifies that the BAM writer refuses to write
+// a record whose POS, PNEXT or TLEN does not fit the BAM on-disk 32-bit fields.
+// BAM stores POS/PNEXT as signed 32-bit and TLEN as signed 32-bit, so a >2^31
+// coordinate (which SAM and CRAM support via the int64 Record fields) cannot be
+// represented; htslib likewise rejects writing such a record to BAM. The writer
+// must error cleanly rather than silently truncate, so long-reference data stays
+// in SAM/CRAM.
+func TestBAMWriterLongPositionErrors(t *testing.T) {
+	const beyond32 = int64(1) << 32 // > math.MaxInt32, even after the -1 to 0-based.
+
+	cases := []struct {
+		name string
+		rec  *Record
+	}{
+		{
+			name: "POS",
+			rec:  &Record{QName: "r", RName: "chr1", Pos: beyond32, MapQ: 60, Seq: "A", Qual: []byte{30}, Cigar: mustCigar("1M")},
+		},
+		{
+			name: "PNEXT",
+			rec:  &Record{QName: "r", RName: "chr1", Pos: 10, PNext: beyond32, RNext: "chr1", MapQ: 60, Seq: "A", Qual: []byte{30}, Cigar: mustCigar("1M")},
+		},
+		{
+			name: "TLEN",
+			rec:  &Record{QName: "r", RName: "chr1", Pos: 10, TLen: beyond32, MapQ: 60, Seq: "A", Qual: []byte{30}, Cigar: mustCigar("1M")},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			bw := NewBAMWriter(&buf)
+			if err := bw.WriteHeader(bamWriterTestHeader()); err != nil {
+				t.Fatalf("WriteHeader: %v", err)
+			}
+			if err := bw.Write(tc.rec); err == nil {
+				t.Fatalf("BAM writer accepted a %s beyond the 32-bit field limit; want an error", tc.name)
+			}
+		})
+	}
+
+	// A record at exactly the largest representable BAM coordinate must still
+	// succeed: POS == math.MaxInt32+1 (1-based) maps to the 0-based field value
+	// math.MaxInt32, which fits.
+	t.Run("max-representable-POS", func(t *testing.T) {
+		var buf bytes.Buffer
+		bw := NewBAMWriter(&buf)
+		if err := bw.WriteHeader(bamWriterTestHeader()); err != nil {
+			t.Fatalf("WriteHeader: %v", err)
+		}
+		rec := &Record{QName: "r", RName: "chr1", Pos: int64(math.MaxInt32) + 1, MapQ: 60, Seq: "A", Qual: []byte{30}, Cigar: mustCigar("1M")}
+		if err := bw.Write(rec); err != nil {
+			t.Fatalf("BAM writer rejected the largest representable POS: %v", err)
+		}
+	})
 }
 
 // TestBAMWriterUncompressedRoundTrip verifies the uncompressed-BAM mode

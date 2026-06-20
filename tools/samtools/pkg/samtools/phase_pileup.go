@@ -78,7 +78,7 @@ func newPhaseStreamPileup(recs []*sam.Record, rname string) *phaseStreamPileup {
 		if rec.Pos <= 0 || len(rec.Cigar) == 0 {
 			continue
 		}
-		refPos := rec.Pos // 1-based
+		refPos := int32(rec.Pos) // 1-based
 		qpos := int32(0)
 		for _, op := range rec.Cigar {
 			o := op.Op()

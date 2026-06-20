@@ -27,7 +27,7 @@ func buildMultiContainerCRAM(t *testing.T, n int) ([]byte, *sam.Header) {
 			QName: fmt.Sprintf("read%07d", i),
 			Flag:  0,
 			RName: "chr1",
-			Pos:   int32(i%90000 + 1),
+			Pos:   int64(i%90000 + 1),
 			MapQ:  40,
 			Cigar: cig,
 			Seq:   "ACGTACGTAC",
@@ -37,7 +37,7 @@ func buildMultiContainerCRAM(t *testing.T, n int) ([]byte, *sam.Header) {
 		switch i % 5 {
 		case 1:
 			rec.RName = "chr2"
-			rec.Pos = int32(i%40000 + 1)
+			rec.Pos = int64(i%40000 + 1)
 		case 4:
 			// An unmapped read: no placement, no CIGAR.
 			rec.Flag = 0x4
@@ -199,7 +199,7 @@ func BenchmarkParallelCRAMDecode(b *testing.B) {
 	for i := 0; i < n; i++ {
 		recs = append(recs, &sam.Record{
 			QName: fmt.Sprintf("read%07d", i),
-			RName: "chr1", Pos: int32(i%90000 + 1), MapQ: 40, Cigar: cig,
+			RName: "chr1", Pos: int64(i%90000 + 1), MapQ: 40, Cigar: cig,
 			Seq: "ACGTACGTAC", Qual: []byte{30, 31, 32, 33, 34, 35, 36, 37, 38, 39}, RNext: "*",
 		})
 	}

@@ -333,9 +333,9 @@ func (rd *recordDecoder) decodeRecord(index int) (*decodedRecord, error) {
 	}
 	if rd.h.Preservation.APDelta {
 		rd.prevAlignmentStart += ap
-		rec.Pos = rd.prevAlignmentStart
+		rec.Pos = int64(rd.prevAlignmentStart)
 	} else {
-		rec.Pos = ap
+		rec.Pos = int64(ap)
 	}
 
 	rgValue, err := rd.intSeries("RG")
@@ -717,8 +717,8 @@ func (rd *recordDecoder) decodeMate(dr *decodedRecord, cf int32, index int) erro
 		} else {
 			rec.RNext = mateName
 		}
-		rec.PNext = np
-		rec.TLen = ts
+		rec.PNext = int64(np)
+		rec.TLen = int64(ts)
 	case cf&cfHasMateDownstream != 0:
 		// The mate is a later record in the slice; NF gives the distance.
 		// Its fields are filled in by resolveMates once the whole slice
@@ -849,7 +849,7 @@ func (rd *recordDecoder) decodeMapped(rec *sam.Record, cf int32, readLen int32, 
 	if err != nil {
 		return wrapf(err, "record %d", index)
 	}
-	seq, qual, cigar, err := rd.reconstructMapped(feats, readLen, rec.Pos)
+	seq, qual, cigar, err := rd.reconstructMapped(feats, readLen, int32(rec.Pos))
 	if err != nil {
 		return wrapf(err, "record %d", index)
 	}

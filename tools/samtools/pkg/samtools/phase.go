@@ -682,7 +682,7 @@ func walkAlignment(rec *sam.Record, fn func(refPos int32, queryBase byte, queryQ
 	if rec.Pos <= 0 || len(rec.Cigar) == 0 || rec.Seq == "" || rec.Seq == "*" {
 		return
 	}
-	refPos := rec.Pos // 1-based
+	refPos := int32(rec.Pos) // 1-based
 	qpos := 0
 	hasQual := len(rec.Qual) == len(rec.Seq)
 	for _, op := range rec.Cigar {

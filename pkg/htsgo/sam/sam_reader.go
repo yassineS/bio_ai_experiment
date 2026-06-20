@@ -164,11 +164,11 @@ func parseSAMRecord(line string) (*Record, error) {
 	} else {
 		rec.RName = fields[2]
 	}
-	pos, err := strconv.ParseInt(fields[3], 10, 32)
+	pos, err := strconv.ParseInt(fields[3], 10, 64)
 	if err != nil {
 		return nil, fmt.Errorf("sam: bad POS %q: %w", fields[3], err)
 	}
-	rec.Pos = int32(pos)
+	rec.Pos = pos
 	mapq, err := strconv.ParseUint(fields[4], 10, 8)
 	if err != nil {
 		return nil, fmt.Errorf("sam: bad MAPQ %q: %w", fields[4], err)
@@ -190,16 +190,16 @@ func parseSAMRecord(line string) (*Record, error) {
 	} else {
 		rec.RNext = fields[6]
 	}
-	pnext, err := strconv.ParseInt(fields[7], 10, 32)
+	pnext, err := strconv.ParseInt(fields[7], 10, 64)
 	if err != nil {
 		return nil, fmt.Errorf("sam: bad PNEXT %q: %w", fields[7], err)
 	}
-	rec.PNext = int32(pnext)
-	tlen, err := strconv.ParseInt(fields[8], 10, 32)
+	rec.PNext = pnext
+	tlen, err := strconv.ParseInt(fields[8], 10, 64)
 	if err != nil {
 		return nil, fmt.Errorf("sam: bad TLEN %q: %w", fields[8], err)
 	}
-	rec.TLen = int32(tlen)
+	rec.TLen = tlen
 	if fields[9] != "*" {
 		rec.Seq = fields[9]
 	}

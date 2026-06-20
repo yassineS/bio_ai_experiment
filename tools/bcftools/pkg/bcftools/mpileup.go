@@ -2774,7 +2774,7 @@ func applyMpileupDepthCap(perInputChromRecs [][]*sam.Record, maxcnt int) {
 		// cap predicate is iter->pos == b->core.pos; the very first
 		// read therefore only triggers the cap when its 0-based start
 		// is also 0, which our zero initialisation reproduces.
-		iterPos := int32(0)
+		iterPos := int64(0)
 		// lastAccepted tracks whether any read on this contig has been
 		// accepted yet. Before the first accepted read, iter->pos is
 		// still its init value, so we honour the upstream check via

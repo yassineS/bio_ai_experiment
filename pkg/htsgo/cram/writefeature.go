@@ -111,7 +111,7 @@ func (e *recordEncoder) encodeFeatures(rec *sam.Record, readLen int) error {
 	readPos := int32(0) // 0-based cursor within the read.
 	refPos := int32(0)  // 0-based cursor within ref (only used when ref != nil).
 	if ref != nil {
-		refPos = rec.Pos - 1
+		refPos = int32(rec.Pos) - 1
 	}
 	for _, op := range rec.Cigar {
 		n := int32(op.Length())

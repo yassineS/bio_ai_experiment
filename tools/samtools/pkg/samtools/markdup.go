@@ -778,7 +778,7 @@ func unclippedEnd(rec *sam.Record) int64 {
 }
 
 // otherUnclippedStart computes the mate's unclipped start from the MC tag.
-func otherUnclippedStart(matePos int32, mateCigar string) int64 {
+func otherUnclippedStart(matePos int64, mateCigar string) int64 {
 	clipped := int64(0)
 	i := 0
 	for i < len(mateCigar) {
@@ -802,7 +802,7 @@ func otherUnclippedStart(matePos int32, mateCigar string) int64 {
 }
 
 // otherUnclippedEnd computes the mate's unclipped end from the MC tag.
-func otherUnclippedEnd(matePos int32, mateCigar string) int64 {
+func otherUnclippedEnd(matePos int64, mateCigar string) int64 {
 	refLen := int64(0)
 	tailClip := int64(0)
 	i := 0

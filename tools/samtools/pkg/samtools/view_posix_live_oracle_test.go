@@ -45,7 +45,7 @@ type decodedRec struct {
 	QName string
 	Flag  uint16
 	RName string
-	Pos   int32
+	Pos   int64
 	MapQ  uint8
 	Cigar string
 	Seq   string

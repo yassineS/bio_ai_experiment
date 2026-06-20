@@ -287,7 +287,7 @@ func mkRec(t *testing.T, qname string, flag uint16, pos int, seq, cigar string) 
 		QName: qname,
 		Flag:  flag,
 		RName: "chr1",
-		Pos:   int32(pos),
+		Pos:   int64(pos),
 		MapQ:  60,
 		Cigar: cig,
 		Seq:   seq,

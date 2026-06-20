@@ -344,16 +344,22 @@ func ParseAux(field string) (Aux, error) {
 // Record is one SAM/BAM alignment record. All fields use Go-friendly types
 // (1-based POS as stored in SAM, with -1 meaning "*" for RNAME). When read
 // from BAM, fields preserve the binary types where appropriate.
+//
+// Pos, PNext and TLen are int64 (htslib's hts_pos_t) so SAM and CRAM, which
+// support reference coordinates beyond 2^31, round-trip losslessly. BAM stores
+// POS/PNEXT/TLEN in 32-bit on-disk fields, so the BAM writer rejects a record
+// whose coordinate exceeds that range rather than truncating it — a format
+// limit, matching htslib.
 type Record struct {
 	QName string
 	Flag  uint16
 	RName string
-	Pos   int32 // 1-based position; 0 means unmapped (BAM stores 0-based + 1)
+	Pos   int64 // 1-based position; 0 means unmapped (BAM stores 0-based + 1)
 	MapQ  uint8
 	Cigar Cigar
 	RNext string
-	PNext int32
-	TLen  int32
+	PNext int64
+	TLen  int64
 	Seq   string
 	Qual  []byte // raw Phred scores; nil/length zero or all 0xff means "*"
 	Aux   []Aux
@@ -424,12 +430,12 @@ func (r *Record) IsPrimary() bool {
 // EndPosition returns the 1-based inclusive end coordinate of the alignment
 // on the reference, computed from Pos + Cigar.ReferenceLength() - 1. Returns
 // Pos when the CIGAR consumes no reference bases (e.g. empty / pure insertion).
-func (r *Record) EndPosition() int32 {
+func (r *Record) EndPosition() int64 {
 	n := r.Cigar.ReferenceLength()
 	if n == 0 {
 		return r.Pos
 	}
-	return r.Pos + int32(n) - 1
+	return r.Pos + int64(n) - 1
 }
 
 // PackedSeq returns the BAM 4-bit-packed encoding of the record's SEQ:

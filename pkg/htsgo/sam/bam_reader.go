@@ -341,16 +341,16 @@ func (br *BAMReader) decodeShallowInto(dst *Record, buf []byte) error {
 	dst.MapQ = mapq
 	// BAM POS is 0-based; SAM POS is 1-based. -1 → 0.
 	if pos >= 0 {
-		dst.Pos = pos + 1
+		dst.Pos = int64(pos) + 1
 	} else {
 		dst.Pos = 0
 	}
 	if nextPos >= 0 {
-		dst.PNext = nextPos + 1
+		dst.PNext = int64(nextPos) + 1
 	} else {
 		dst.PNext = 0
 	}
-	dst.TLen = tlen
+	dst.TLen = int64(tlen)
 	return nil
 }
 
@@ -480,16 +480,16 @@ func (br *BAMReader) decodeInto(rec *Record, buf []byte) error {
 	rec.MapQ = mapq
 	// BAM POS is 0-based; SAM POS is 1-based. -1 → 0.
 	if pos >= 0 {
-		rec.Pos = pos + 1
+		rec.Pos = int64(pos) + 1
 	} else {
 		rec.Pos = 0
 	}
 	if nextPos >= 0 {
-		rec.PNext = nextPos + 1
+		rec.PNext = int64(nextPos) + 1
 	} else {
 		rec.PNext = 0
 	}
-	rec.TLen = tlen
+	rec.TLen = int64(tlen)
 	return nil
 }
 

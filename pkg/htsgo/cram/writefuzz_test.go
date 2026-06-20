@@ -49,7 +49,7 @@ func fuzzRecordsFromBytes(data []byte) []*sam.Record {
 			rec.RNext = "*"
 		} else {
 			rec.RName = refNames[int(b(0)>>1)%2]
-			rec.Pos = int32(b(1))%1000 + 1
+			rec.Pos = int64(b(1))%1000 + 1
 			rec.MapQ = b(0) % 60
 			// A plain full-length match CIGAR keeps the record encodable.
 			cig, _ := sam.ParseCigar(itoa(seqLen) + "M")

@@ -183,13 +183,14 @@ func sliceSpan(records []*sam.Record) (start, span int32) {
 		if rec.Flag&sam.FlagUnmapped != 0 || rec.Pos <= 0 {
 			continue
 		}
-		end := rec.EndPosition()
+		end := int32(rec.EndPosition())
+		recPos := int32(rec.Pos)
 		if !any {
-			minPos, maxEnd, any = rec.Pos, end, true
+			minPos, maxEnd, any = recPos, end, true
 			continue
 		}
-		if rec.Pos < minPos {
-			minPos = rec.Pos
+		if recPos < minPos {
+			minPos = recPos
 		}
 		if end > maxEnd {
 			maxEnd = end
@@ -488,7 +489,7 @@ func (e *recordEncoder) encodeRecord(rec *sam.Record) error {
 
 	// Alignment position is stored absolute (the preservation map's AP
 	// entry is false), so no running delta is needed.
-	b.ap = e.putU(b.ap, rec.Pos)
+	b.ap = e.putU(b.ap, int32(rec.Pos))
 
 	// The read group always travels as an ordinary auxiliary tag, so the
 	// RG data series is the no-read-group sentinel -1 for every record. -1
@@ -567,8 +568,8 @@ func (e *recordEncoder) encodeMate(rec *sam.Record) error {
 	// NS can be -1 and TS (the template length) can be negative, so both are
 	// signed series (VARINT_SIGNED in v4); NP (mate position) is non-negative.
 	b.ns = e.putS(b.ns, nsID)
-	b.np = e.putU(b.np, rec.PNext)
-	b.ts = e.putS(b.ts, rec.TLen)
+	b.np = e.putU(b.np, int32(rec.PNext))
+	b.ts = e.putS(b.ts, int32(rec.TLen))
 	return nil
 }
 

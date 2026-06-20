@@ -34,13 +34,13 @@ func buildMultiContainerCRAMBytes(t *testing.T, n int) []byte {
 	for i := 0; i < n; i++ {
 		rec := &sam.Record{
 			QName: fmt.Sprintf("read%07d", i),
-			RName: "chr1", Pos: int32(i%90000 + 1), MapQ: 40, Cigar: cig,
+			RName: "chr1", Pos: int64(i%90000 + 1), MapQ: 40, Cigar: cig,
 			Seq: "ACGTACGTAC", Qual: []byte{30, 31, 32, 33, 34, 35, 36, 37, 38, 39}, RNext: "*",
 		}
 		switch i % 5 {
 		case 1:
 			rec.RName = "chr2"
-			rec.Pos = int32(i%40000 + 1)
+			rec.Pos = int64(i%40000 + 1)
 		case 4:
 			rec.Flag = 0x4
 			rec.RName = "*"

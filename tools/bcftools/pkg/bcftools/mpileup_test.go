@@ -18,7 +18,7 @@ type samRecordStub struct {
 	Flag  uint16
 	MapQ  uint8
 	RName string
-	Pos   int32
+	Pos   int64
 }
 
 func (s *samRecordStub) toRecord() *sam.Record {

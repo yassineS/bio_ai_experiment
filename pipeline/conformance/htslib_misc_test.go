@@ -55,7 +55,6 @@ func TestHtslibBGZFBoundaries(t *testing.T) {
 // this is a known upstream feature (not a fixture we authored), a divergence is
 // reported as a test failure (a parity finding) rather than hidden.
 func TestHtslibLongRefs(t *testing.T) {
-	t.Skip("PARITY GAP: POS/PNEXT parsed as int32 (pkg/htsgo/sam/sam_reader.go); htslib accepts long-ref coordinates >2^31. Regression guard — remove this skip when fixed. See docs/PARITY_ROADMAP.md, docs/manuscript/bug_corpus.md.")
 	dir := htslibTest(t)
 	our := ourSamtools(t)
 	up := upSamtools(t)

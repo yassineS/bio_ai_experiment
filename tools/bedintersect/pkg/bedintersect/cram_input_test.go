@@ -27,7 +27,7 @@ func TestReadInRecords_CRAM(t *testing.T) {
 		}
 		seqLen := c.QueryLength()
 		return &sam.Record{
-			QName: qname, Flag: 0, RName: "chr1", Pos: pos, MapQ: 60,
+			QName: qname, Flag: 0, RName: "chr1", Pos: int64(pos), MapQ: 60,
 			Cigar: c, Seq: string(bytes.Repeat([]byte("A"), seqLen)),
 			Qual: bytes.Repeat([]byte{30}, seqLen), RNext: "*", PNext: 0,
 		}

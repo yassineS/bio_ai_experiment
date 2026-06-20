@@ -209,7 +209,7 @@ func convert(bed bedRecord, opts Options, lineNum int) (*sam.Record, error) {
 	rec := &sam.Record{
 		QName: bed.name,
 		RName: bed.chrom,
-		Pos:   int32(bed.start) + 1, // sam.Record uses 1-based POS.
+		Pos:   int64(bed.start) + 1, // sam.Record uses 1-based POS.
 		MapQ:  uint8(opts.MapQ),
 		RNext: "*",
 		PNext: 0,

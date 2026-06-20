@@ -231,7 +231,7 @@ func mkRec(qname, rname string, pos int32, cigarStr, seq string) *sam.Record {
 		qual[i] = byte(20 + i%30)
 	}
 	return &sam.Record{
-		QName: qname, Flag: 0, RName: rname, Pos: pos, MapQ: 40,
+		QName: qname, Flag: 0, RName: rname, Pos: int64(pos), MapQ: 40,
 		Cigar: cig, RNext: "*", Seq: seq, Qual: qual,
 	}
 }

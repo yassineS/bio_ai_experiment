@@ -472,7 +472,7 @@ func TestStatsGCDMultiBin(t *testing.T) {
 
 	mk := func(pos int32, gc, depth int) {
 		for i := 0; i < depth; i++ {
-			rec := &sam.Record{RName: "c", Pos: pos, Seq: strings.Repeat("N", 100)}
+			rec := &sam.Record{RName: "c", Pos: int64(pos), Seq: strings.Repeat("N", 100)}
 			c.accumulateGCD(rec, gc)
 		}
 	}
@@ -527,7 +527,7 @@ func TestStatsCOVStreamingFlush(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseCigar(%q): %v", cig, err)
 		}
-		return &sam.Record{RName: rname, Pos: pos, Cigar: ops}
+		return &sam.Record{RName: rname, Pos: int64(pos), Cigar: ops}
 	}
 
 	c := newStatsCounters()

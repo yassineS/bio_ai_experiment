@@ -742,19 +742,20 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) error {
 	}
 	// Sort-order detector — track whether records arrive coordinate-sorted.
 	if !c.sortBroken && rec.IsMapped() {
+		recPos := int32(rec.Pos)
 		if c.lastRef == "" {
 			c.lastRef = rec.RName
-			c.lastPos = rec.Pos
+			c.lastPos = recPos
 		} else if rec.RName == c.lastRef {
-			if rec.Pos < c.lastPos {
+			if recPos < c.lastPos {
 				c.sortBroken = true
 			} else {
-				c.lastPos = rec.Pos
+				c.lastPos = recPos
 			}
 		} else {
 			// New reference; positions only need to be sorted within a ref.
 			c.lastRef = rec.RName
-			c.lastPos = rec.Pos
+			c.lastPos = recPos
 		}
 	}
 	// CHK checksum — upstream's update_checksum (stats.c:755) runs for every
@@ -964,7 +965,7 @@ func (c *StatsCounters) addBasesMappedCigar(rec *sam.Record) {
 	}
 	// Region-restricted: iref is the 1-based reference coordinate of the
 	// current CIGAR op (rec.Pos is already 1-based here).
-	iref := rec.Pos
+	iref := int32(rec.Pos)
 	for _, op := range rec.Cigar {
 		ch := op.Char()
 		ncig := int32(op.Length())
@@ -1012,7 +1013,7 @@ func (c *StatsCounters) isInRegions(rec *sam.Record) (bool, error) {
 	// Upstream errors when -t is used on an unsorted BAM. Detect a backwards
 	// jump within the same reference.
 	if !c.sortBroken && rec.IsMapped() {
-		if c.lastRef == rec.RName && rec.Pos < c.lastPos {
+		if c.lastRef == rec.RName && int32(rec.Pos) < c.lastPos {
 			return false, fmt.Errorf("the BAM must be sorted in order for -t to work")
 		}
 	}
@@ -1024,7 +1025,7 @@ func (c *StatsCounters) isInRegions(rec *sam.Record) (bool, error) {
 	// 0-based core.pos with `end <= pos`; rec.Pos here is 1-based, so the
 	// equivalent test is `End < rec.Pos`.
 	i := cur
-	for i < len(ivs) && ivs[i].End < rec.Pos {
+	for i < len(ivs) && int64(ivs[i].End) < rec.Pos {
 		i++
 	}
 	if i >= len(ivs) {
@@ -1034,7 +1035,7 @@ func (c *StatsCounters) isInRegions(rec *sam.Record) (bool, error) {
 	// bam_endpos is a 0-based exclusive end, equal to our 1-based inclusive
 	// EndPosition; the overlap test `endpos < beg` carries over unchanged.
 	endpos := rec.EndPosition()
-	if endpos < ivs[i].Beg {
+	if endpos < int64(ivs[i].Beg) {
 		return false, nil
 	}
 	c.regCursor[rec.RName] = i
@@ -1516,7 +1517,7 @@ func (c *StatsCounters) accumulateCoverage(rec *sam.Record) {
 		c.covHigh = 0
 	}
 	// Every position strictly below rec.Pos can receive no further depth.
-	c.flushCoverageWindow(rec.Pos)
+	c.flushCoverageWindow(int32(rec.Pos))
 
 	// When --target-regions is active, COV depth is restricted to on-target
 	// reference positions, mirroring upstream's per-chunk round_buffer
@@ -1525,7 +1526,7 @@ func (c *StatsCounters) accumulateCoverage(rec *sam.Record) {
 	if c.regions != nil {
 		ivs = c.regions.byRef[rec.RName]
 	}
-	pos := rec.Pos
+	pos := int32(rec.Pos)
 	for _, op := range rec.Cigar {
 		ch := op.Char()
 		ln := int32(op.Length())
@@ -1587,7 +1588,7 @@ func (c *StatsCounters) accumulateGCD(rec *sam.Record, gcCount int) {
 		return
 	}
 	// C uses a 0-based core.pos; rec.Pos here is 1-based.
-	pos := rec.Pos - 1
+	pos := int32(rec.Pos) - 1
 	readLen := gcdReadLen(rec)
 
 	if c.gcdRef != nil {
