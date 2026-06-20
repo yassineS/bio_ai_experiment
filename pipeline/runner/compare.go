@@ -119,6 +119,17 @@ func isCommandHeader(ln []byte) bool {
 		strings.Contains(strings.ToLower(key), "version")
 }
 
+// StripProvenance removes non-reproducible provenance lines (tool-version
+// stamps, @PG/@CO headers, ##<tool>_*Command= lines, stats banner comments,
+// timing lines) from a text output stream, returning the normalized bytes.
+//
+// It is the exact normalization CompareByteExact and CompareSimilarity apply
+// before comparing, exported so other harnesses (e.g. the differential fuzzer
+// in pipeline/difffuzz) can reuse the SAME notion of "benign provenance
+// difference" rather than re-deriving it. A divergence on StripProvenance'd
+// bytes is therefore a genuine behavioral difference, not a known-benign stamp.
+func StripProvenance(b []byte) []byte { return stripProvenance(b) }
+
 // CompareResult holds the outcome of comparing two output streams.
 type CompareResult struct {
 	Equal        bool
