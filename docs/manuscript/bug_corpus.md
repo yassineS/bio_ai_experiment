@@ -79,11 +79,11 @@ harnesses were built — concrete evidence the methodology keeps finding real di
   on-disk format limit; byte-exact for POS < 2^31).
 - **A15** empty/headerless file accepted vs upstream exit 1 — FIXED (reject when the first line is
   not a valid 11-column SAM record; valid headerless-record and zero-record-with-header unaffected).
-
-**All eight gaps the validation harnesses surfaced are now closed.**
 - **A16** VCF/BCF float `%g` formatting (large/extreme magnitudes) — FIXED.
 - **A17** samtools flagstat mate-to-different-chr RNEXT miscount — FIXED.
 - **A18** bedtools merge unsorted/ragged-input rejection — FIXED.
+
+**All eight gaps the validation harnesses surfaced are now closed.**
 
 These also serve the **anti-memorization** argument (`04 §3`): a pure regurgitator of upstream C
 would not produce these *divergences from* upstream — they are genuine independent-implementation
