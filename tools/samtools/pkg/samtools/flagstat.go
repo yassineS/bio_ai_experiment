@@ -102,9 +102,18 @@ func (c *FlagstatCounts) add(r *sam.Record) {
 	}
 	if !r.IsMateUnmapped() {
 		c.WithItselfAndMate[idx]++
-		// Mate on a different chromosome: RNEXT != "=" and != "" (the
-		// SAM-convention reflexive marker).
-		if r.RNext != "" && r.RNext != "=" {
+		// Mate on a different chromosome. Upstream (bam_stat.c
+		// flagstat_loop) compares decoded reference ids, c->mtid != c->tid,
+		// inside the both-mates-mapped branch. Here the read is mapped
+		// (RNAME != "*") and the mate is mapped (FMUNMAP clear), so the mate
+		// id differs from the read id unless RNEXT names the read's own
+		// reference — either via the "=" reflexive marker or by spelling the
+		// same RNAME. Every other RNEXT value, including "*"/"" (which htslib
+		// decodes to mtid=-1, distinct from a mapped read's tid>=0), counts as
+		// a different chr. Comparing ref ids rather than the raw RNEXT string
+		// fixes both the RNEXT==RNAME over-count and the RNEXT=="*"-with-mate-
+		// mapped under-count.
+		if r.RNext != "=" && r.RNext != r.RName {
 			c.MateDiffChr[idx]++
 			if r.MapQ >= 5 {
 				c.MateDiffChrMapq5[idx]++
