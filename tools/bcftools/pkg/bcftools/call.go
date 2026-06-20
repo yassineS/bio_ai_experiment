@@ -274,9 +274,16 @@ func resolveSampleSexes(tbl *PloidyTable, samples []string, opts *CallOptions) [
 // When opts.PloidyTable is nil it falls back to opts.Ploidy (the global
 // 1- or 2-uniform mode), so existing call sites keep working. nsmpl is
 // the number of input samples on the record.
-func perSamplePloidy(opts CallOptions, sexes []int, chrom string, pos, nsmpl int) []int {
+func perSamplePloidy(opts CallOptions, sexes []int, chrom string, pos, nsmpl int, buf []int) []int {
 	if opts.PloidyTable == nil {
-		out := make([]int, nsmpl)
+		// Reuse the caller's buffer (no PloidyTable is the common path). The
+		// returned slice is consumed within the record and not retained.
+		var out []int
+		if cap(buf) >= nsmpl {
+			out = buf[:nsmpl]
+		} else {
+			out = make([]int, nsmpl)
+		}
 		p := int(opts.Ploidy)
 		if p == 0 {
 			p = 2
@@ -560,7 +567,8 @@ func callStreaming(in io.Reader, out io.Writer, opts CallOptions, targets []regi
 			}
 			site.used = true
 		}
-		samplePloidy := perSamplePloidy(opts, sexes, v.Chrom, v.Pos, len(v.Samples))
+		samplePloidy := perSamplePloidy(opts, sexes, v.Chrom, v.Pos, len(v.Samples), sc.samplePloidy)
+		sc.samplePloidy = samplePloidy
 		called, keep := callVariant(v, opts, samplePloidy, &sc)
 		if !keep {
 			continue

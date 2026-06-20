@@ -13,6 +13,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"unsafe"
 )
 
 // Variant represents a single VCF variant record.
@@ -53,6 +54,13 @@ type Reader struct {
 	// retain them.
 	fieldsBuf []string
 	valuesBuf []string
+	// lineBuf is a reused copy of the current line's raw bytes. bufio.Scanner's
+	// Bytes() return is only valid until the next Scan, so the read path copies
+	// it here once per line (amortized zero-alloc after warmup) and parses from
+	// the copy. The ReadInto fast path aliases lineBuf directly as a string via
+	// unsafe.String (no per-line alloc); the retaining Read path materializes a
+	// fresh string(lineBuf) so the returned Variant owns its own backing.
+	lineBuf []byte
 }
 
 // NewReader creates a new VCF reader from an io.Reader.
@@ -70,6 +78,11 @@ func NewReader(r io.Reader) *Reader {
 // Must be called before reading variants.
 func (r *Reader) ReadHeader() (*Header, error) {
 	for r.scanner.Scan() {
+		// Header lines are retained (in MetaInfo / Samples), so Text() — which
+		// copies the scanner's transient bytes into an owned string — is the
+		// right call here. The header is a handful of lines, so its allocation
+		// is negligible; the hot per-record path below is the one optimized to
+		// avoid per-line strings.
 		line := r.scanner.Text()
 
 		// Meta-information line
@@ -104,9 +117,13 @@ func (r *Reader) ReadHeader() (*Header, error) {
 
 // Read reads the next variant record.
 // Returns io.EOF when no more records are available.
+//
+// The returned Variant owns all its string fields (they are copied out of the
+// reader's scratch buffer), so the caller may retain it across subsequent
+// reads — unlike ReadInto, whose Variant must not be retained.
 func (r *Reader) Read() (*Variant, error) {
 	v := &Variant{}
-	if err := r.readInto(v); err != nil {
+	if err := r.readInto(v, true); err != nil {
 		return nil, err
 	}
 	return v, nil
@@ -118,12 +135,19 @@ func (r *Reader) Read() (*Variant, error) {
 // not retain v — or any string it exposes — across calls, since the next
 // ReadInto overwrites them. It returns io.EOF at end of input, like Read.
 func (r *Reader) ReadInto(v *Variant) error {
-	return r.readInto(v)
+	return r.readInto(v, false)
 }
 
 // readInto advances to the next data line (skipping blanks and comments) and
 // parses it into v. It is the shared body of Read and ReadInto.
-func (r *Reader) readInto(v *Variant) error {
+//
+// It reads the line via scanner.Bytes() (no per-line string allocation) into
+// the reused r.lineBuf. When owned is true (the Read path) the line is
+// materialized as a fresh string so v's fields own their backing memory and v
+// may be retained. When owned is false (the ReadInto path) the line string
+// aliases r.lineBuf with no allocation — valid only until the next read, which
+// matches ReadInto's documented contract.
+func (r *Reader) readInto(v *Variant, owned bool) error {
 	if r.err != nil {
 		return r.err
 	}
@@ -139,9 +163,21 @@ func (r *Reader) readInto(v *Variant) error {
 			r.err = io.EOF
 			return io.EOF
 		}
-		line := r.scanner.Text()
-		if line == "" || strings.HasPrefix(line, "#") {
+		b := r.scanner.Bytes()
+		if len(b) == 0 || b[0] == '#' {
 			continue
+		}
+		// Copy the transient scanner bytes into the reused buffer; Bytes() is
+		// only valid until the next Scan.
+		r.lineBuf = append(r.lineBuf[:0], b...)
+		var line string
+		if owned {
+			// Read: caller may retain v, so the string must own its memory.
+			line = string(r.lineBuf)
+		} else {
+			// ReadInto: alias the buffer with no allocation. Safe because the
+			// caller must not retain v (or its strings) past the next read.
+			line = unsafe.String(unsafe.SliceData(r.lineBuf), len(r.lineBuf))
 		}
 		return r.parseLine(line, v)
 	}

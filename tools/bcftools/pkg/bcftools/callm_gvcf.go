@@ -189,15 +189,20 @@ func (g *callGVCFBlocker) Write(v *vcf.Variant) error {
 	if canCollapse {
 		if !g.valid {
 			g.valid = true
-			g.rid = v.Chrom
+			// v.Chrom / v.Ref / sample names may alias the reader's reused
+			// line buffer (records sourced via ReadInto are consume-and-discard:
+			// their strings are only valid until the next read). The block is
+			// held in flight across many subsequent reads, so clone the strings
+			// it retains to give the block its own stable backing.
+			g.rid = strings.Clone(v.Chrom)
 			g.start = v.Pos
 			g.end = v.Pos
 			g.prevRange = dpBin
-			g.refAllele = v.Ref
+			g.refAllele = strings.Clone(v.Ref)
 			g.nSamples = len(v.Samples)
 			g.sampleNm = make([]string, g.nSamples)
 			for i, s := range v.Samples {
-				g.sampleNm[i] = s.Name
+				g.sampleNm[i] = strings.Clone(s.Name)
 			}
 			g.minDP = append([]int{}, dpVec...)
 			g.blockMinDP = minDP
