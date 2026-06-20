@@ -85,13 +85,19 @@ jobs:
     name: upstream parity (live)
     runs-on: ubuntu-latest
     steps:
+      # Checkout WITHOUT submodules — the vendored reference_code/ tree has ~53
+      # submodules (STAR, salmon, canu, …) totalling many GB. This job only needs
+      # htslib/bcftools/samtools, so we init just those (shallow) below rather than
+      # recursively fetching everything (which is slow, disk-heavy, and fragile).
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: actions/setup-go@v5
         with:
           go-version-file: 'go.mod'
           cache: true
+      - name: Init only the needed upstream submodules
+        run: |
+          git submodule update --init --depth 1 --recursive reference_code/htslib
+          git submodule update --init --depth 1 reference_code/bcftools reference_code/samtools
       - name: Install htslib build dependencies
         run: |
           sudo apt-get update
@@ -105,5 +111,16 @@ jobs:
         run: cd reference_code/bcftools && make -j"$(nproc)"
       - name: Build samtools
         run: cd reference_code/samtools && make -j"$(nproc)"
+      # Run upstream-parity tests ONLY for the tools whose upstream binary we just
+      # built (samtools, bcftools, the htslib utils) plus the shared htsgo packages.
+      # Other tools' *Upstream* tests need their own binaries (bedtools, seqtk, …)
+      # which this job does not build; those run in their own future jobs/locally.
       - name: Run live upstream-parity tests
-        run: go test -run Upstream ./tools/... ./pkg/...
+        run: |
+          go test -run Upstream \
+            ./tools/samtools/... \
+            ./tools/bcftools/... \
+            ./tools/bgzip/... \
+            ./tools/tabix/... \
+            ./tools/htsfile/... \
+            ./pkg/...
