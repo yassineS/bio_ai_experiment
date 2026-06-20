@@ -47,7 +47,7 @@ func upstreamBcftoolsThreadTail(t *testing.T) string {
 		threadTailBinPath = upstreamBcftools(t)
 	})
 	if threadTailBinPath == "" {
-		t.Fatalf("upstream bcftools binary unavailable")
+		t.Skipf("upstream bcftools binary unavailable")
 	}
 	return threadTailBinPath
 }

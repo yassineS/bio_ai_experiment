@@ -1445,7 +1445,7 @@ func TestParity_SamMerge_T03_CoordInterleave(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-read merged BAM: %v", err)
 	}
-	var positions []int32
+	var positions []int64
 	for {
 		rec, err := rd.Read()
 		if err == io.EOF {

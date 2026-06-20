@@ -47,6 +47,11 @@ type MergeOptions struct {
 	// Warn, when set, receives upstream-style stderr warnings (e.g. the
 	// "Non numeric value" message). When nil, warnings are discarded.
 	Warn io.Writer
+	// Filename is the input file name reported in the upstream-style validation
+	// errors (out-of-order record and field-count messages). It should be the
+	// value passed to -i; an empty value is reported as "-" (stdin), matching
+	// upstream. It does not affect which file is read.
+	Filename string
 }
 
 // precision returns the effective output precision (DefaultPrecision when 0).

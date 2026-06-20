@@ -13,6 +13,7 @@ Project boards help organize and track work across the repository. We recommend 
 **Purpose**: Track the development lifecycle of individual bioinformatics tools
 
 **Columns/Status:**
+
 - 📋 **Backlog** - Tools identified for potential implementation
 - 🔍 **Analysis** - Tools being analyzed using TEMPLATE.md
 - 📝 **Planning** - Design and planning phase
@@ -23,6 +24,7 @@ Project boards help organize and track work across the repository. We recommend 
 - 🚫 **Won't Do** - Decided not to implement
 
 **Custom Fields:**
+
 - Tool Name (text)
 - Category (dropdown): Alignment, QC, Assembly, etc.
 - Priority (dropdown): Critical, High, Medium, Low
@@ -31,6 +33,7 @@ Project boards help organize and track work across the repository. We recommend 
 - Assignee (person)
 
 **Automation:**
+
 - Auto-add issues with "tool-analysis" or "tool-implementation" label
 - Move to "In Progress" when issue is assigned
 - Move to "Testing" when PR is created
@@ -41,6 +44,7 @@ Project boards help organize and track work across the repository. We recommend 
 **Purpose**: Track feature requests and enhancements across all components
 
 **Columns/Status:**
+
 - 📥 **New** - Newly submitted feature requests
 - 🔍 **Triage** - Being evaluated for priority and feasibility
 - 👍 **Approved** - Accepted for implementation
@@ -51,6 +55,7 @@ Project boards help organize and track work across the repository. We recommend 
 - 🚫 **Rejected** - Will not implement
 
 **Custom Fields:**
+
 - Component (dropdown): Tool, Library, MCP, Docs, CI
 - Priority (dropdown): Critical, High, Medium, Low
 - Impact (dropdown): Wide, Moderate, Narrow
@@ -59,6 +64,7 @@ Project boards help organize and track work across the repository. We recommend 
 - Status (status)
 
 **Automation:**
+
 - Auto-add issues with "enhancement" label
 - Move to "Triage" when created
 - Move to "In Progress" when assigned
@@ -70,6 +76,7 @@ Project boards help organize and track work across the repository. We recommend 
 **Purpose**: Track and resolve bugs across the project
 
 **Columns/Status:**
+
 - 🐛 **New** - Newly reported bugs
 - 🔍 **Triage** - Evaluating severity and priority
 - ✅ **Confirmed** - Bug confirmed and prioritized
@@ -80,6 +87,7 @@ Project boards help organize and track work across the repository. We recommend 
 - 🔄 **Duplicate** - Duplicate of another issue
 
 **Custom Fields:**
+
 - Severity (dropdown): Critical, High, Medium, Low
 - Component (dropdown): Tool name or component
 - Affected Version (text)
@@ -88,6 +96,7 @@ Project boards help organize and track work across the repository. We recommend 
 - Assignee (person)
 
 **Automation:**
+
 - Auto-add issues with "bug" label
 - Move to "Triage" when created
 - Move to "In Progress" when assigned
@@ -100,6 +109,7 @@ Project boards help organize and track work across the repository. We recommend 
 **Purpose**: Track analysis work for identifying improvement opportunities
 
 **Columns/Status:**
+
 - 📋 **Proposed** - Tools proposed for analysis
 - 🔍 **Analyzing** - Active analysis using TEMPLATE.md
 - 📊 **Results** - Analysis completed, decision pending
@@ -108,6 +118,7 @@ Project boards help organize and track work across the repository. We recommend 
 - 📚 **Published** - Analysis published and shared
 
 **Custom Fields:**
+
 - Tool Name (text)
 - Category (dropdown)
 - Priority Score (number)
@@ -116,6 +127,7 @@ Project boards help organize and track work across the repository. We recommend 
 - Status (status)
 
 **Automation:**
+
 - Auto-add issues with "analysis" or "tool-evaluation" label
 - Move to "Analyzing" when assigned
 - Track progress through status updates
@@ -135,21 +147,27 @@ Project boards help organize and track work across the repository. We recommend 
 ### Sample Board Views
 
 #### Table View
+
 Provides spreadsheet-like view with all custom fields visible, great for:
+
 - Prioritization and sorting
 - Bulk updates
 - Filtering by multiple criteria
 - Exporting data
 
 #### Board View
+
 Kanban-style board with status columns, great for:
+
 - Visualizing workflow
 - Drag-and-drop status updates
 - Quick overview of work in progress
 - Daily standups
 
 #### Roadmap View
+
 Timeline view showing work over time, great for:
+
 - Release planning
 - Dependency tracking
 - Long-term planning
@@ -176,12 +194,14 @@ Create Issue → Triage → Planning → Development → Testing → Review → 
 ## Project Board Maintenance
 
 ### Weekly Tasks
+
 - Review and triage new issues
 - Update status of in-progress items
 - Clear completed items
 - Update priorities based on progress
 
 ### Monthly Tasks
+
 - Review "On Hold" items - still relevant?
 - Archive old "Done" items
 - Update roadmap for next month
@@ -192,16 +212,19 @@ Create Issue → Triage → Planning → Development → Testing → Review → 
 ### Example Queries/Filters
 
 **High Priority Bugs:**
+
 ```
 is:issue is:open label:bug priority:high,critical
 ```
 
 **Tools in Development:**
+
 ```
 is:issue is:open label:tool-implementation status:"In Progress"
 ```
 
 **This Week's Completions:**
+
 ```
 is:issue is:closed closed:>=2024-01-15
 ```
@@ -221,16 +244,19 @@ Combine project boards with labels for powerful organization:
 Track these metrics from project boards:
 
 ### Velocity Metrics
+
 - Issues/PRs closed per week
 - Average time to close issues
 - Average time from "In Progress" to "Done"
 
 ### Quality Metrics
+
 - Bug fix rate
 - Test coverage increase
 - Documentation completeness
 
 ### Planning Metrics
+
 - Items in backlog
 - Items in progress vs. completed
 - Blocked items count
@@ -238,12 +264,15 @@ Track these metrics from project boards:
 ## Team Collaboration
 
 ### Daily Standup
+
 Use board views during daily standups:
+
 - What moved forward yesterday?
 - What's blocked?
 - What's the plan for today?
 
 ### Sprint Planning
+
 1. Review completed work from last sprint
 2. Evaluate items in backlog
 3. Estimate and prioritize next sprint items
@@ -251,6 +280,7 @@ Use board views during daily standups:
 5. Update board with sprint milestone
 
 ### Release Planning
+
 1. Filter by milestone
 2. Check status of all items
 3. Identify blockers

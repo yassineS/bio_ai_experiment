@@ -35,7 +35,7 @@ func mapped(qname string, pos int32, reverse bool) *sam.Record {
 		flag = sam.FlagReverse
 	}
 	return &sam.Record{
-		QName: qname, Flag: flag, RName: "chr1", Pos: pos, MapQ: 60,
+		QName: qname, Flag: flag, RName: "chr1", Pos: int64(pos), MapQ: 60,
 		Cigar: sam.Cigar{sam.CigarOp(10<<4 | 0)}, // 10M
 		Seq:   "ACGTACGTAC", Qual: bytes.Repeat([]byte{30}, 10),
 	}

@@ -52,7 +52,7 @@ func upstreamSeqtkOpts(t *testing.T) string {
 		upstreamSeqtkOptsPath = bin
 	})
 	if upstreamSeqtkOptsErr != nil {
-		t.Fatalf("building upstream seqtk: %v", upstreamSeqtkOptsErr)
+		t.Skipf("building upstream seqtk: %v", upstreamSeqtkOptsErr)
 	}
 	return upstreamSeqtkOptsPath
 }

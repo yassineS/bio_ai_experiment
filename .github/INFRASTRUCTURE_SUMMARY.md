@@ -5,6 +5,7 @@ This document summarizes the new infrastructure components added to improve proj
 ## Overview
 
 The Bio AI Experiment repository now includes comprehensive infrastructure for:
+
 - Structured issue reporting and tracking
 - Standardized pull request submissions
 - Project board organization
@@ -18,6 +19,7 @@ The Bio AI Experiment repository now includes comprehensive infrastructure for:
 Three structured issue templates help users provide complete information:
 
 #### Bug Report (`bug_report.yml`)
+
 - Component selection (tool, library, MCP server, etc.)
 - Structured problem description
 - Steps to reproduce
@@ -28,6 +30,7 @@ Three structured issue templates help users provide complete information:
 **When to use**: Report bugs, unexpected behavior, or errors
 
 #### Feature Request (`feature_request.yml`)
+
 - Problem statement and proposed solution
 - Use case description
 - Priority and impact assessment
@@ -38,6 +41,7 @@ Three structured issue templates help users provide complete information:
 **When to use**: Suggest new features or enhancements
 
 #### Tool Analysis Request (`tool_analysis.yml`)
+
 - Tool information (name, repository, language)
 - Analysis rationale and justification
 - Known issues and popularity metrics
@@ -48,6 +52,7 @@ Three structured issue templates help users provide complete information:
 **When to use**: Request analysis of a bioinformatics tool for potential recoding
 
 #### Configuration (`config.yml`)
+
 - Disables blank issues
 - Provides links to Discussions, Documentation, and Contributing guide
 - Ensures structured issue creation
@@ -69,6 +74,7 @@ Comprehensive PR template with sections for:
 - **Checklist**: Pre-submission verification
 
 **Benefits**:
+
 - Ensures complete information for reviewers
 - Standardizes PR format
 - Improves code review quality
@@ -101,6 +107,7 @@ Comprehensive guide for organizing work with GitHub Projects:
    - Custom fields: Priority Score, Complexity, Analyst
 
 #### Features Documented
+
 - Board setup instructions
 - Automation rules
 - Workflow integration
@@ -123,6 +130,7 @@ Guide for enabling and organizing GitHub Discussions:
 8. **🤝 General** - General community topics
 
 #### Features Documented
+
 - Category setup instructions
 - Moderation guidelines
 - Best practices for maintainers and contributors
@@ -134,6 +142,7 @@ Guide for enabling and organizing GitHub Discussions:
 Comprehensive analysis of PRINSEQ tool following the standardized TEMPLATE.md format:
 
 #### Sections Covered
+
 - Tool information and metadata (citations, downloads, stars)
 - Tool description and use cases
 - Code quality assessment (strengths, weaknesses, metrics)
@@ -150,6 +159,7 @@ Comprehensive analysis of PRINSEQ tool following the standardized TEMPLATE.md fo
 - Conclusion and recommendations
 
 #### Key Findings
+
 - 85%+ test coverage in Go implementation
 - 20-26% performance improvement over Perl
 - 82% less memory usage
@@ -159,11 +169,13 @@ Comprehensive analysis of PRINSEQ tool following the standardized TEMPLATE.md fo
 ### 6. Updated Documentation
 
 #### README.md Updates
+
 - Added "Getting Help" section with links to Discussions, Issues, Docs
 - Enhanced Contributing section
 - Links to infrastructure documentation
 
 #### CONTRIBUTING.md Updates
+
 - Detailed issue template usage instructions
 - Pull request template guidance
 - Links to Discussions for Q&A and ideas
@@ -171,6 +183,7 @@ Comprehensive analysis of PRINSEQ tool following the standardized TEMPLATE.md fo
 - References to project boards and discussions
 
 #### analysis/README.md Updates
+
 - Guide for using TEMPLATE.md
 - List of completed analyses
 - Analysis process documentation
@@ -181,17 +194,20 @@ Comprehensive analysis of PRINSEQ tool following the standardized TEMPLATE.md fo
 ### For Users
 
 **Reporting Issues:**
+
 1. Go to [Issues](https://github.com/yassineS/bio_ai_experiment/issues/new/choose)
 2. Select appropriate template (Bug Report, Feature Request, Tool Analysis)
 3. Fill in all required fields
 4. Submit
 
 **Asking Questions:**
+
 1. Check [Discussions Q&A](https://github.com/yassineS/bio_ai_experiment/discussions/categories/q-a)
 2. Search for existing answers
 3. Create new discussion if needed
 
 **Sharing Ideas:**
+
 1. Go to [Discussions Ideas](https://github.com/yassineS/bio_ai_experiment/discussions/categories/ideas)
 2. Share your idea for feedback
 3. Convert to feature request if approved
@@ -199,6 +215,7 @@ Comprehensive analysis of PRINSEQ tool following the standardized TEMPLATE.md fo
 ### For Contributors
 
 **Submitting PRs:**
+
 1. Fork repository and create branch
 2. Make changes following guidelines
 3. Write/update tests
@@ -207,12 +224,14 @@ Comprehensive analysis of PRINSEQ tool following the standardized TEMPLATE.md fo
 6. Respond to review feedback
 
 **Conducting Analysis:**
+
 1. Copy `analysis/TEMPLATE.md` to `TOOLNAME_ANALYSIS.md`
 2. Fill in all sections with research and findings
 3. Document metrics, benchmarks, and recommendations
 4. Submit PR with analysis
 
 **Tracking Work:**
+
 1. Check project boards for status
 2. Update issues as work progresses
 3. Link PRs to issues
@@ -221,18 +240,21 @@ Comprehensive analysis of PRINSEQ tool following the standardized TEMPLATE.md fo
 ### For Maintainers
 
 **Managing Issues:**
+
 1. Use project boards to track work
 2. Triage new issues within 2-3 days
 3. Label and categorize appropriately
 4. Assign to appropriate board and status
 
 **Moderating Discussions:**
+
 1. Monitor discussions regularly
 2. Mark answers in Q&A
 3. Move discussions to issues when actionable
 4. Pin important discussions
 
 **Reviewing PRs:**
+
 1. Check template completion
 2. Verify tests and documentation
 3. Review security considerations
@@ -241,6 +263,7 @@ Comprehensive analysis of PRINSEQ tool following the standardized TEMPLATE.md fo
 ## Benefits
 
 ### For the Project
+
 - **Organized**: Clear structure for issues, PRs, and discussions
 - **Efficient**: Templates ensure complete information
 - **Trackable**: Project boards show progress at a glance
@@ -248,12 +271,14 @@ Comprehensive analysis of PRINSEQ tool following the standardized TEMPLATE.md fo
 - **Quality**: Checklists improve submission quality
 
 ### For Users
+
 - **Easier Reporting**: Templates guide users through reporting
 - **Faster Responses**: Complete info speeds up resolution
 - **Better Support**: Multiple channels for different needs
 - **Transparency**: Can see project status and priorities
 
 ### For Contributors
+
 - **Clear Expectations**: Templates and guides set standards
 - **Better Reviews**: Complete PRs get better feedback
 - **Collaboration**: Discussions foster community
@@ -262,6 +287,7 @@ Comprehensive analysis of PRINSEQ tool following the standardized TEMPLATE.md fo
 ## Next Steps
 
 ### Immediate (Done ✅)
+
 - ✅ Create issue templates
 - ✅ Create PR template
 - ✅ Document project boards
@@ -270,6 +296,7 @@ Comprehensive analysis of PRINSEQ tool following the standardized TEMPLATE.md fo
 - ✅ Update documentation
 
 ### Short Term (To Do)
+
 - [ ] Enable GitHub Discussions
 - [ ] Create initial discussion categories
 - [ ] Set up project boards
@@ -278,6 +305,7 @@ Comprehensive analysis of PRINSEQ tool following the standardized TEMPLATE.md fo
 - [ ] Announce new infrastructure to community
 
 ### Medium Term
+
 - [ ] Train maintainers on new infrastructure
 - [ ] Create automation for project boards
 - [ ] Set up notification workflows
@@ -285,6 +313,7 @@ Comprehensive analysis of PRINSEQ tool following the standardized TEMPLATE.md fo
 - [ ] Refine templates based on usage
 
 ### Long Term
+
 - [ ] Complete additional tool analyses
 - [ ] Build community through discussions
 - [ ] Track metrics (response times, closure rates)

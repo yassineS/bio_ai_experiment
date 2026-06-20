@@ -168,15 +168,15 @@ func mateRName(self, mate string) string {
 // inclusive of both endpoints; sign is positive on the leftmost record
 // and negative on the rightmost. Both records must be mapped on the same
 // reference for a non-zero TLen — otherwise TLen is 0.
-func computeTLen(a, b *sam.Record) int32 {
+func computeTLen(a, b *sam.Record) int64 {
 	if a.IsUnmapped() || b.IsUnmapped() {
 		return 0
 	}
 	if a.RName == "" || a.RName != b.RName {
 		return 0
 	}
-	aBeg, aEnd := int32(a.Pos), a.EndPosition()
-	bBeg, bEnd := int32(b.Pos), b.EndPosition()
+	aBeg, aEnd := a.Pos, a.EndPosition()
+	bBeg, bEnd := b.Pos, b.EndPosition()
 	left, right := aBeg, bEnd
 	if bBeg < aBeg {
 		left = bBeg

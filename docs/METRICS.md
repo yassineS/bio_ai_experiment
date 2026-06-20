@@ -23,11 +23,12 @@ subcommand coverage is complete.
 
 - **13 in-scope tool families**, shipped as **53 drop-in POSIX CLI binaries**
   (`git ls-files 'tools/*/cmd/*/main.go' | … | sort -u | wc -l`).
-- The repository vendors **53 upstream submodules** under `reference_code/`, but
-  ~40 of those (bwa, STAR, salmon, …) are **reference material from the phase-1
-  tool survey** (`analysis/`, the top-~200 ranking), *not* in-scope-but-unported
-  tools. They are vendored for provenance, not slated for porting (see
-  `CLAUDE.md`: "no longer taking on new tools").
+- `reference_code/` vendors **11 upstream submodules** — the source of every
+  ported tool, kept as read-only parity oracles (htslib, htscodecs, samtools,
+  bcftools, bedtools, seqtk, prinseq, sickle, skewer, fastp, vcftools). The
+  ~40 phase-1 *survey* submodules (bwa, STAR, salmon, …) that were never ported
+  have been removed (the survey ranking itself remains under `analysis/`), so
+  `reference_code/` now contains only what the project actually reimplements.
 
 So the correct manuscript claim is **"complete reimplementation of a bounded,
 named tool set,"** not "a subset of an open-ended porting effort."
@@ -232,6 +233,7 @@ to the prior binary — these are pure plumbing/allocation changes, never math.
 | 3 | shared VCF reader per-line alloc removed + `call` scratch reuse (PR #432) | `bcftools call -mv` | 22.08s → **15.55s** (−30%) | allocs/op 104k→**40k** (−61%), B/op −59%; fixed a latent gVCF string-retention bug |
 
 What the cycle confirmed about the floor (profile, not assumption):
+
 - `samtools stats` is **consumer-bound**, not decode-bound — its `observe()` loop
   is ~49% cumulative (inflate ~17%), so parallel decode is already hidden behind
   it and `-@` can't move it. `stats`/`depth`/`idxstats`/`view` were already wired

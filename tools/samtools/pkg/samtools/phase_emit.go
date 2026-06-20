@@ -161,12 +161,12 @@ func runUpstreamPhase(g *upstreamPhaseRunner, hash *fragKhash, recs []*sam.Recor
 				if vpos-int(f.vpos)+1 < maxVars {
 					f.vlen = uint16(vpos - int(f.vpos) + 1)
 					f.seq[f.vlen-1] = ac
-					f.end = p.b.EndPosition()
+					f.end = int32(p.b.EndPosition())
 				}
 				dophase = false
 			} else {
-				f.beg = p.b.Pos - 1
-				f.end = p.b.EndPosition()
+				f.beg = int32(p.b.Pos) - 1
+				f.end = int32(p.b.EndPosition())
 				f.vpos = int32(vpos)
 				f.vlen = 1
 				f.seq[0] = ac

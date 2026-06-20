@@ -69,7 +69,7 @@ func upstreamBcftoolsConvertHap(t *testing.T) string {
 		upstreamConvertHapPath = bin
 	})
 	if upstreamConvertHapErr != nil {
-		t.Fatalf("could not obtain upstream bcftools: %v", upstreamConvertHapErr)
+		t.Skipf("could not obtain upstream bcftools: %v", upstreamConvertHapErr)
 	}
 	return upstreamConvertHapPath
 }

@@ -222,7 +222,7 @@ func makeBAM(t *testing.T, alns []bamAln) []byte {
 			QName: "r",
 			Flag:  a.flag,
 			RName: a.rname,
-			Pos:   a.pos,
+			Pos:   int64(a.pos),
 			MapQ:  a.mapq,
 			Cigar: cig,
 			RNext: "*",

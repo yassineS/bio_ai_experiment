@@ -1216,7 +1216,7 @@ upstream PRINSEQ-lite, all fixed inline:
 - **`-trim_tail_left` / `-trim_tail_right` treated A and T as
   interchangeable** — our port matched any prefix of A or T bases
   (`A|T`) as a single poly-tail run. Upstream first picks an anchor
-  (the leading or trailing N-base homopolymer, A *or* T, not both)
+  (the leading or trailing N-base homopolymer, A _or_ T, not both)
   and then extends only with that base or N. The old behaviour
   over-trimmed by 1+ bases whenever the tail straddled an A-run and a
   T-run. Fixed by rewriting `trimPolyATLeft` / `trimPolyATRight` and

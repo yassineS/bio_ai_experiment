@@ -18,7 +18,7 @@ func makeRec(pos int32, cigar, seq string, q byte) *sam.Record {
 		qual[i] = q
 	}
 	return &sam.Record{
-		QName: "r", RName: "c", Pos: pos, MapQ: 60,
+		QName: "r", RName: "c", Pos: int64(pos), MapQ: 60,
 		Cigar: c, Seq: seq, Qual: qual,
 	}
 }

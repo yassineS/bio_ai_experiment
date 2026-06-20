@@ -81,7 +81,7 @@ func TestV4EmbeddedReferenceParity(t *testing.T) {
 	samtools := upstreamSamtoolsCram(t)
 	srcSAM := filepath.Join(samtoolsTestDir, "dat/test_input_1_a.sam")
 	if _, err := os.Stat(srcSAM); err != nil {
-		t.Fatalf("source SAM fixture missing: %v", err)
+		t.Skipf("source SAM fixture missing: %v", err)
 	}
 	cramPath := filepath.Join(t.TempDir(), "embed.v4.cram")
 	writeV4CRAM(t, samtools, srcSAM, cramPath, "")

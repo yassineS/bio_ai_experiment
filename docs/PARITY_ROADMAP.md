@@ -240,29 +240,30 @@ Backblaze/GCS all work. **Azure Blob Storage** is now supported too, as a
 Go-port extension beyond htslib (which has no native Azure backend):
 `az://account/container/blob` and recognised `*.blob.core.windows.net` HTTPS
 URLs, with SAS (`AZURE_STORAGE_SAS_TOKEN`), Shared Key (`AZURE_STORAGE_ACCOUNT`
-+ `AZURE_STORAGE_KEY`, hand-rolled HMAC-SHA256 signed per ranged GET so the
+and `AZURE_STORAGE_KEY`, hand-rolled HMAC-SHA256 signed per ranged GET so the
 signature covers the `Range` header, pinned to an Azurite-dev-key known-answer
 vector), Azure-AD bearer (`AZURE_STORAGE_TOKEN`) and anonymous auth, plus an
 `AZURE_STORAGE_BLOB_ENDPOINT` override (see `pkg/htsgo/hfile/README.md`). CRAM `MD`/`NM`
 regeneration and the network REF_PATH
 fetch are **done**; `gtcheck` `-i/-e` filter expressions and the bedtools
 KeyListOps ops are **done**. The former "non-goals" are now all implemented:
-  - **CRAM v4.0 decode** — uint7-varint + 64-bit positions, version-threaded,
-    byte-for-byte parity vs an upstream-written v4.0 CRAM (the v4 transform
-    codecs XPACK/XRLE/XDELTA are parsed but not yet decoded — no fixture
-    exercises them);
-  - `gtcheck -c/--cluster` clustering (own design — upstream is an error stub);
-  - `bcftools convert` PLINK exporters, `bcftools som`, and `samtools tview`
-    (text/HTML **and** the interactive `-d C` viewer) are all implemented. The
-    `-d C` viewer is pure-Go (Linux raw-mode termios, no ncurses); on non-Linux
-    platforms it reports that interactive mode requires Linux.
 
-  Recently closed (so no longer in this list): bcftools `concat --ligate`
-  phased ligation; mendelian2 `sites_not_diploid` (non-diploid records are
-  now counted and skipped); vcftools BCF-binary I/O
-  (`--bcf`/`--recode-bcf`/`--diff-bcf`/`--contigs`, roundtrip-tested — the
-  former htsgo-BCF-writer blocker has landed); the filter engine's
-  bare-INFO-tag resolution.
+- **CRAM v4.0 decode** — uint7-varint + 64-bit positions, version-threaded,
+  byte-for-byte parity vs an upstream-written v4.0 CRAM (the v4 transform
+  codecs XPACK/XRLE/XDELTA are parsed but not yet decoded — no fixture
+  exercises them);
+- `gtcheck -c/--cluster` clustering (own design — upstream is an error stub);
+- `bcftools convert` PLINK exporters, `bcftools som`, and `samtools tview`
+  (text/HTML **and** the interactive `-d C` viewer) are all implemented. The
+  `-d C` viewer is pure-Go (Linux raw-mode termios, no ncurses); on non-Linux
+  platforms it reports that interactive mode requires Linux.
+
+Recently closed (so no longer in this list): bcftools `concat --ligate`
+phased ligation; mendelian2 `sites_not_diploid` (non-diploid records are
+now counted and skipped); vcftools BCF-binary I/O
+(`--bcf`/`--recode-bcf`/`--diff-bcf`/`--contigs`, roundtrip-tested — the
+former htsgo-BCF-writer blocker has landed); the filter engine's
+bare-INFO-tag resolution.
 
 Recently closed: samtools `consensus` pileup `-a` placeholder rows (incl.
 ref-skip columns, per-nth gap-fill duplication, INT_MIN quality, and
@@ -919,7 +920,7 @@ adapter-fasta + poly-X knob + disable-adapter flag):
   merge overlap analysis interposes between trimming and filtering, as
   upstream does. Merge auto-enables base correction
   (options.cpp:115-117), reproduced here. Merged read names carry the
-  upstream ` merged_<len1>_<len2>` suffix. The legacy `--merge-overlap`
+  upstream `merged_<len1>_<len2>` suffix. The legacy `--merge-overlap`
   heuristic is retained as a separate flag for back-compat.
 - **`--adapter_fasta FILE`**: verbatim port of
   `AdapterTrimmer::trimByMultiSequences` / `trimBySequence`
@@ -1941,7 +1942,7 @@ Closed in wave 14 (this PR):
 - **`--indv-freq-burden2`** — same as `--indv-freq-burden` but with
   `double_count_hom_alt=1`, so a hom-alt genotype contributes 1 (not
   2) to the corresponding allele-count bin. Mirrors `vcftools.cpp:64`
-  + the same `output_indv_freq_burden` routine. ✅
+  - the same `output_indv_freq_burden` routine. ✅
 
 Implementation notes (wave 14):
 
@@ -2244,7 +2245,7 @@ Other (per-output column-set gaps, not flag-count gaps):
 Note: the brief mentioned `--haploid` as a possible wave-2 target. After
 checking the upstream source (`reference_code/vcftools/src/cpp/`) there is
 no `--haploid` flag — the closest thing is `--phased` (parameters.cpp:311
-+ entry_filters.cpp:989-1010), which we ported instead.
+and entry_filters.cpp:989-1010), which we ported instead.
 
 **Validation:** wave 1 adds header byte-for-byte parity tests for the new
 output files; wave 2 ships full byte-for-byte parity tests for both
@@ -2752,7 +2753,7 @@ Plus:
            pileupBase event for every reference column inside a read's
            `D` op (`isDel=true`, `b=0`); `bcfCallGlfgenCore` lets these
            reads through in the indel branch (matching upstream
-           `bam2bcf.c:307 `if (p->is_del && !is_indel) continue`).
+           `bam2bcf.c:307`if (p->is_del && !is_indel) continue`).
         2. `p.is_refskip` modelling — same shape for CREF_SKIP (`N`)
            ops; `isRefskip` reads are dropped in both branches
            (`bam2bcf.c:301`).
@@ -4816,6 +4817,7 @@ class — UTR5/UTR3, intron, splice donor/acceptor/region (fwd + rev
 strand), stop_gained/stop_lost/start_lost, missense, synonymous,
 inframe vs frameshift indel, splice-site indel — plus the kput_vcsq
 SO-term precedence ordering.
+
 - **Slice 3 — the haplotype-aware engine. DONE.** The haplotype tree
   (`hap_node_t`, `hap_init`, `hap_finalize`, `hap_add_csq`,
   `cds_translate`), the per-transcript padded + spliced reference

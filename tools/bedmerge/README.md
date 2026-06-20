@@ -210,14 +210,23 @@ bedmerge -g input.bedgraph > merged.bedgraph
 
 bedGraph format is a 4-column format: chrom, start, end, score. The first score is preserved when merging.
 
-#### Unsorted input
+#### Sorted-input requirement
 
-Unlike upstream `bedtools merge`, which requires its `-i` input to be
-pre-sorted and aborts on an out-of-order record, bedmerge sorts the input
-internally before merging. The merged output for any input is therefore
-identical to running upstream on the same data after `sort -k1,1 -k2,2n`. This
-is a deliberate fix-on-port convenience; the `--streaming` flag is accepted for
-backward compatibility but produces the same result.
+Like upstream `bedtools merge`, bedmerge requires its `-i` input to be
+coordinate-sorted (by chromosome, then start) and aborts with a non-zero exit
+on an out-of-order record, emitting the exact upstream message:
+
+```
+Error: Sorted input specified, but the file <name> has the following out of order record
+<record>
+```
+
+The check matches upstream's semantics precisely: only the start order *within
+a chromosome* is enforced, a chromosome may not reappear once a different one
+has been seen, and chromosomes need not be in any particular order the first
+time they appear. Pre-sort with `sort -k1,1 -k2,2n` (or `bedtools sort`) if your
+input is not already sorted. The `--streaming` flag is accepted for backward
+compatibility.
 
 ## Input Format
 
@@ -335,7 +344,8 @@ The only intentional behavioural differences are:
 |---------|----------|----------------|
 | Language | Go | C++ |
 | Installation | Single binary | External dependency |
-| Unsorted `-i` input | Sorted internally, then merged | Requires pre-sorted input; errors otherwise |
+| Unsorted `-i` input | Rejected with upstream's exact message and exit code | Requires pre-sorted input; errors otherwise |
+| Inconsistent field counts | Rejected with upstream's exact message and exit code | Errors via its type checker / per-line reader |
 | `distinct_only` column op | Correct (no leading delimiter) | Emits a spurious leading delimiter (upstream bug) |
 | Built-in gzip / chained gzip | Yes | Yes |
 | `-c`/`-o` KeyListOps vocabulary | Full | Full |

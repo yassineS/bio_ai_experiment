@@ -1,6 +1,7 @@
 package cram
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
@@ -44,25 +45,21 @@ import (
 // length-mismatch error. Matching upstream, the writer returns a clear
 // error rather than inventing a feature encoding htslib could never read
 // back. See docs/CRAM_ROADMAP.md §6 (the lossy-names + =/X/B entry).
-// referenceSpan returns the number of reference bases a CIGAR consumes — the
-// sum of the M/=/X (match), D (deletion) and N (skip) operation lengths. It is
-// used to bounds-check a read against its contig reference before choosing the
-// reference-based encoding path.
-func referenceSpan(cigar sam.Cigar) int {
-	span := 0
-	for _, op := range cigar {
-		switch op.Op() {
-		case sam.CigarMatch, sam.CigarEqual, sam.CigarMismatch,
-			sam.CigarDeletion, sam.CigarSkipped:
-			span += int(op.Length())
-		}
-	}
-	return span
-}
-
 func (e *recordEncoder) encodeFeatures(rec *sam.Record, readLen int) error {
 	b := e.buffers
 	seq := seqBytes(rec.Seq)
+
+	// A no-SEQ mapped record (SEQ "*") carries no query bases. Its read
+	// features exist only to describe the CIGAR: match runs are implicit
+	// (reconstructed from the reference span via RL), and the base-carrying
+	// features (insertion, soft clip) store placeholder 'N' bases since the
+	// real bases are absent. htslib does exactly this (cram_encode.c: the
+	// match case adds no feature when cr->len is 0, and cram_add_insertion /
+	// cram_add_softclip fill 'N' when the base pointer is NULL); the
+	// CRAM_FLAG_NO_SEQ flag, set by the caller, makes the decoder discard
+	// the reconstructed bases and render SEQ as "*". The SAM reader stores
+	// a "*" SEQ as the empty string, so either form means "no sequence".
+	noSeq := rec.Seq == "" || rec.Seq == "*"
 
 	// Reference-based encoding: when the reference for this record's contig is
 	// available and the read's reference span lies within it, a match run is
@@ -71,18 +68,34 @@ func (e *recordEncoder) encodeFeatures(rec *sam.Record, readLen int) error {
 	// reference on decode — reconstructMapped fills inter-feature gaps as
 	// reference matches). This is what makes CRAM small. ref is nil — keeping
 	// the self-contained base-stretch encoding — when no reference was supplied
-	// or the read falls outside it.
+	// or the read falls outside it. A no-SEQ record never diffs against the
+	// reference (there are no bases to diff): its match runs are always left
+	// implicit, exactly as htslib does.
 	var ref []byte
-	if e.reference != nil && rec.Pos > 0 {
+	if e.reference != nil && rec.Pos > 0 && !noSeq {
 		if r, ok := e.reference[rec.RName]; ok {
 			start := int(rec.Pos) - 1
-			if start >= 0 && start+referenceSpan(rec.Cigar) <= len(r) {
+			// Attach the reference whenever the read STARTS within it. An
+			// alignment whose span overhangs the contig end (htslib's
+			// c1#bounds) is still reference-encoded for the in-bounds bases;
+			// the overhanging bases — for which no reference exists — are
+			// stored verbatim by the match loop below, exactly as htslib's
+			// cram_encode.c clamps the per-base diff to c->ref_end and emits
+			// the remainder with cram_add_base.
+			if start >= 0 && start < len(r) {
 				ref = r
 				// Record that this container used the external reference, so
 				// its compression header omits RR (reference required) and the
 				// decoder loads the reference to fill the implicit match runs.
 				e.usedReference = true
 			}
+		}
+	} else if noSeq && e.reference != nil && rec.Pos > 0 {
+		// A no-SEQ record still consults the reference on decode to fill its
+		// implicit match runs, so flag the container as reference-using even
+		// though no per-base diff is performed here.
+		if _, ok := e.reference[rec.RName]; ok {
+			e.usedReference = true
 		}
 	}
 
@@ -98,12 +111,19 @@ func (e *recordEncoder) encodeFeatures(rec *sam.Record, readLen int) error {
 	readPos := int32(0) // 0-based cursor within the read.
 	refPos := int32(0)  // 0-based cursor within ref (only used when ref != nil).
 	if ref != nil {
-		refPos = rec.Pos - 1
+		refPos = int32(rec.Pos) - 1
 	}
 	for _, op := range rec.Cigar {
 		n := int32(op.Length())
 		switch op.Op() {
 		case sam.CigarMatch, sam.CigarEqual, sam.CigarMismatch:
+			if noSeq {
+				// No bases to store: the match run is implicit, recovered
+				// from the reference span by the decoder. Just advance the
+				// read cursor so the read-length accounting stays correct.
+				readPos += n
+				break
+			}
 			if int(readPos)+int(n) > len(seq) {
 				return fmt.Errorf("CIGAR match run overruns SEQ")
 			}
@@ -113,8 +133,22 @@ func (e *recordEncoder) encodeFeatures(rec *sam.Record, readLen int) error {
 				// reconstructed from the reference. Equality is an exact byte
 				// compare so the decoder's verbatim reference copy always
 				// reproduces the read base (a soft-masked/lower-case reference
-				// base never counts as a match).
+				// base never counts as a match). Positions past the reference
+				// end (an alignment overhanging the contig) have no reference
+				// base to diff against, so their bases are stored verbatim as a
+				// base-stretch feature — matching htslib, which clamps the diff
+				// loop to the reference end and emits the overhang verbatim.
 				for k := int32(0); k < n; k++ {
+					if int(refPos+k) >= len(ref) {
+						// The remainder of this run overhangs the reference.
+						// Store it verbatim and stop diffing.
+						feats = append(feats, feature{
+							code:  featBases,
+							pos:   readPos + k + 1,
+							bases: append([]byte(nil), seq[readPos+k:readPos+n]...),
+						})
+						break
+					}
 					rb := ref[refPos+k]
 					qb := seq[readPos+k]
 					if qb != rb {
@@ -135,6 +169,17 @@ func (e *recordEncoder) encodeFeatures(rec *sam.Record, readLen int) error {
 			}
 			readPos += n
 		case sam.CigarInsertion:
+			if noSeq {
+				// No real bases: store the inserted run as 'N' placeholders,
+				// matching htslib's cram_add_insertion(base == NULL).
+				feats = append(feats, feature{
+					code:  featInsertion,
+					pos:   readPos + 1,
+					bases: bytes.Repeat([]byte{'N'}, int(n)),
+				})
+				readPos += n
+				break
+			}
 			if int(readPos)+int(n) > len(seq) {
 				return fmt.Errorf("CIGAR insertion overruns SEQ")
 			}
@@ -145,6 +190,17 @@ func (e *recordEncoder) encodeFeatures(rec *sam.Record, readLen int) error {
 			})
 			readPos += n
 		case sam.CigarSoftClip:
+			if noSeq {
+				// No real bases: store the soft-clipped run as 'N'
+				// placeholders, matching htslib's cram_add_softclip(base == NULL).
+				feats = append(feats, feature{
+					code:  featSoftClip,
+					pos:   readPos + 1,
+					bases: bytes.Repeat([]byte{'N'}, int(n)),
+				})
+				readPos += n
+				break
+			}
 			if int(readPos)+int(n) > len(seq) {
 				return fmt.Errorf("CIGAR soft clip overruns SEQ")
 			}

@@ -318,7 +318,7 @@ func TestCliRolloutParseInProcess(t *testing.T) {
 		t.Fatalf("abs: %v", err)
 	}
 	if _, err := os.Stat(basic); err != nil {
-		t.Fatalf("fixture missing: %v", err)
+		t.Skipf("fixture missing: %v", err)
 	}
 	// Each entry's args use a bundled short-flag cluster; we only assert
 	// the parse layer did not reject it (exit code 2 means parse error).

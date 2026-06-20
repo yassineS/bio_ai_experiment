@@ -97,7 +97,7 @@ func fixtureRefs() []sam.Reference {
 func fixtureRecords(t *testing.T) []*sam.Record {
 	mk := func(name, ref string, pos int32, cigar string, mapq uint8, flag uint16) *sam.Record {
 		return &sam.Record{
-			QName: name, RName: ref, Pos: pos, MapQ: mapq, Flag: flag,
+			QName: name, RName: ref, Pos: int64(pos), MapQ: mapq, Flag: flag,
 			Cigar: mustParseCigar(t, cigar),
 			Seq:   strings.Repeat("A", mustParseCigar(t, cigar).QueryLength()),
 		}
@@ -863,7 +863,7 @@ func TestKeepRecord_FragLen(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := &sam.Record{
 				QName: "r", RName: "chr1", Pos: 1, MapQ: 60,
-				TLen: tc.tlen,
+				TLen: int64(tc.tlen),
 			}
 			opts := Options{MinFragLen: tc.min, MaxFragLen: tc.max}
 			if got := keepRecord(rec, opts); got != tc.want {

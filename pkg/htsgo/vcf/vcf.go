@@ -11,6 +11,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -505,16 +506,56 @@ func (w *Writer) WriteAll(variants []*Variant) error {
 	return w.Flush()
 }
 
-// formatQual formats a QUAL value using the same minimal-precision rules as
-// upstream htslib's vcf_format(): integer values print as integers (no
-// trailing ".00"), otherwise the shortest representation of the float is used
-// (via strconv with %g semantics). This matches bcftools byte-for-byte for the
-// common case where the QUAL was an integer in the source file.
+// formatQual formats a QUAL value byte-for-byte as upstream htslib's
+// vcf_format() does. htslib stores QUAL as a 32-bit C float (bcf1_t.qual) and
+// prints it with kputd, which is equivalent to C printf("%g", ...): six
+// significant digits, switching to scientific notation (e+NN) for magnitudes
+// outside the [0.0001, 999999] window (e.g. 4294967296 -> "4.29497e+09",
+// 1000000 -> "1e+06"). The value is first narrowed to float32 so that the
+// rounding at the sixth significant figure matches upstream exactly.
 func formatQual(q float64) string {
-	if q == float64(int64(q)) {
-		return strconv.FormatInt(int64(q), 10)
+	return FormatVCFFloat32(q)
+}
+
+// FormatVCFFloat32 renders a float for a VCF text field (QUAL, or a Float-typed
+// INFO/FORMAT value) byte-for-byte as upstream htslib's kputd does. htslib
+// stores these as 32-bit C floats and prints them with C's "%g" conversion
+// (six significant digits, trailing zeros stripped, scientific notation for
+// large/small magnitudes). The argument is narrowed to float32 first to match
+// upstream's storage precision and rounding.
+//
+// Special spellings match htslib: "-0" for negative zero, "inf"/"-inf" for the
+// infinities, and "nan" for NaN.
+func FormatVCFFloat32(v float64) string {
+	return formatVCFFloatG(float64(float32(v)))
+}
+
+// FormatVCFFloat64 renders a float for a VCF text field as htslib's kputd does
+// (C "%g": six significant digits), but WITHOUT first narrowing to float32. Use
+// this for values that htslib keeps in double precision; most VCF float fields
+// (QUAL and Float-typed INFO/FORMAT) are float32 and should use
+// FormatVCFFloat32 instead.
+func FormatVCFFloat64(v float64) string {
+	return formatVCFFloatG(v)
+}
+
+// formatVCFFloatG is the shared core of the VCF float formatters: it reproduces
+// C printf("%g", v) plus htslib's special spellings. Go's
+// strconv.FormatFloat(v, 'g', 6, 64) is byte-identical to C "%g" across the
+// full double range (validated against the libc implementation), with the sole
+// exception of negative zero, which Go prints as "0" but C prints as "-0".
+func formatVCFFloatG(v float64) string {
+	switch {
+	case math.IsNaN(v):
+		return "nan"
+	case math.IsInf(v, 1):
+		return "inf"
+	case math.IsInf(v, -1):
+		return "-inf"
+	case v == 0 && math.Signbit(v):
+		return "-0"
 	}
-	return strconv.FormatFloat(q, 'g', -1, 64)
+	return strconv.FormatFloat(v, 'g', 6, 64)
 }
 
 // parseFilter parses the FILTER field.

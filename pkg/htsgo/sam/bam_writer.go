@@ -201,14 +201,24 @@ func (bw *BAMWriter) encodeRecord(rec *Record) ([]byte, error) {
 		}
 	}
 
-	// SAM POS is 1-based, BAM 0-based; 0 → -1.
+	// SAM POS is 1-based, BAM 0-based; 0 → -1. The BAM on-disk POS/PNEXT
+	// fields are signed 32-bit, so a 0-based coordinate beyond math.MaxInt32
+	// cannot be represented in BAM — htslib rejects writing such a record to
+	// BAM for the same reason (only SAM and CRAM carry >2^31 positions). Error
+	// rather than silently truncating; longref data must stay SAM/CRAM.
 	var bamPos int32 = -1
 	if rec.Pos > 0 {
-		bamPos = rec.Pos - 1
+		if rec.Pos-1 > math.MaxInt32 {
+			return nil, fmt.Errorf("sam: BAM writer: POS %d exceeds the 32-bit BAM coordinate limit (use SAM or CRAM for long references)", rec.Pos)
+		}
+		bamPos = int32(rec.Pos - 1)
 	}
 	var bamPNext int32 = -1
 	if rec.PNext > 0 {
-		bamPNext = rec.PNext - 1
+		if rec.PNext-1 > math.MaxInt32 {
+			return nil, fmt.Errorf("sam: BAM writer: PNEXT %d exceeds the 32-bit BAM coordinate limit (use SAM or CRAM for long references)", rec.PNext)
+		}
+		bamPNext = int32(rec.PNext - 1)
 	}
 
 	nameBytes := []byte(rec.QName)
@@ -231,7 +241,10 @@ func (bw *BAMWriter) encodeRecord(rec *Record) ([]byte, error) {
 	binary.Write(&buf, binary.LittleEndian, lSeq)
 	binary.Write(&buf, binary.LittleEndian, nextRefID)
 	binary.Write(&buf, binary.LittleEndian, bamPNext)
-	binary.Write(&buf, binary.LittleEndian, rec.TLen)
+	if rec.TLen < math.MinInt32 || rec.TLen > math.MaxInt32 {
+		return nil, fmt.Errorf("sam: BAM writer: TLEN %d exceeds the 32-bit BAM field limit (use SAM or CRAM for long references)", rec.TLen)
+	}
+	binary.Write(&buf, binary.LittleEndian, int32(rec.TLen))
 
 	// Read name (with trailing NUL).
 	buf.Write(nameBytes)

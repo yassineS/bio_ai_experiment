@@ -1,150 +1,192 @@
 name: CI
 
-# Temporarily disabled while the project is in early/heavy-iteration phase.
-# Agents are running `gofmt`, `go vet`, `go test -race -cover ./...`, `go build ./...`,
-# and markdownlint locally and recording the results in each PR description.
-#
-# To re-enable, replace the manual-only trigger below with:
-#   on:
-#     push:
-#       branches: [ main, develop ]
-#     pull_request:
-#       branches: [ main, develop ]
-#
-# The job definitions kept below are the previous configuration, ready to wire back up.
+# Runs on every push to main and every PR targeting main. The repository is a
+# SINGLE Go module (github.com/yassineS/bio_ai_experiment) — all jobs operate at
+# the repo root, not per-tool. The Go version is read from go.mod via
+# `go-version-file` so the toolchain always matches the module's declared version.
 
 on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  noop:
-    name: CI disabled
+  lint:
+    name: gofmt + vet
     runs-on: ubuntu-latest
     steps:
-      - name: Note
-        run: echo "CI is temporarily disabled. Checks are run locally by contributing agents and documented in each PR."
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l $(git ls-files '*.go' | grep -v '^reference_code/'))
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"; echo "$unformatted"; exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
 
-  upstream-parity:
-    name: Upstream parity (live)
+  # Coverage over the whole module WITHOUT -race. The tool test suites are NOT
+  # hermetic: their live-parity helpers compare against the real upstream
+  # binary, so the job checks out the (11 kept) submodules and installs the C
+  # build deps — WITHOUT libdeflate, so htslib uses the zlib deflate backend the
+  # parity goldens were generated against (libdeflate changes BGZF bytes).
+  # -race is applied separately (the `race` job) to the concurrent code, because
+  # -race makes the sequential tool-parity suites (mosdepth/samtools) exceed the
+  # test timeout for no race-coverage benefit.
+  #
+  # The upstream binaries are pre-built ONCE, serially, before `go test`. This
+  # is required for correctness, not just speed: `go test ./...` runs package
+  # test binaries in parallel, and ~22 bed* parity packages each build the
+  # SHARED reference_code/bedtools tree on demand. Concurrent `make` invocations
+  # in one source tree clobber each other's objects and can leave a corrupt
+  # binary that runs but emits nothing (observed as spurious bedcoverage/bedmap
+  # "parity" failures where upstream output was empty). Pre-building the binary
+  # makes every on-demand builder short-circuit on os.Stat(bin), so no test
+  # races to build it. It also gives the bcftools/samtools cli-rollout tests the
+  # pre-built binary they expect (they don't build on demand).
+  test:
+    name: test + cover
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Set up Go
-        uses: actions/setup-go@v4
+      - uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
+          go-version-file: 'go.mod'
+          cache: true
+      - name: Install upstream build dependencies (no libdeflate — see above)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf automake libtool \
+            pkg-config perl zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev
+      - name: Pre-build upstream binaries (serial — avoids the concurrent-make race)
+        run: |
+          (cd reference_code/htslib && autoreconf -i && ./configure && make -j"$(nproc)")
+          (cd reference_code/bcftools && make -j"$(nproc)")
+          (cd reference_code/samtools && make -j"$(nproc)")
+          (cd reference_code/bedtools && make -j"$(nproc)")
+      - name: go test
+        run: go test -coverprofile=coverage.txt -covermode=atomic -timeout 35m ./...
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        if: success()
+        with:
+          files: ./coverage.txt
+          fail_ci_if_error: false
+
+  # Race detector on the concurrent Go code (pkg/htsgo: the parallel BGZF
+  # reader/writer and threaded readers). Submodules are checked out because some
+  # pkg tests (e.g. the CRAM codec) read vendored test vectors from a submodule.
+  # The tool packages are sequential parity harnesses with no concurrency to
+  # race-check and are ~15-20x slower under -race, so they are covered by the
+  # `test` job instead.
+  race:
+    name: race (pkg)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: Install upstream build dependencies (no libdeflate)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf automake libtool \
+            pkg-config perl zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev
+      # Pre-build serially for the same reason as the `test` job: several pkg
+      # parity tests (bgzf/tabix/fasta -> htslib, bcf -> bcftools, cram ->
+      # samtools) build these SHARED trees on demand, and running them in
+      # parallel under `go test ./pkg/...` would race in `make`.
+      - name: Pre-build upstream binaries (serial — avoids the concurrent-make race)
+        run: |
+          (cd reference_code/htslib && autoreconf -i && ./configure && make -j"$(nproc)")
+          (cd reference_code/bcftools && make -j"$(nproc)")
+          (cd reference_code/samtools && make -j"$(nproc)")
+      - name: go test -race
+        run: go test -race -timeout 20m ./pkg/...
+
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: go build
+        run: go build ./...
+
+  markdown-lint:
+    name: markdown lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint Markdown
+        uses: DavidAnson/markdownlint-cli2-action@v16
+        with:
+          globs: |
+            **/*.md
+            !reference_code
+
+  # Independent re-execution of the byte-exact parity suite against freshly built
+  # upstream binaries. This is the canonical, non-self-reported validation the
+  # manuscript relies on (docs/manuscript/04 §1, §4b): the parity gate runs in
+  # clean CI, not locally by a contributor. Builds htslib/bcftools/samtools from
+  # the vendored submodules, then runs every `*Upstream*` parity test.
+  upstream-parity:
+    name: upstream parity (live)
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout WITH the 11 kept submodules (the unported survey submodules were
+      # removed, so `recursive` is cheap). This job independently re-executes the
+      # byte-exact parity gate (docs/manuscript/04 §1, §4b) for the htslib core,
+      # against freshly built upstream binaries.
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      # NOTE: deliberately NOT installing libdeflate-dev — htslib built against
+      # libdeflate emits different BGZF/gzip bytes, which breaks byte-exact parity
+      # on compressed outputs. Build with the same deflate backend (zlib) the
+      # parity goldens were generated against.
       - name: Install htslib build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y autoconf automake libtool \
             zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev
-      - name: Build htslib
+      - name: Build htslib core
         run: |
-          cd reference_code/htslib
-          autoreconf -i
-          ./configure
-          make -j"$(nproc)"
-      - name: Build bcftools
-        run: |
-          cd reference_code/bcftools
-          make -j"$(nproc)"
-      - name: Build samtools
-        run: |
-          cd reference_code/samtools
-          make -j"$(nproc)"
+          (cd reference_code/htslib && autoreconf -i && ./configure && make -j"$(nproc)")
+          (cd reference_code/bcftools && make -j"$(nproc)")
+          (cd reference_code/samtools && make -j"$(nproc)")
+      # Run the *Upstream* parity tests for the tools backed by the built
+      # binaries (samtools, bcftools, the htslib utils) plus the shared htsgo
+      # packages. Other tools' live-parity tests build their own upstream binary
+      # on demand and run locally; they SKIP here (no binary) rather than fail.
       - name: Run live upstream-parity tests
-        run: go test -run Upstream ./tools/...
-
-# --- Previous job definitions (kept for easy re-enable) -----------------------
-#
-#  lint:
-#    name: Lint
-#    runs-on: ubuntu-latest
-#    steps:
-#      - uses: actions/checkout@v4
-#      - name: Set up Go
-#        uses: actions/setup-go@v4
-#        with:
-#          go-version: '1.21'
-#      - name: Run gofmt
-#        run: |
-#          if find . -name "*.go" -not -path "./vendor/*" | grep -q .; then
-#            unformatted=$(gofmt -l $(find . -name "*.go" -not -path "./vendor/*"))
-#            if [ -n "$unformatted" ]; then
-#              echo "The following files are not formatted:"
-#              echo "$unformatted"
-#              exit 1
-#            fi
-#          else
-#            echo "No Go files found, skipping gofmt"
-#          fi
-#      - name: Run go vet
-#        run: |
-#          if find . -name "go.mod" -not -path "./vendor/*" | grep -q .; then
-#            for dir in $(find . -name "go.mod" -not -path "./vendor/*" -exec dirname {} \;); do
-#              echo "Running go vet in $dir"
-#              (cd "$dir" && go vet ./...)
-#            done
-#          else
-#            echo "No Go modules found, skipping go vet"
-#          fi
-#
-#  test:
-#    name: Test
-#    runs-on: ubuntu-latest
-#    steps:
-#      - uses: actions/checkout@v4
-#      - name: Set up Go
-#        uses: actions/setup-go@v4
-#        with:
-#          go-version: '1.21'
-#      - name: Run tests
-#        run: |
-#          if find . -name "go.mod" -not -path "./vendor/*" | grep -q .; then
-#            for dir in $(find . -name "go.mod" -not -path "./vendor/*" -exec dirname {} \;); do
-#              echo "Running tests in $dir"
-#              (cd "$dir" && go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...)
-#            done
-#          else
-#            echo "No Go modules found, skipping tests"
-#          fi
-#      - name: Upload coverage
-#        uses: codecov/codecov-action@v3
-#        if: success()
-#        with:
-#          files: ./coverage.txt
-#          fail_ci_if_error: false
-#
-#  build:
-#    name: Build
-#    runs-on: ubuntu-latest
-#    steps:
-#      - uses: actions/checkout@v4
-#      - name: Set up Go
-#        uses: actions/setup-go@v4
-#        with:
-#          go-version: '1.21'
-#      - name: Build tools
-#        run: |
-#          if find . -name "go.mod" -not -path "./vendor/*" | grep -q .; then
-#            for dir in $(find . -name "go.mod" -not -path "./vendor/*" -exec dirname {} \;); do
-#              echo "Building in $dir"
-#              (cd "$dir" && go build -v ./...)
-#            done
-#          else
-#            echo "No Go modules found, skipping build"
-#          fi
-#
-#  markdown-lint:
-#    name: Markdown Lint
-#    runs-on: ubuntu-latest
-#    steps:
-#      - uses: actions/checkout@v4
-#      - name: Lint Markdown files
-#        uses: avto-dev/markdown-lint@v1
-#        with:
-#          config: '.markdownlint.json'
-#          args: '**/*.md'
-#          ignore: 'reference_code'
+        run: |
+          go test -run Upstream \
+            ./tools/samtools/... \
+            ./tools/bcftools/... \
+            ./tools/bgzip/... \
+            ./tools/tabix/... \
+            ./tools/htsfile/... \
+            ./pkg/...

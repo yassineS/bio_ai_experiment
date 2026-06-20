@@ -51,7 +51,7 @@ func upstreamHtslibBgzip(t *testing.T) string {
 		upstreamBgzipPath = bin
 	})
 	if upstreamBgzipErr != nil {
-		t.Fatalf("building upstream bgzip: %v", upstreamBgzipErr)
+		t.Skipf("building upstream bgzip: %v", upstreamBgzipErr)
 	}
 	return upstreamBgzipPath
 }

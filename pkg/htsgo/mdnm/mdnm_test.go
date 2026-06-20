@@ -137,7 +137,7 @@ func TestCompute(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := &sam.Record{
-				Pos:   int32(tc.pos),
+				Pos:   int64(tc.pos),
 				Cigar: mustCigar(t, tc.cigar),
 				Seq:   tc.seq,
 			}

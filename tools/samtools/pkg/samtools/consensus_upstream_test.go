@@ -64,7 +64,7 @@ func upstreamSamtoolsBinary(t *testing.T) string {
 		upstreamSamtoolsOnce.path, upstreamSamtoolsOnce.err = buildUpstreamSamtools(root)
 	})
 	if upstreamSamtoolsOnce.err != nil {
-		t.Fatalf("could not obtain upstream samtools binary: %v", upstreamSamtoolsOnce.err)
+		t.Skipf("could not obtain upstream samtools binary: %v", upstreamSamtoolsOnce.err)
 	}
 	return upstreamSamtoolsOnce.path
 }

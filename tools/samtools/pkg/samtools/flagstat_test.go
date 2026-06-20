@@ -2,6 +2,9 @@ package samtools
 
 import (
 	"bytes"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -182,6 +185,124 @@ m3	97	chr1	200	3	5M	chr2	600	0	ACGTA	IIIII
 	}
 	if c.MateDiffChrMapq5[0] != 2 {
 		t.Errorf("MateDiffChrMapq5 (≥5): got %v, want [2 0]", c.MateDiffChrMapq5)
+	}
+}
+
+// TestFlagstatMateDiffChrRNextInterpretation pins the "with mate mapped to a
+// different chr" counter to upstream's reference-id comparison (bam_stat.c:
+// flagstat_loop, c->mtid != c->tid) rather than a raw RNEXT-string test. Two
+// RNEXT spellings used to diverge from upstream (gap A17, bug_corpus.md):
+//
+//   - RNEXT names the read's own reference by name (not "="): htslib decodes
+//     mtid == tid, so it is NOT a different chr. The old `RNext != "="` test
+//     over-counted these.
+//   - RNEXT is "*" (or empty) while the mate is flagged mapped (FMUNMAP clear):
+//     htslib decodes mtid == -1, distinct from the mapped read's tid >= 0, so
+//     it IS a different chr. The old `RNext != ""` test under-counted these
+//     (counted 0 where upstream counts the mate elsewhere).
+func TestFlagstatMateDiffChrRNextInterpretation(t *testing.T) {
+	const hdr = "@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:1000\n@SQ\tSN:chr2\tLN:1000\n"
+	cases := []struct {
+		name     string
+		records  string
+		wantDiff int
+		wantHigh int
+	}{
+		{
+			name: "rnext_eq_marker_same_chr",
+			records: "a\t99\tchr1\t100\t30\t5M\t=\t200\t100\tACGTA\tIIIII\n" +
+				"a\t147\tchr1\t200\t30\t5M\t=\t100\t-100\tACGTA\tIIIII\n",
+			wantDiff: 0, wantHigh: 0,
+		},
+		{
+			name: "rnext_same_name_spelled_out",
+			// RNEXT == RNAME by name (not "="): mtid == tid → NOT diff chr.
+			records: "b\t99\tchr1\t100\t30\t5M\tchr1\t200\t100\tACGTA\tIIIII\n" +
+				"b\t147\tchr1\t200\t30\t5M\tchr1\t100\t-100\tACGTA\tIIIII\n",
+			wantDiff: 0, wantHigh: 0,
+		},
+		{
+			name: "rnext_different_name",
+			records: "c\t99\tchr1\t100\t30\t5M\tchr2\t200\t0\tACGTA\tIIIII\n" +
+				"c\t147\tchr2\t200\t30\t5M\tchr1\t100\t0\tACGTA\tIIIII\n",
+			wantDiff: 2, wantHigh: 2,
+		},
+		{
+			name: "rnext_star_with_mate_mapped",
+			// FMUNMAP clear (flags 97/145) but RNEXT == "*": mtid == -1,
+			// tid >= 0 → diff chr. This is the previously under-counted case.
+			records: "d\t97\tchr1\t100\t30\t5M\t*\t0\t0\tACGTA\tIIIII\n" +
+				"d\t145\tchr2\t300\t30\t5M\t*\t0\t0\tACGTA\tIIIII\n",
+			wantDiff: 2, wantHigh: 2,
+		},
+		{
+			name: "different_name_low_mapq_excluded_from_high",
+			records: "e\t99\tchr1\t100\t3\t5M\tchr2\t200\t0\tACGTA\tIIIII\n" +
+				"e\t147\tchr2\t200\t3\t5M\tchr1\t100\t0\tACGTA\tIIIII\n",
+			wantDiff: 2, wantHigh: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := CountFlagstat(strings.NewReader(hdr + tc.records))
+			if err != nil {
+				t.Fatalf("CountFlagstat: %v", err)
+			}
+			if c.MateDiffChr[0] != tc.wantDiff {
+				t.Errorf("MateDiffChr: got %d, want %d", c.MateDiffChr[0], tc.wantDiff)
+			}
+			if c.MateDiffChrMapq5[0] != tc.wantHigh {
+				t.Errorf("MateDiffChrMapq5: got %d, want %d", c.MateDiffChrMapq5[0], tc.wantHigh)
+			}
+		})
+	}
+}
+
+// TestFlagstatMateDiffChrUpstreamParity runs the live upstream `samtools
+// flagstat` on the same crafted RNEXT-interpretation fixture and asserts the
+// Go port produces byte-identical output. It skips gracefully when a prebuilt
+// upstream binary is not available under reference_code/samtools (this is a
+// fast, opportunistic check; the deterministic unit test above is the
+// regression gate that always runs).
+func TestFlagstatMateDiffChrUpstreamParity(t *testing.T) {
+	root := mustRepoRoot()
+	bin := filepath.Join(root, "reference_code", "samtools", "samtools")
+	if !fileExists(bin) {
+		t.Skipf("upstream samtools binary not present at %s; skipping live parity", bin)
+	}
+
+	const sam = "@HD\tVN:1.6\tSO:coordinate\n" +
+		"@SQ\tSN:chr1\tLN:1000\n@SQ\tSN:chr2\tLN:1000\n" +
+		// "=" marker (same chr), spelled-out same name, different name,
+		// RNEXT="*" with mate mapped, and a low-mapQ different-name pair.
+		"a\t99\tchr1\t100\t30\t5M\t=\t200\t100\tACGTA\tIIIII\n" +
+		"a\t147\tchr1\t200\t30\t5M\t=\t100\t-100\tACGTA\tIIIII\n" +
+		"b\t99\tchr1\t100\t30\t5M\tchr1\t200\t100\tACGTA\tIIIII\n" +
+		"b\t147\tchr1\t200\t30\t5M\tchr1\t100\t-100\tACGTA\tIIIII\n" +
+		"c\t99\tchr1\t100\t30\t5M\tchr2\t200\t0\tACGTA\tIIIII\n" +
+		"c\t147\tchr2\t200\t30\t5M\tchr1\t100\t0\tACGTA\tIIIII\n" +
+		"d\t97\tchr1\t100\t30\t5M\t*\t0\t0\tACGTA\tIIIII\n" +
+		"d\t145\tchr2\t300\t30\t5M\t*\t0\t0\tACGTA\tIIIII\n" +
+		"e\t99\tchr1\t100\t3\t5M\tchr2\t200\t0\tACGTA\tIIIII\n" +
+		"e\t147\tchr2\t200\t3\t5M\tchr1\t100\t0\tACGTA\tIIIII\n"
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "diffchr.sam")
+	if err := os.WriteFile(path, []byte(sam), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	want, err := exec.Command(bin, "flagstat", path).Output()
+	if err != nil {
+		t.Skipf("upstream samtools flagstat failed (binary may be incompatible): %v", err)
+	}
+
+	var got bytes.Buffer
+	if err := FlagstatFile(path, &got, 0); err != nil {
+		t.Fatalf("FlagstatFile: %v", err)
+	}
+	if got.String() != string(want) {
+		t.Errorf("flagstat output differs from upstream\n--- ours ---\n%s\n--- upstream ---\n%s", got.String(), want)
 	}
 }
 

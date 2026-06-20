@@ -54,12 +54,10 @@ func (r *Record) QualString() string {
 	if math.Float32bits(r.Qual) == MissingFloat32 {
 		return "."
 	}
-	if r.Qual == float32(int32(r.Qual)) {
-		// Print whole-number qualities without a decimal point to match
-		// how bcftools renders them.
-		return strconv.FormatInt(int64(r.Qual), 10)
-	}
-	return strconv.FormatFloat(float64(r.Qual), 'g', -1, 32)
+	// htslib prints QUAL with kputd (C "%g": six significant digits, scientific
+	// notation for large/small magnitudes). r.Qual is already a 32-bit float, so
+	// no further narrowing is needed.
+	return vcf.FormatVCFFloat64(float64(r.Qual))
 }
 
 // decodeShared parses the shared portion of a record (size = lShared) from
@@ -440,10 +438,9 @@ func joinGTAlleles(alleleStrs []string, tv TypedValue, s, dim int) string {
 	return b.String()
 }
 
-// formatFloat renders a float in the compact form bcftools uses.
+// formatFloat renders a Float-typed INFO/FORMAT value the way htslib's kputd
+// does (C "%g": six significant digits, scientific notation for large/small
+// magnitudes). The value is already a 32-bit float, matching upstream storage.
 func formatFloat(f float32) string {
-	if f == float32(int32(f)) {
-		return strconv.FormatInt(int64(f), 10)
-	}
-	return strconv.FormatFloat(float64(f), 'g', -1, 32)
+	return vcf.FormatVCFFloat64(float64(f))
 }

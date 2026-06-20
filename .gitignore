@@ -135,3 +135,10 @@ __pycache__/
 
 # Claude Code local tooling state (agent worktrees, etc.)
 .claude/
+
+# stray go build artifacts (go build ./pipeline/cmd/<x> without -o)
+/conformance
+/diff-fuzz
+/giab-concordance
+/parity-pipeline
+/full-validation

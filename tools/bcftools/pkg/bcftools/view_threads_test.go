@@ -42,7 +42,7 @@ func upstreamBcftoolsThreads(t *testing.T) string {
 	if threadsBinPath == "" {
 		// upstreamBcftools already t.Fatalf'd on the first call; guard the
 		// memoised empty path for subsequent callers.
-		t.Fatalf("upstream bcftools binary unavailable")
+		t.Skipf("upstream bcftools binary unavailable")
 	}
 	return threadsBinPath
 }

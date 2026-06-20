@@ -47,7 +47,7 @@ func runUpstreamPrinseqTrim(t *testing.T, input []byte, isFastq bool, extraFlags
 	t.Helper()
 	pl := upstreamPrinseqPath()
 	if pl == "" {
-		t.Fatalf("upstream prinseq-lite.pl not checked out; run `git submodule update --init reference_code/prinseq`")
+		t.Skipf("upstream prinseq-lite.pl not checked out; run `git submodule update --init reference_code/prinseq`")
 	}
 	if _, err := exec.LookPath("perl"); err != nil {
 		t.Fatalf("perl not available; install perl to run the prinseq live-parity oracle")

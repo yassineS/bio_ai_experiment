@@ -93,7 +93,156 @@ func detectFormat(fields []string) (inputFormat, bool) {
 	return 0, false
 }
 
-// readText reads BED/GFF/VCF records from an already-peeked reader.
+// FieldCountError reports an input line whose tab-delimited field count differs
+// from the number established by the first valid data line. It mirrors the two
+// distinct messages upstream bedtools emits for this condition:
+//
+//   - TypeChecker == true: the inconsistency appears within the first four valid
+//     data lines, so upstream's format auto-detector rejects the file with
+//     "Error: Type checker found wrong number of fields while tokenizing data
+//     line. / Perhaps you have extra TAB at the end of your line? ...". The
+//     LineNum/Got/Want fields are unused in this case.
+//   - TypeChecker == false: a later line disagrees, so upstream's per-line reader
+//     reports "Error: line number N of file F has X fields, but Y were
+//     expected." (LineNum=N, Got=X, Want=Y).
+//
+// The CLI (reportMergeError) formats the exact upstream wording, substituting
+// the input file name (Filename).
+type FieldCountError struct {
+	TypeChecker bool
+	Filename    string
+	LineNum     int
+	Got         int
+	Want        int
+}
+
+func (e *FieldCountError) Error() string {
+	if e.TypeChecker {
+		return "type checker found wrong number of fields while tokenizing data line"
+	}
+	return fmt.Sprintf("line number %d of file %s has %d fields, but %d were expected",
+		e.LineNum, e.Filename, e.Got, e.Want)
+}
+
+// SortOrderError reports input that is not coordinate-sorted, matching upstream
+// bedtools merge's requirement that input be sorted by chromosome then start.
+// Upstream prints "Error: Sorted input specified, but the file F has the
+// following out of order record\n<record>" and exits 1; the CLI formats that
+// wording from Filename and Line (the BED-reconstructed offending record).
+type SortOrderError struct {
+	Filename string
+	Line     string
+}
+
+func (e *SortOrderError) Error() string {
+	return fmt.Sprintf("sorted input specified, but the file %s has the following out of order record\n%s",
+		e.Filename, e.Line)
+}
+
+// sortState tracks the running coordinate-sort check across the input stream,
+// reproducing upstream FileRecordMgr::testInputSortOrder: input must be sorted
+// by start within each chromosome, and a chromosome may not reappear once a
+// different chromosome has been seen. The sort key is the record's original
+// start (upstream's zero-length adjustment cancels out in the comparison).
+type sortState struct {
+	prevChrom   string
+	prevStart   int
+	havePrev    bool
+	foundChroms map[string]struct{}
+}
+
+// check tests one record (in input order) against the running sort state and
+// returns a SortOrderError when it is out of order, leaving recs unsorted at the
+// point of failure. line is the BED-reconstructed offending-record text upstream
+// would print.
+func (s *sortState) check(chrom string, start int, line string, filename string) error {
+	if s.foundChroms == nil {
+		s.foundChroms = make(map[string]struct{})
+	}
+	if !s.havePrev || chrom != s.prevChrom {
+		if _, seen := s.foundChroms[chrom]; seen {
+			// A chromosome reappears after a different one: out of order.
+			return &SortOrderError{Filename: filename, Line: line}
+		}
+		s.foundChroms[chrom] = struct{}{}
+		s.prevChrom = chrom
+		s.prevStart = start
+		s.havePrev = true
+		return nil
+	}
+	// Same chromosome as the previous record.
+	if start < s.prevStart {
+		return &SortOrderError{Filename: filename, Line: line}
+	}
+	s.prevStart = start
+	return nil
+}
+
+// sortErrorLine renders the offending record exactly as upstream's Record
+// operator<< does for the sort-order message: chrom, the (possibly
+// zero-length-adjusted) start and end, then any original columns from index 4
+// on. For GFF/VCF, which upstream prints in their native column layout, it falls
+// back to the original line text.
+func sortErrorLine(rec record, format inputFormat, rawLine string) string {
+	if format != fmtBED {
+		return rawLine
+	}
+	start, end := rec.start, rec.end
+	if start == end { // zero-length: upstream adjusts start-1, end+1 for display.
+		start--
+		end++
+	}
+	var b strings.Builder
+	b.WriteString(rec.chrom)
+	b.WriteByte('\t')
+	b.WriteString(strconv.Itoa(start))
+	b.WriteByte('\t')
+	b.WriteString(strconv.Itoa(end))
+	// Append original columns beyond chrom/start/end when available.
+	if len(rec.fields) > 3 {
+		for _, f := range rec.fields[3:] {
+			b.WriteByte('\t')
+			b.WriteString(f)
+		}
+	} else {
+		// Fast-path records keep no fields; recover trailing columns from the
+		// raw line (everything after the third tab).
+		if extra := trailingColumns(rawLine); extra != "" {
+			b.WriteByte('\t')
+			b.WriteString(extra)
+		}
+	}
+	return b.String()
+}
+
+// trailingColumns returns the substring of a tab-delimited line after its third
+// field (columns 4+), or "" when the line has three or fewer fields.
+func trailingColumns(line string) string {
+	tabs := 0
+	for i := 0; i < len(line); i++ {
+		if line[i] == '\t' {
+			tabs++
+			if tabs == 3 {
+				return line[i+1:]
+			}
+		}
+	}
+	return ""
+}
+
+// fieldCount returns the number of tab-delimited fields in a line.
+func fieldCount(line string) int {
+	if line == "" {
+		return 0
+	}
+	return strings.Count(line, "\t") + 1
+}
+
+// readText reads BED/GFF/VCF records from an already-peeked reader. It validates
+// input the way upstream bedtools merge does: every data line must have the same
+// field count as the first valid data line, and the records must be sorted by
+// chromosome then start. Malformed or unsorted input yields a *FieldCountError
+// or *SortOrderError, which the CLI renders with upstream-exact wording.
 func readText(br *bufio.Reader, opts MergeOptions) ([]record, inputFormat, error) {
 	sc := bufio.NewScanner(br)
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
@@ -106,7 +255,19 @@ func readText(br *bufio.Reader, opts MergeOptions) ([]record, inputFormat, error
 	// avoids allocating and keeping it (see parseBEDFast).
 	keepFields := opts.needsFields()
 	var ci chromInterner
+	var sorts sortState
+	// Field-count parity state: expectFields is locked to the first valid data
+	// line's count; validData counts valid data lines so the first four use
+	// upstream's "type checker" message and later lines the per-line message.
+	expectFields := 0
+	validData := 0
+	lineNum := 0 // physical 1-based line number, including blank/comment lines.
+	filename := opts.Filename
+	if filename == "" {
+		filename = "-"
+	}
 	for sc.Scan() {
+		lineNum++
 		lineB := bytes.TrimRight(sc.Bytes(), "\r")
 		trimmed := bytes.TrimSpace(lineB)
 		if len(trimmed) == 0 {
@@ -119,13 +280,28 @@ func readText(br *bufio.Reader, opts MergeOptions) ([]record, inputFormat, error
 			}
 			continue
 		}
+		rawLine := string(lineB)
+		// Field-count validation, mirroring upstream's type checker (first four
+		// valid data lines) and per-line reader (later lines).
+		nf := fieldCount(rawLine)
+		validData++
+		if expectFields == 0 {
+			expectFields = nf
+		} else if nf != expectFields {
+			if validData <= 4 {
+				return nil, format, &FieldCountError{TypeChecker: true, Filename: filename}
+			}
+			return nil, format, &FieldCountError{
+				Filename: filename, LineNum: lineNum, Got: nf, Want: expectFields,
+			}
+		}
 		if !formatSet {
 			if headerForcedVCF {
 				format = fmtVCF
 			} else {
-				f, ok := detectFormat(strings.Split(string(lineB), "\t"))
+				f, ok := detectFormat(strings.Split(rawLine, "\t"))
 				if !ok {
-					return nil, format, fmt.Errorf("unexpected file format: please use tab-delimited BED, GFF, or VCF (line: %q)", string(lineB))
+					return nil, format, fmt.Errorf("unexpected file format: please use tab-delimited BED, GFF, or VCF (line: %q)", rawLine)
 				}
 				format = f
 			}
@@ -142,12 +318,19 @@ func readText(br *bufio.Reader, opts MergeOptions) ([]record, inputFormat, error
 		if keepFields || format != fmtBED {
 			// string(lineB) is a fresh copy, so fields retained by the record do
 			// not alias the reused scanner buffer.
-			rec, err = parseTextRecord(strings.Split(string(lineB), "\t"), format)
+			rec, err = parseTextRecord(strings.Split(rawLine, "\t"), format)
 		} else {
 			rec, err = parseBEDFast(lineB, opts.StrandSpec || opts.StrandFilter != "", &ci)
 		}
 		if err != nil {
 			return nil, format, err
+		}
+		// Sort-order validation in input order, matching upstream's
+		// testInputSortOrder (run as each record is read, before the merge).
+		if serr := sorts.check(rec.chrom, rec.start, "", filename); serr != nil {
+			soErr := serr.(*SortOrderError)
+			soErr.Line = sortErrorLine(rec, format, rawLine)
+			return nil, format, soErr
 		}
 		out = append(out, rec)
 	}

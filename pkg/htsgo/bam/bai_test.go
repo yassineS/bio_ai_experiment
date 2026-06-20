@@ -240,9 +240,10 @@ func TestBAIByteLayout(t *testing.T) {
 	raw := buf.Bytes()
 	// Expected layout:
 	//   4 magic + 4 n_ref + (4 n_bin + 4 bin_id + 4 n_chunk + 16 chunk + 4 n_intv + 8 intv) per ref
-	//   = 4 + 4 + (4 + 4 + 4 + 16 + 4 + 8) = 48 bytes
-	if len(raw) != 48 {
-		t.Fatalf("expected 48 raw bytes, got %d (% x)", len(raw), raw)
+	//   + 8 n_no_coor trailer (htslib always emits it, even when zero)
+	//   = 4 + 4 + (4 + 4 + 4 + 16 + 4 + 8) + 8 = 56 bytes
+	if len(raw) != 56 {
+		t.Fatalf("expected 56 raw bytes, got %d (% x)", len(raw), raw)
 	}
 	if string(raw[0:4]) != "BAI\x01" {
 		t.Errorf("magic: got %q", raw[0:4])
@@ -270,6 +271,9 @@ func TestBAIByteLayout(t *testing.T) {
 	}
 	if binary.LittleEndian.Uint64(raw[40:48]) != 50 {
 		t.Errorf("intv[0]: got %d, want 50", binary.LittleEndian.Uint64(raw[40:48]))
+	}
+	if binary.LittleEndian.Uint64(raw[48:56]) != 0 {
+		t.Errorf("n_no_coor trailer: got %d, want 0", binary.LittleEndian.Uint64(raw[48:56]))
 	}
 }
 

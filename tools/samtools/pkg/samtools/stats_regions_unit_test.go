@@ -143,7 +143,7 @@ func TestUnitStatsIsInRegions(t *testing.T) {
 		return &sam.Record{
 			QName: "r",
 			RName: rname,
-			Pos:   pos1,
+			Pos:   int64(pos1),
 			MapQ:  60,
 			Cigar: sam.Cigar{sam.CigarOp(uint32(length)<<4 | sam.CigarMatch)},
 			RNext: "*",

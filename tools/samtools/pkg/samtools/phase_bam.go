@@ -241,7 +241,7 @@ func dumpAln(
 		// Record.EndPosition() in 1-based-inclusive. The upstream
 		// condition is `end > min_pos: break` so we drain while
 		// EndPosition() <= minPos.
-		if rec.EndPosition() > minPos {
+		if int32(rec.EndPosition()) > minPos {
 			break
 		}
 		key := x31HashString(rec.QName)

@@ -326,9 +326,13 @@ func normRun(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts NormO
 		variants = atomizeVariants(variants)
 	}
 
+	// Per-field Number= lookup, used to re-index Number=A/R/G INFO and FORMAT
+	// vectors when splitting or joining multiallelic sites.
+	numbers := headerNumberMapsFrom(hdr.MetaInfo)
+
 	// 4. split multi-allelics.
 	if opts.Multiallelics.Active && opts.Multiallelics.Split {
-		variants = splitMultiallelics(variants, opts.Multiallelics)
+		variants = splitMultiallelics(variants, opts.Multiallelics, numbers)
 	}
 
 	// 5. left-align and REF-check.
@@ -346,7 +350,7 @@ func normRun(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts NormO
 
 	// 7. join biallelics back into a multiallelic.
 	if opts.Multiallelics.Active && !opts.Multiallelics.Split {
-		variants = joinMultiallelics(variants, opts.Multiallelics)
+		variants = joinMultiallelics(variants, opts.Multiallelics, numbers)
 	}
 
 	// 8. lax-mode filtering happens after splitting.
@@ -466,7 +470,7 @@ func variantIsIndel(v *vcf.Variant) bool {
 //     a clean biallelic.
 //   - INFO/AN, FORMAT/DP, etc. carry over unchanged — they describe the
 //     site rather than an individual allele.
-func splitMultiallelics(variants []*vcf.Variant, m MultiallelicMode) []*vcf.Variant {
+func splitMultiallelics(variants []*vcf.Variant, m MultiallelicMode, numbers headerNumberMaps) []*vcf.Variant {
 	if !m.Split {
 		return variants
 	}
@@ -481,10 +485,69 @@ func splitMultiallelics(variants []*vcf.Variant, m MultiallelicMode) []*vcf.Vari
 			child.Alt = []string{alt}
 			child.Info = perAlleleInfo(v.Info, i, len(v.Alt))
 			child.Samples = perAlleleSamples(v.Samples, v.Format, i)
+			reindexSplitFields(child, v, i, numbers)
 			out = append(out, child)
 		}
 	}
 	return out
+}
+
+// reindexSplitFields re-indexes every Number=A/R/G INFO and FORMAT vector in the
+// freshly-split biallelic record child (the i-th ALT, 0-based, of the original
+// multiallelic src). It mirrors upstream vcfnorm.c split_info_* /
+// split_format_* which keep, for the chosen ALT index ialt=i:
+//
+//   - Number=A: the single value vals[i];
+//   - Number=R: [vals[0], vals[i+1]] (REF + chosen ALT);
+//   - Number=G: the diploid genotypes (0/0),(0/i+1),(i+1/i+1), i.e. the values
+//     at gt-indices 0, gt(0,i+1) and gt(i+1,i+1) (haploid: [vals[0], vals[i+1]]).
+//
+// The work is expressed as "drop every ALT except i" and delegated to
+// subsetNumberedList / subsetGenotypeList (the bcf_remove_allele_set port), which
+// already implement the A/R/G layouts identically. INFO/AC and INFO/AF are not
+// touched here — perAlleleInfo already narrows those — but re-indexing them again
+// would be a no-op (a single remaining value), so the two paths stay consistent.
+func reindexSplitFields(child, src *vcf.Variant, i int, numbers headerNumberMaps) {
+	nROri := 1 + len(src.Alt) // REF + all original ALTs
+	if nROri <= 2 {
+		return // already biallelic, nothing to re-index
+	}
+	// rm[j] flags the j-th allele (0=REF) for removal: keep REF and ALT i only.
+	rm := make([]bool, nROri)
+	for j := 1; j < nROri; j++ {
+		rm[j] = j != i+1
+	}
+
+	// INFO fields.
+	for tag, val := range child.Info {
+		if tag == "AC" || tag == "AF" {
+			continue // already narrowed by perAlleleInfo
+		}
+		num := numbers.info[tag]
+		if num != "A" && num != "R" && num != "G" {
+			continue
+		}
+		if nv, changed := subsetNumberedList(val, num, rm, nil, nROri); changed {
+			child.Info[tag] = nv
+		}
+	}
+
+	// FORMAT fields, per sample.
+	for _, tag := range child.Format {
+		num := numbers.format[tag]
+		if num != "A" && num != "R" && num != "G" {
+			continue
+		}
+		for s := range child.Samples {
+			val, ok := child.Samples[s].Data[tag]
+			if !ok {
+				continue
+			}
+			if nv, changed := subsetNumberedList(val, num, rm, nil, nROri); changed {
+				child.Samples[s].Data[tag] = nv
+			}
+		}
+	}
 }
 
 // shouldAffect returns true when the multiallelic switch applies to v.
@@ -624,7 +687,7 @@ func cloneVariant(v *vcf.Variant) *vcf.Variant {
 // original relative order. A bucket of two or more records is merged via
 // mergeBiallelicsToMultiallelic, which computes a common REF, remaps allele
 // indices, and combines FORMAT/GT exactly as merge_format_genotype does.
-func joinMultiallelics(variants []*vcf.Variant, m MultiallelicMode) []*vcf.Variant {
+func joinMultiallelics(variants []*vcf.Variant, m MultiallelicMode, numbers headerNumberMaps) []*vcf.Variant {
 	out := make([]*vcf.Variant, 0, len(variants))
 	i := 0
 	for i < len(variants) {
@@ -633,7 +696,7 @@ func joinMultiallelics(variants []*vcf.Variant, m MultiallelicMode) []*vcf.Varia
 		for j < len(variants) && variants[j].Chrom == variants[i].Chrom && variants[j].Pos == variants[i].Pos {
 			j++
 		}
-		out = append(out, joinWindow(variants[i:j], m)...)
+		out = append(out, joinWindow(variants[i:j], m, numbers)...)
 		i = j
 	}
 	return out
@@ -673,7 +736,7 @@ func joinTypeBit(v *vcf.Variant, m MultiallelicMode) (bit int, ok bool) {
 // grouped by type category and only same-category runs of two or more are
 // merged, preserving the input order of everything else (matching upstream's
 // mrows_flush, which emits a single-record bucket verbatim).
-func joinWindow(window []*vcf.Variant, m MultiallelicMode) []*vcf.Variant {
+func joinWindow(window []*vcf.Variant, m MultiallelicMode, numbers headerNumberMaps) []*vcf.Variant {
 	if !m.Active || m.Split || len(window) == 1 {
 		return window
 	}
@@ -701,7 +764,7 @@ func joinWindow(window []*vcf.Variant, m MultiallelicMode) []*vcf.Variant {
 		if len(eligible) == 1 {
 			result[firstIdx] = eligible[0]
 		} else {
-			result[firstIdx] = mergeBiallelicsToMultiallelic(eligible, m)
+			result[firstIdx] = mergeBiallelicsToMultiallelic(eligible, m, numbers)
 		}
 		_ = passthrough
 		return result
@@ -735,7 +798,7 @@ func joinWindow(window []*vcf.Variant, m MultiallelicMode) []*vcf.Variant {
 		if len(b.records) == 1 {
 			result[b.anchor] = b.records[0]
 		} else {
-			result[b.anchor] = mergeBiallelicsToMultiallelic(b.records, m)
+			result[b.anchor] = mergeBiallelicsToMultiallelic(b.records, m, numbers)
 		}
 	}
 	// Upstream emits the records at a position ordered by variant-type bit
@@ -767,7 +830,7 @@ func joinSortBit(v *vcf.Variant) int {
 // common REF via mergeAlleles, takes the maximum QUAL, accumulates FILTERs,
 // joins per-allele INFO/AC and INFO/AF, and combines FORMAT/GT through
 // mergeFormatGenotype.
-func mergeBiallelicsToMultiallelic(records []*vcf.Variant, m MultiallelicMode) *vcf.Variant {
+func mergeBiallelicsToMultiallelic(records []*vcf.Variant, m MultiallelicMode, numbers headerNumberMaps) *vcf.Variant {
 	if len(records) == 1 {
 		return records[0]
 	}
@@ -836,11 +899,234 @@ func mergeBiallelicsToMultiallelic(records []*vcf.Variant, m MultiallelicMode) *
 	// the first record's value (already copied by cloneVariant).
 	joinPerAlleleInfo(dst, records, maps, len(dst.Alt))
 
+	// Every other Number=A/R/G INFO and FORMAT field is re-indexed into the
+	// merged allele order (AC/AF already handled above).
+	joinReindexFields(dst, records, maps, numbers)
+
 	// FORMAT/GT: combine genotypes via the upstream algorithm.
 	if len(dst.Samples) > 0 && hasGT(dst.Format) {
 		mergeFormatGenotype(dst, records, maps)
 	}
 	return dst
+}
+
+// joinReindexFields re-indexes the Number=A/R/G INFO and FORMAT vectors of the
+// joined records into the merged allele order of dst, porting the per-tag
+// scatter in upstream vcfnorm.c merge_info_numeric / merge_format_numeric (and
+// their string variants). For each record i with allele map maps[i] (source
+// allele index -> merged allele index):
+//
+//   - Number=A: source value k (0-based over the record's ALTs) lands at merged
+//     ALT slot maps[i][k+1]-1.
+//   - Number=R: source value k (0-based over REF+ALTs) lands at merged allele
+//     slot maps[i][k].
+//   - Number=G: the diploid value for source genotype (ia,ib) lands at merged
+//     genotype index gt(maps[i][ia], maps[i][ib]); a haploid (per-allele) source
+//     scatters like Number=R.
+//
+// AC and AF are skipped (joinPerAlleleInfo owns them). Slots no record fills
+// stay ".", matching upstream's missing-fill.
+func joinReindexFields(dst *vcf.Variant, records []*vcf.Variant, maps [][]int, numbers headerNumberMaps) {
+	nAlt := len(dst.Alt)
+	nR := nAlt + 1
+
+	// INFO fields.
+	infoTags := collectTags(records, true)
+	for _, tag := range infoTags {
+		if tag == "AC" || tag == "AF" {
+			continue
+		}
+		num := numbers.info[tag]
+		if num != "A" && num != "R" && num != "G" {
+			continue
+		}
+		// Re-index only when every record carries the tag (matches upstream,
+		// which errors otherwise; we conservatively leave dst's first-record
+		// value alone on a partial set).
+		if !allHaveInfo(records, tag) {
+			continue
+		}
+		vals := make([][]string, len(records))
+		for i, r := range records {
+			vals[i] = strings.Split(r.Info[tag], ",")
+		}
+		merged, ok := scatterNumbered(num, vals, maps, nR)
+		if ok {
+			setInfo(dst, tag, strings.Join(merged, ","))
+		}
+	}
+
+	// FORMAT fields, per sample.
+	formatTags := collectFormatTags(records)
+	for _, tag := range formatTags {
+		if tag == "GT" {
+			continue
+		}
+		num := numbers.format[tag]
+		if num != "A" && num != "R" && num != "G" {
+			continue
+		}
+		for s := range dst.Samples {
+			vals := make([][]string, len(records))
+			haveAll := true
+			for i, r := range records {
+				if s >= len(r.Samples) {
+					haveAll = false
+					break
+				}
+				val, ok := r.Samples[s].Data[tag]
+				if !ok || val == "" || val == "." {
+					haveAll = false
+					break
+				}
+				vals[i] = strings.Split(val, ",")
+			}
+			if !haveAll {
+				continue
+			}
+			merged, ok := scatterNumbered(num, vals, maps, nR)
+			if ok {
+				dst.Samples[s].Data[tag] = strings.Join(merged, ",")
+			}
+		}
+	}
+}
+
+// scatterNumbered scatters the per-record value lists vals (one slice per joined
+// record, comma-split) into the merged allele order described by maps, returning
+// the merged comma-fields. number is "A", "R", or "G"; nR is the merged allele
+// count (REF + ALTs). It returns ok=false when any record's element count does
+// not match its declared cardinality (mirroring upstream's "could not merge"
+// guard — we leave the field unchanged rather than emit a malformed vector).
+func scatterNumbered(number string, vals [][]string, maps [][]int, nR int) (merged []string, ok bool) {
+	switch number {
+	case "A":
+		merged = fillMissing(nR - 1)
+		for i, v := range vals {
+			nAlleles := len(maps[i])
+			if len(v) != nAlleles-1 {
+				return nil, false
+			}
+			for k := 0; k < len(v); k++ {
+				dstIdx := maps[i][k+1] - 1
+				if dstIdx >= 0 && dstIdx < len(merged) {
+					merged[dstIdx] = v[k]
+				}
+			}
+		}
+		return merged, true
+	case "R":
+		merged = fillMissing(nR)
+		for i, v := range vals {
+			nAlleles := len(maps[i])
+			if len(v) != nAlleles {
+				return nil, false
+			}
+			for k := 0; k < len(v); k++ {
+				dstIdx := maps[i][k]
+				if dstIdx >= 0 && dstIdx < len(merged) {
+					merged[dstIdx] = v[k]
+				}
+			}
+		}
+		return merged, true
+	default: // "G"
+		nG := nR * (nR + 1) / 2
+		merged = fillMissing(nG)
+		for i, v := range vals {
+			nAlleles := len(maps[i])
+			nGsrc := nAlleles * (nAlleles + 1) / 2
+			if len(v) == nGsrc {
+				// Diploid: source genotype (ia,ib), ib<=ia.
+				k := 0
+				for ia := 0; ia < nAlleles; ia++ {
+					for ib := 0; ib <= ia; ib++ {
+						if k >= len(v) {
+							break
+						}
+						l := gtIndex(maps[i][ia], maps[i][ib])
+						if l >= 0 && l < len(merged) {
+							merged[l] = v[k]
+						}
+						k++
+					}
+				}
+			} else if len(v) == nAlleles {
+				// Haploid: per-allele, scatter like R.
+				for k := 0; k < len(v); k++ {
+					dstIdx := maps[i][k]
+					if dstIdx >= 0 && dstIdx < len(merged) {
+						merged[dstIdx] = v[k]
+					}
+				}
+			} else {
+				return nil, false
+			}
+		}
+		return merged, true
+	}
+}
+
+// fillMissing returns a slice of n "." placeholders.
+func fillMissing(n int) []string {
+	if n < 0 {
+		n = 0
+	}
+	out := make([]string, n)
+	for i := range out {
+		out[i] = "."
+	}
+	return out
+}
+
+// allHaveInfo reports whether every record carries the named INFO tag.
+func allHaveInfo(records []*vcf.Variant, tag string) bool {
+	for _, r := range records {
+		if v, ok := r.Info[tag]; !ok || v == "" || v == "." {
+			return false
+		}
+	}
+	return true
+}
+
+// collectTags returns the INFO tags present on records, in first-seen order.
+// The info flag is reserved for future use; it is true when collecting INFO.
+func collectTags(records []*vcf.Variant, info bool) []string {
+	_ = info
+	var out []string
+	seen := map[string]bool{}
+	for _, r := range records {
+		for _, k := range r.InfoOrder {
+			if !seen[k] {
+				seen[k] = true
+				out = append(out, k)
+			}
+		}
+		// Fall back to map keys for records without a recorded order.
+		for k := range r.Info {
+			if !seen[k] {
+				seen[k] = true
+				out = append(out, k)
+			}
+		}
+	}
+	return out
+}
+
+// collectFormatTags returns the FORMAT tags present on records, in first-seen
+// order across the records' Format slices.
+func collectFormatTags(records []*vcf.Variant) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, r := range records {
+		for _, k := range r.Format {
+			if !seen[k] {
+				seen[k] = true
+				out = append(out, k)
+			}
+		}
+	}
+	return out
 }
 
 // mergeJoinFilters combines the FILTER columns of the records joined into one

@@ -19,7 +19,7 @@ func samRecordForTest(t *testing.T, cigar string, pos1 int, seq string) *sam.Rec
 	return &sam.Record{
 		QName: "r",
 		RName: "chr1",
-		Pos:   int32(pos1),
+		Pos:   int64(pos1),
 		MapQ:  60,
 		Cigar: c,
 		Seq:   seq,

@@ -65,6 +65,38 @@ func NewCSI(minShift, depth int32) *CSI {
 // (MinShift, Depth) combination.
 func (c *CSI) MaxPos() int64 { return int64(1) << uint32(c.MinShift+c.Depth*3) }
 
+// binMaxPos mirrors htslib's hts_bin_maxpos: 1 << (minShift + nLvls*3).
+func binMaxPos(minShift, nLvls int32) int64 { return int64(1) << uint32(minShift+nLvls*3) }
+
+// AdjustCSISettings reproduces htslib's hts_adjust_csi_settings: given the
+// longest reference length and a requested minShift (and a starting nLvls of
+// 0), it returns the (minShift, nLvls) htslib would choose so the deepest bin
+// level still covers the longest reference. samtools/bcftools index call this
+// to pick the CSI hierarchy depth dynamically rather than always using the
+// BAI-equivalent depth 5; matching it is required for byte-identical .csi
+// output. nLvls is grown while the addressable range is too small; only when
+// it hits the 9-level overflow guard does minShift increase instead.
+func AdjustCSISettings(maxLenIn int64, minShift int32) (adjMinShift, adjNLvls int32) {
+	const maxNLvls = 9
+	nLvls := int32(0)
+	maxLen := maxLenIn + 256
+	if maxLen <= binMaxPos(minShift, maxNLvls) {
+		maxpos := binMaxPos(minShift, nLvls)
+		for maxLen > maxpos {
+			nLvls++
+			maxpos *= 8
+		}
+		return minShift, nLvls
+	}
+	nLvls = maxNLvls
+	maxpos := binMaxPos(minShift, nLvls)
+	for maxLen > maxpos {
+		minShift++
+		maxpos *= 2
+	}
+	return minShift, nLvls
+}
+
 // BinLimit returns the count of bins implied by (MinShift, Depth): sum of
 // 8^k for k = 0..depth.
 func (c *CSI) BinLimit() uint32 {

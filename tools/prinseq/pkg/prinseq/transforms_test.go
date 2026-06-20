@@ -266,7 +266,7 @@ func perlAvailable(t *testing.T) (perl, script string, ok bool) {
 func TestParityTransforms(t *testing.T) {
 	perl, script, ok := perlAvailable(t)
 	if !ok {
-		t.Fatalf("perl or upstream prinseq submodule unavailable; install perl and run `git submodule update --init reference_code/prinseq`")
+		t.Skipf("perl or upstream prinseq submodule unavailable; install perl and run `git submodule update --init reference_code/prinseq`")
 	}
 
 	fasta := ">read1 sampleA\nacgtACGTttttaaaa\n>read2 sampleB\nGGGGccccTTTT\n"

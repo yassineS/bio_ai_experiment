@@ -61,7 +61,7 @@ func upstreamPluginSucceeds(t *testing.T, bin string, argv []string) bool {
 func TestNativePluginRegionsOverlapMode(t *testing.T) {
 	bin, err := buildBcftools()
 	if err != nil {
-		t.Fatalf("build upstream bcftools: %v", err)
+		t.Skipf("build upstream bcftools: %v", err)
 	}
 	fx := parityFixture(t, "overlap_modes_contrast.vcf")
 	dir := t.TempDir()
@@ -102,7 +102,7 @@ func TestNativePluginRegionsOverlapMode(t *testing.T) {
 func TestNativePluginTargetsOverlapMode(t *testing.T) {
 	bin, err := buildBcftools()
 	if err != nil {
-		t.Fatalf("build upstream bcftools: %v", err)
+		t.Skipf("build upstream bcftools: %v", err)
 	}
 	fx := parityFixture(t, "overlap_modes_contrast.vcf")
 	base := []string{"-0", "S1,S2", "-1", "S3,S4"}
@@ -138,7 +138,7 @@ func TestNativePluginTargetsOverlapMode(t *testing.T) {
 func TestNativePluginSplitScatterOverlapMode(t *testing.T) {
 	bin, err := buildBcftools()
 	if err != nil {
-		t.Fatalf("build upstream bcftools: %v", err)
+		t.Skipf("build upstream bcftools: %v", err)
 	}
 	fx := parityFixture(t, "overlap_modes_contrast.vcf")
 	dir := t.TempDir()
@@ -174,7 +174,7 @@ func TestNativePluginSplitScatterOverlapMode(t *testing.T) {
 func TestNativePluginMendelian2OverlapMode(t *testing.T) {
 	bin, err := buildBcftools()
 	if err != nil {
-		t.Fatalf("build upstream bcftools: %v", err)
+		t.Skipf("build upstream bcftools: %v", err)
 	}
 	trio := parityFixture(t, "color_chrs_trio.vcf")
 	dir := t.TempDir()
@@ -210,7 +210,7 @@ func TestNativePluginMendelian2OverlapMode(t *testing.T) {
 func TestNativePluginTrioDNM3Targets(t *testing.T) {
 	bin, err := buildBcftools()
 	if err != nil {
-		t.Fatalf("build upstream bcftools: %v", err)
+		t.Skipf("build upstream bcftools: %v", err)
 	}
 	trio := parityFixture(t, "color_chrs_trio.vcf")
 	dir := t.TempDir()
@@ -243,7 +243,7 @@ func TestNativePluginTrioDNM3Targets(t *testing.T) {
 func TestNativePluginTrioDNM3Regions(t *testing.T) {
 	bin, err := buildBcftools()
 	if err != nil {
-		t.Fatalf("build upstream bcftools: %v", err)
+		t.Skipf("build upstream bcftools: %v", err)
 	}
 	trio := parityFixture(t, "color_chrs_trio.vcf")
 	dir := t.TempDir()
@@ -276,7 +276,7 @@ func TestNativePluginTrioDNM3Regions(t *testing.T) {
 func TestNativePluginTrioDNM3OutputFile(t *testing.T) {
 	bin, err := buildBcftools()
 	if err != nil {
-		t.Fatalf("build upstream bcftools: %v", err)
+		t.Skipf("build upstream bcftools: %v", err)
 	}
 	trio := parityFixture(t, "color_chrs_trio.vcf")
 	dir := t.TempDir()
@@ -317,7 +317,7 @@ func TestNativePluginTrioDNM3OutputFile(t *testing.T) {
 func TestNativePluginGTisecPloidyGt2(t *testing.T) {
 	bin, err := buildBcftools()
 	if err != nil {
-		t.Fatalf("build upstream bcftools: %v", err)
+		t.Skipf("build upstream bcftools: %v", err)
 	}
 	poly := parityFixture(t, "gtisec_polyploid.vcf")
 	diploidEquiv := parityFixture(t, "gtisec_polyploid_diploid_equiv.vcf")

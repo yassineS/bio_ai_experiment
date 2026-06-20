@@ -31,6 +31,14 @@ const (
 	// cfHasMateDownstream is set when the record's mate is a later record
 	// in the same slice and the NF series holds the records-to-skip count.
 	cfHasMateDownstream = 0x4
+	// cfNoSeq is set when the record carried no SEQ ("*"). The read
+	// features and RL still describe the CIGAR (so a mapped no-SEQ record
+	// round-trips its alignment), but the reconstructed bases and
+	// qualities are discarded on decode: SEQ and QUAL render as "*". This
+	// matches htslib's CRAM_FLAG_NO_SEQ (cram_structs.h: 1<<3), which the
+	// encoder sets for any record with zero query bases and the decoder
+	// honours by resetting the read length to zero.
+	cfNoSeq = 0x8
 )
 
 // CRAM per-record "mate flags" (MF) bits, used only by a detached
@@ -325,9 +333,9 @@ func (rd *recordDecoder) decodeRecord(index int) (*decodedRecord, error) {
 	}
 	if rd.h.Preservation.APDelta {
 		rd.prevAlignmentStart += ap
-		rec.Pos = rd.prevAlignmentStart
+		rec.Pos = int64(rd.prevAlignmentStart)
 	} else {
-		rec.Pos = ap
+		rec.Pos = int64(ap)
 	}
 
 	rgValue, err := rd.intSeries("RG")
@@ -378,6 +386,16 @@ func (rd *recordDecoder) decodeRecord(index int) (*decodedRecord, error) {
 	// which makes this a no-op.
 	if !rd.h.Preservation.QualityScoreSeqOrient && rec.Flag&sam.FlagReverse != 0 {
 		reverseQual(rec.Qual)
+	}
+
+	// A no-SEQ record (CRAM_FLAG_NO_SEQ) carried no query bases: its RL and
+	// read features exist only to describe the CIGAR, so the reconstructed
+	// SEQ (reference- or 'N'-filled) and QUAL are discarded and the record
+	// renders SEQ/QUAL as "*". htslib resets cr->len to 0 here for the same
+	// effect; the CIGAR computed above is kept intact.
+	if cf&cfNoSeq != 0 {
+		rec.Seq = "*"
+		rec.Qual = nil
 	}
 
 	// The auxiliary tags are assembled from the dictionary-stored tags
@@ -699,8 +717,8 @@ func (rd *recordDecoder) decodeMate(dr *decodedRecord, cf int32, index int) erro
 		} else {
 			rec.RNext = mateName
 		}
-		rec.PNext = np
-		rec.TLen = ts
+		rec.PNext = int64(np)
+		rec.TLen = int64(ts)
 	case cf&cfHasMateDownstream != 0:
 		// The mate is a later record in the slice; NF gives the distance.
 		// Its fields are filled in by resolveMates once the whole slice
@@ -831,7 +849,7 @@ func (rd *recordDecoder) decodeMapped(rec *sam.Record, cf int32, readLen int32, 
 	if err != nil {
 		return wrapf(err, "record %d", index)
 	}
-	seq, qual, cigar, err := rd.reconstructMapped(feats, readLen, rec.Pos)
+	seq, qual, cigar, err := rd.reconstructMapped(feats, readLen, int32(rec.Pos))
 	if err != nil {
 		return wrapf(err, "record %d", index)
 	}

@@ -223,7 +223,7 @@ flips imports in one mechanical sweep. The pattern mirrors
   format-level.
 - ~~**PR-E: extract Tabix/CSI.**~~ **Landed.** Ten source files moved
   from `tools/tabix/pkg/tabix/` to `pkg/htsgo/tabix/` (Tabix/TBI
-  + CSI format primitives + the binning helpers `Reg2bin` /
+  - CSI format primitives + the binning helpers `Reg2bin` /
   `LinearTile` shared by BAI). Shim at the old path keeps the
   tabix CLI building. As a bonus this PR fixed the
   htsgo-imports-tools antipattern: `pkg/htsgo/sam/bam_writer.go`

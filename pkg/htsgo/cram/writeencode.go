@@ -183,13 +183,14 @@ func sliceSpan(records []*sam.Record) (start, span int32) {
 		if rec.Flag&sam.FlagUnmapped != 0 || rec.Pos <= 0 {
 			continue
 		}
-		end := rec.EndPosition()
+		end := int32(rec.EndPosition())
+		recPos := int32(rec.Pos)
 		if !any {
-			minPos, maxEnd, any = rec.Pos, end, true
+			minPos, maxEnd, any = recPos, end, true
 			continue
 		}
-		if rec.Pos < minPos {
-			minPos = rec.Pos
+		if recPos < minPos {
+			minPos = recPos
 		}
 		if end > maxEnd {
 			maxEnd = end
@@ -441,11 +442,25 @@ func (e *recordEncoder) encodeRecord(rec *sam.Record) error {
 	b := e.buffers
 	mapped := rec.Flag&sam.FlagUnmapped == 0
 
+	// A record whose SEQ is "*" carries no query bases. htslib still
+	// stores its alignment: for a mapped no-SEQ record the read length is
+	// the CIGAR's query length and the read features describe the CIGAR
+	// (the match runs are implicit, reconstructed from the reference span),
+	// with the CRAM_FLAG_NO_SEQ flag telling the decoder to discard the
+	// reconstructed bases and qualities and render SEQ/QUAL as "*". An
+	// unmapped no-SEQ record simply has a zero read length. The SAM reader
+	// stores a "*" SEQ as the empty string, so either form means "no
+	// sequence".
+	noSeq := rec.Seq == "" || rec.Seq == "*"
+
 	// CRAM per-record flags: quality is always preserved in its own
 	// series, and every record is encoded detached so it carries its own
 	// mate fields (the simple writer never uses the downstream-mate
-	// optimisation).
+	// optimisation). A no-SEQ record additionally sets CRAM_FLAG_NO_SEQ.
 	cf := int32(cfQualityPreserved | cfDetached)
+	if noSeq {
+		cf |= cfNoSeq
+	}
 
 	b.bf = e.putU(b.bf, int32(rec.Flag))
 	b.cf = e.putU(b.cf, cf)
@@ -457,16 +472,24 @@ func (e *recordEncoder) encodeRecord(rec *sam.Record) error {
 		b.ri = e.putS(b.ri, refID)
 	}
 
+	// The stored read length is the number of query bases the read
+	// features account for. With a real SEQ this is len(SEQ); for a mapped
+	// no-SEQ record there is no SEQ, so it is the CIGAR's query length (the
+	// span the implicit match runs and base-carrying features cover); for
+	// an unmapped no-SEQ record it is zero.
 	readLen := len(rec.Seq)
-	if rec.Seq == "*" {
+	if noSeq {
 		readLen = 0
+		if mapped {
+			readLen = rec.Cigar.QueryLength()
+		}
 	}
 	b.rl = e.putU(b.rl, int32(readLen))
 	e.numBases += int64(readLen)
 
 	// Alignment position is stored absolute (the preservation map's AP
 	// entry is false), so no running delta is needed.
-	b.ap = e.putU(b.ap, rec.Pos)
+	b.ap = e.putU(b.ap, int32(rec.Pos))
 
 	// The read group always travels as an ordinary auxiliary tag, so the
 	// RG data series is the no-read-group sentinel -1 for every record. -1
@@ -545,8 +568,8 @@ func (e *recordEncoder) encodeMate(rec *sam.Record) error {
 	// NS can be -1 and TS (the template length) can be negative, so both are
 	// signed series (VARINT_SIGNED in v4); NP (mate position) is non-negative.
 	b.ns = e.putS(b.ns, nsID)
-	b.np = e.putU(b.np, rec.PNext)
-	b.ts = e.putS(b.ts, rec.TLen)
+	b.np = e.putU(b.np, int32(rec.PNext))
+	b.ts = e.putS(b.ts, int32(rec.TLen))
 	return nil
 }
 

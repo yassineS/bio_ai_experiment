@@ -65,7 +65,7 @@ func bamTestRecord(qname string, flag uint16, pos int32, cig string) *sam.Record
 	c, _ := sam.ParseCigar(cig)
 	seqLen := c.QueryLength()
 	return &sam.Record{
-		QName: qname, Flag: flag, RName: "chr1", Pos: pos, MapQ: 60,
+		QName: qname, Flag: flag, RName: "chr1", Pos: int64(pos), MapQ: 60,
 		Cigar: c, Seq: strings.Repeat("A", seqLen),
 		Qual: bytes.Repeat([]byte{30}, seqLen), RNext: "*", PNext: 0,
 	}
