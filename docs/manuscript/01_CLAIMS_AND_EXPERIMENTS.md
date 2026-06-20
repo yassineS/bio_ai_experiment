@@ -40,6 +40,7 @@ so every parity rate has a stated denominator coverage.
 | Conformance against the **spec's own corpus** | run htslib `test/` fixtures + htscodecs-corpus codec vectors through our binaries | htslib expected outputs | **NEED** — far more credible than only our seeded fixtures; ready-made oracle |
 
 **To build (C2, priority order):**
+
 1. ★ Differential fuzzing harness (both binaries, diff output+exit) + branch-coverage report.
 2. ★ GIAB concordance pipeline (hap.py/vcfeval, HG001–007, GA4GH stratifications) for the
    variant-calling path — report byte-exact parity *and* GIAB F1 side by side.
@@ -140,6 +141,7 @@ This is the table the field is missing and the manuscript's strongest methods no
 ## Build order (recommended)
 
 **Tier A — unblocks submission (do first):**
+
 1. C5 counterfactual package (non-LLM transpiler + timed human anchor + COCOMO + supervision cost). ★★
 2. C2 differential-fuzzing harness + branch-coverage report. ★
 3. C2 GIAB concordance pipeline (hap.py/vcfeval, HG001–007). ★

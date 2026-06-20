@@ -105,6 +105,7 @@ A paper that shows only wins is a credibility red flag. These are real and, fram
 ## C. Turning A/B into rigorous data (the experiments)
 
 ### C.1 Labeled bug corpus (the dataset)
+
 One row per defect caught during development:
 
 | field | values |
@@ -122,6 +123,7 @@ Reconstructable from: git history, the `t.Skip`→`t.Fatalf` parity-completion w
 already half-enumerated with discovery method).
 
 ### C.2 Validation-layer ablation (the headline methods table)
+
 For the corpus, compute **bugs uniquely caught by each layer** = how many real bugs would have
 *escaped* if that layer were removed:
 
@@ -138,6 +140,7 @@ This directly answers "which validation method actually mattered" and is expecte
 computable largely from data already in the repo.
 
 ### C.3 A two-axis failure taxonomy (honest framing)
+
 Separate **honest failures** (agent tried, fell short) from **gaming failures** (satisfied the
 letter, not the intent) — the latter being precisely what our oracle prevents:
 
@@ -153,6 +156,7 @@ regime Axis B is rampant; in our *external-binary-oracle* regime Axis B failures
 produce a passing result — a concrete, measurable advantage of the methodology.
 
 ### C.4 Agent-process metrics
+
 From transcripts: first-pass-compile %, first-pass-parity %, retries, interventions, tokens/$,
 wall-clock; correlated against tool complexity (LOC/language/format-count) for C6. *Where the
 agent struggled is as valuable as where it succeeded.*

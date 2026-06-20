@@ -3,8 +3,9 @@
 ## 1. The artifact package (target: ACM-style Available / Functional / Reproduced)
 
 **Already exists (re-runnable by a reviewer):**
+
 - `pipeline/cmd/parity-pipeline` and `pipeline/cmd/full-validation` (parity matrix + round-trip
-  + bench, one gate, non-zero exit on any DIVERGE/ERROR/round-trip FAIL).
+  - bench, one gate, non-zero exit on any DIVERGE/ERROR/round-trip FAIL).
 - Deterministic **seeded fixture generator** (`pipeline/fixtures`, default seed 1), built from
   vendored upstream tools; 4 scale tiers.
 - Bench harness (`wait4` rusage, wall/CPU/peak-RSS).
@@ -13,6 +14,7 @@
 - Per-PR byte-identity proofs in commit bodies.
 
 **Must add for a credible package (these are `NEED`s):**
+
 1. **Hardware spec** for every perf number (CPU model/cores/RAM/kernel) — currently *unrecorded*.
 2. **Systematic upstream version pinning** alongside the metrics (vendored submodule SHAs +
    samtools/bcftools/bedtools versions used) — partially present in prose only.
@@ -46,6 +48,7 @@ number is a distribution, not a point.
 ## 3. Threats to validity (construct / internal / external / conclusion)
 
 ### Construct (are we measuring what we claim?)
+
 - **"Usability"/"feasible" unoperationalized** → metricize (flag-compat %, workflow drop-in,
   CWE-class elimination) or demote to qualitative (C4).
 - **Byte-exact ≠ correct (both wrong the same way)** → mitigate with metamorphic relations +
@@ -54,6 +57,7 @@ number is a distribution, not a point.
 - **LOC ≠ effort** → already disciplined; keep it.
 
 ### Internal (is the causal attribution sound?) — **the #1 desk-reject risk**
+
 - **No counterfactual** for "LLMs make this feasible" → the C5 control package (non-LLM
   transpiler + timed human anchor + bounded priors). Without it the central claim is unsupported.
 - **Human-in-the-loop confound** → results are agent + expert operator; measure supervision cost;
@@ -87,12 +91,14 @@ number is a distribution, not a point.
   convenient version.
 
 ### External (does it generalize?)
+
 - **Bounded, format-heavy, well-specified tools with an executable reference** = a near-ideal
   oracle setting. Scope the claim to "tools with an executable reference and a checkable spec";
   do **not** generalize to "all legacy software." n=13 families is small — report per-tool.
 - **Model/time dependence** → pin and disclose the model+date; frame as a capability snapshot.
 
 ### Conclusion (are the statistics sound?)
+
 - **Perf: min-of-N on one unspecified box, medium-only** → median+IQR/Hodges-Lehmann + CI, ≥5
   reps, cold/warm disclosed, multi-scale incl. large, hardware pinned; **report the slower cells**.
 - **Pass rates without CIs / coverage denominator** → Wilson/Clopper-Pearson CIs; always pair a
