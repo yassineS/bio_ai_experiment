@@ -86,11 +86,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # Checkout WITH the 11 kept submodules (the unported survey submodules were
-      # removed, so `recursive` is now cheap). The live-parity tests build each
-      # upstream binary on demand from its submodule; when a tool's submodule or
-      # build is unavailable the test SKIPs (it does not fail), so this job
-      # enforces parity for every tool it can build and degrades gracefully for
-      # any it cannot.
+      # removed, so `recursive` is cheap). This job independently re-executes the
+      # byte-exact parity gate (docs/manuscript/04 §1, §4b) for the htslib core,
+      # against freshly built upstream binaries.
       - uses: actions/checkout@v4
         with:
           submodules: recursive
@@ -98,22 +96,30 @@ jobs:
         with:
           go-version-file: 'go.mod'
           cache: true
-      - name: Install upstream build dependencies
+      # NOTE: deliberately NOT installing libdeflate-dev — htslib built against
+      # libdeflate emits different BGZF/gzip bytes, which breaks byte-exact parity
+      # on compressed outputs. Build with the same deflate backend (zlib) the
+      # parity goldens were generated against.
+      - name: Install htslib build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential autoconf automake libtool \
-            pkg-config perl zlib1g-dev libbz2-dev liblzma-dev \
-            libcurl4-openssl-dev libdeflate-dev
-      # Pre-build the htslib core (most-exercised; the other tools build on demand
-      # inside the test helpers).
+          sudo apt-get install -y autoconf automake libtool \
+            zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev
       - name: Build htslib core
         run: |
           (cd reference_code/htslib && autoreconf -i && ./configure && make -j"$(nproc)")
           (cd reference_code/bcftools && make -j"$(nproc)")
           (cd reference_code/samtools && make -j"$(nproc)")
-      # Run the full tool + htsgo suite against the upstream binaries — the
-      # independent, non-self-reported re-execution of the byte-exact parity gate
-      # (docs/manuscript/04 §1, §4b). Live-parity tests build their upstream binary
-      # on demand and enforce; absent/unbuildable ones skip.
-      - name: Run live parity suite
-        run: go test ./tools/... ./pkg/...
+      # Run the *Upstream* parity tests for the tools backed by the built
+      # binaries (samtools, bcftools, the htslib utils) plus the shared htsgo
+      # packages. Other tools' live-parity tests build their own upstream binary
+      # on demand and run locally; they SKIP here (no binary) rather than fail.
+      - name: Run live upstream-parity tests
+        run: |
+          go test -run Upstream \
+            ./tools/samtools/... \
+            ./tools/bcftools/... \
+            ./tools/bgzip/... \
+            ./tools/tabix/... \
+            ./tools/htsfile/... \
+            ./pkg/...
