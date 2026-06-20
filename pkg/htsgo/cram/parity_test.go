@@ -84,10 +84,10 @@ func upstreamSamtoolsCram(t *testing.T) string {
 		upstreamSamtoolsCramPath = bin
 	})
 	if upstreamSamtoolsCramErr != nil {
-		t.Fatalf("locating/building upstream samtools: %v", upstreamSamtoolsCramErr)
+		t.Skipf("locating/building upstream samtools: %v", upstreamSamtoolsCramErr)
 	}
 	if upstreamSamtoolsCramPath == "" {
-		t.Fatalf("upstream samtools not available")
+		t.Skipf("upstream samtools not available")
 	}
 	return upstreamSamtoolsCramPath
 }
@@ -147,7 +147,7 @@ func TestEmbeddedReferenceParity(t *testing.T) {
 	samtools := upstreamSamtoolsCram(t)
 	srcSAM := filepath.Join(samtoolsTestDir, "dat/test_input_1_a.sam")
 	if _, err := os.Stat(srcSAM); err != nil {
-		t.Fatalf("source SAM fixture missing: %v", err)
+		t.Skipf("source SAM fixture missing: %v", err)
 	}
 	for _, version := range []string{"3.0", "2.1"} {
 		t.Run("v"+version, func(t *testing.T) {

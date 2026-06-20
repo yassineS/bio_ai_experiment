@@ -18,7 +18,7 @@ import (
 func TestNativePluginSetGTReadDepth(t *testing.T) {
 	bin, err := buildBcftools()
 	if err != nil {
-		t.Fatalf("build upstream bcftools: %v", err)
+		t.Skipf("build upstream bcftools: %v", err)
 	}
 	gt := parityFixture(t, "gt_plugins.vcf")
 	cases := [][]string{
@@ -42,7 +42,7 @@ func TestNativePluginSetGTReadDepth(t *testing.T) {
 func TestNativePluginSetGTBinom(t *testing.T) {
 	bin, err := buildBcftools()
 	if err != nil {
-		t.Fatalf("build upstream bcftools: %v", err)
+		t.Skipf("build upstream bcftools: %v", err)
 	}
 	gt := parityFixture(t, "gt_plugins.vcf")
 	skew := writeSetGTSkewFixture(t)
@@ -78,7 +78,7 @@ func TestNativePluginSetGTBinom(t *testing.T) {
 func TestNativePluginSetGTRandom(t *testing.T) {
 	bin, err := buildBcftools()
 	if err != nil {
-		t.Fatalf("build upstream bcftools: %v", err)
+		t.Skipf("build upstream bcftools: %v", err)
 	}
 	gt := parityFixture(t, "gt_plugins.vcf")
 	cases := [][]string{

@@ -30,7 +30,7 @@ import (
 func TestNativePluginAfDist(t *testing.T) {
 	bin, err := buildBcftools()
 	if err != nil {
-		t.Fatalf("build upstream bcftools: %v", err)
+		t.Skipf("build upstream bcftools: %v", err)
 	}
 	af := parityFixture(t, "afdist.vcf")
 	gt := parityFixture(t, "gt_plugins.vcf") // no AF tag -> empty distributions
@@ -61,7 +61,7 @@ func TestNativePluginAfDist(t *testing.T) {
 func TestNativePluginCheckSparsity(t *testing.T) {
 	bin, err := buildBcftools()
 	if err != nil {
-		t.Fatalf("build upstream bcftools: %v", err)
+		t.Skipf("build upstream bcftools: %v", err)
 	}
 	sparsity := parityFixture(t, "sparsity.vcf")
 	gt := parityFixture(t, "gt_plugins.vcf")
@@ -92,7 +92,7 @@ func TestNativePluginCheckSparsity(t *testing.T) {
 func TestNativePluginRemoveOverlaps(t *testing.T) {
 	bin, err := buildBcftools()
 	if err != nil {
-		t.Fatalf("build upstream bcftools: %v", err)
+		t.Skipf("build upstream bcftools: %v", err)
 	}
 	overlaps := parityFixture(t, "overlaps.vcf")
 	dup := parityFixture(t, "dup.vcf")
@@ -131,7 +131,7 @@ func TestNativePluginRemoveOverlaps(t *testing.T) {
 func TestNativePluginPrune(t *testing.T) {
 	bin, err := buildBcftools()
 	if err != nil {
-		t.Fatalf("build upstream bcftools: %v", err)
+		t.Skipf("build upstream bcftools: %v", err)
 	}
 	fixture := parityFixture(t, "prune.vcf")
 	cases := [][]string{

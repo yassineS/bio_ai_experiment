@@ -93,7 +93,7 @@ func permissiveOpts() ProcessOptions {
 func TestParity_Fastp_Correction(t *testing.T) {
 	bin, err := upstreamFastp(t)
 	if err != nil {
-		t.Fatalf("upstream fastp unavailable; run `git submodule update --init reference_code/fastp && make -C reference_code/fastp`: %v", err)
+		t.Skipf("upstream fastp unavailable; run `git submodule update --init reference_code/fastp && make -C reference_code/fastp`: %v", err)
 	}
 	dir := t.TempDir()
 	r1 := parityInput(t, "corr_r1.fq")
@@ -130,7 +130,7 @@ func TestParity_Fastp_Correction(t *testing.T) {
 func TestParity_Fastp_Overrepresentation(t *testing.T) {
 	bin, err := upstreamFastp(t)
 	if err != nil {
-		t.Fatalf("upstream fastp unavailable; run `git submodule update --init reference_code/fastp && make -C reference_code/fastp`: %v", err)
+		t.Skipf("upstream fastp unavailable; run `git submodule update --init reference_code/fastp && make -C reference_code/fastp`: %v", err)
 	}
 	dir := t.TempDir()
 	in := parityInput(t, "ora.fq")
@@ -173,7 +173,7 @@ func TestParity_Fastp_Overrepresentation(t *testing.T) {
 func TestParity_Fastp_SplitByLines(t *testing.T) {
 	bin, err := upstreamFastp(t)
 	if err != nil {
-		t.Fatalf("upstream fastp unavailable; run `git submodule update --init reference_code/fastp && make -C reference_code/fastp`: %v", err)
+		t.Skipf("upstream fastp unavailable; run `git submodule update --init reference_code/fastp && make -C reference_code/fastp`: %v", err)
 	}
 	in := parityInput(t, "ora.fq")
 
@@ -196,7 +196,7 @@ func TestParity_Fastp_SplitByLines(t *testing.T) {
 func TestParity_Fastp_SplitByNumber(t *testing.T) {
 	bin, err := upstreamFastp(t)
 	if err != nil {
-		t.Fatalf("upstream fastp unavailable; run `git submodule update --init reference_code/fastp && make -C reference_code/fastp`: %v", err)
+		t.Skipf("upstream fastp unavailable; run `git submodule update --init reference_code/fastp && make -C reference_code/fastp`: %v", err)
 	}
 	in := parityInput(t, "ora.fq")
 
