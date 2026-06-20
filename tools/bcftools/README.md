@@ -1113,6 +1113,7 @@ authoritative gap list):
 (`bcftools som` is now **implemented** — the upstream `fwrite`-return write
 bug is fixed so train→classify works; see `docs/UPSTREAM_BUGS.md` and the
 `som` entry above.)
+
 - The ~30 bundled upstream `.so` plugins are non-goal scope (the plugin
   *system* — a VCF-on-stdin/stdout subprocess protocol — is implemented).
 

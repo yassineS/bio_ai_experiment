@@ -23,11 +23,13 @@ GitHub Discussions provides a forum-style space for community conversations, que
 **Description**: Release announcements, major milestones, important updates, and project news from maintainers.
 
 **Settings:**
+
 - Only maintainers can create discussions
 - Everyone can comment
 - Pin important announcements
 
 **Example Topics:**
+
 - Release of new tool implementations
 - Major performance improvements
 - Breaking changes
@@ -40,11 +42,13 @@ GitHub Discussions provides a forum-style space for community conversations, que
 **Description**: Share ideas for new features, tools to implement, or improvements to existing functionality. Discuss feasibility and design before creating formal feature requests.
 
 **Settings:**
+
 - Anyone can create discussions
 - Can be converted to issues when ready
 - Use reactions to vote on ideas
 
 **Example Topics:**
+
 - "What if we implemented tool X?"
 - "Idea: Add parallel processing to all tools"
 - "Should we support format Y?"
@@ -57,12 +61,14 @@ GitHub Discussions provides a forum-style space for community conversations, que
 **Description**: Get help using the tools, understanding the code, or troubleshooting issues. Maintainers and community members can provide answers.
 
 **Settings:**
+
 - Enable "Mark as Answer" feature
 - Anyone can create discussions
 - Tag for easy searching
 - Auto-close after answer marked (optional)
 
 **Example Topics:**
+
 - "How do I filter sequences by GC content?"
 - "What's the difference between seqtk and prinseq?"
 - "How can I contribute to the project?"
@@ -75,11 +81,13 @@ GitHub Discussions provides a forum-style space for community conversations, que
 **Description**: Community members share their workflows, analyses, integrations, or projects using Bio AI Experiment tools.
 
 **Settings:**
+
 - Anyone can create discussions
 - Encourage screenshots and examples
 - Pin exceptional contributions
 
 **Example Topics:**
+
 - "My RNA-seq QC pipeline using prinseq"
 - "Integration with Nextflow workflow"
 - "Performance comparison with other tools"
@@ -92,11 +100,13 @@ GitHub Discussions provides a forum-style space for community conversations, que
 **Description**: Technical discussions about implementing specific bioinformatics tools, design decisions, and architecture.
 
 **Settings:**
+
 - Anyone can create discussions
 - Link to related issues/PRs
 - Convert to issues when actionable
 
 **Example Topics:**
+
 - "Design discussion: BWA implementation"
 - "Should we use CGO for performance?"
 - "Architecture for trimming functions"
@@ -109,11 +119,13 @@ GitHub Discussions provides a forum-style space for community conversations, que
 **Description**: Suggest documentation improvements, ask for clarifications, or discuss how to better explain concepts.
 
 **Settings:**
+
 - Anyone can create discussions
 - Tag for tracking
 - Convert to issues for specific doc updates
 
 **Example Topics:**
+
 - "Tutorial needed for beginners"
 - "API documentation unclear"
 - "More examples for MCP servers"
@@ -126,11 +138,13 @@ GitHub Discussions provides a forum-style space for community conversations, que
 **Description**: Share and discuss analyses of bioinformatics tools, benchmarks, comparisons, and evaluation criteria.
 
 **Settings:**
+
 - Anyone can create discussions
 - Link to analysis documents
 - Collaborate on evaluations
 
 **Example Topics:**
+
 - "Analysis findings for FastQC"
 - "Benchmark results: Go vs C++"
 - "Tool prioritization discussion"
@@ -143,11 +157,13 @@ GitHub Discussions provides a forum-style space for community conversations, que
 **Description**: General discussions that don't fit other categories - meta discussions, community topics, off-topic but relevant conversations.
 
 **Settings:**
+
 - Anyone can create discussions
 - Casual tone acceptable
 - Move to appropriate category if needed
 
 **Example Topics:**
+
 - "Introduce yourself"
 - "What brought you to this project?"
 - "Favorite bioinformatics tools"
@@ -177,6 +193,7 @@ GitHub Discussions provides a forum-style space for community conversations, que
 ### Configure Category Settings
 
 For each category:
+
 - **Format**: Choose "Discussion" or "Q&A" or "Announcement"
 - **Description**: Clear explanation of category purpose
 - **Emoji**: Visual identifier
@@ -223,6 +240,7 @@ Create welcome/pinned discussions:
 ### Response Times
 
 Set expectations:
+
 - **Questions**: Aim to respond within 2-3 days
 - **Ideas**: Monthly review and feedback
 - **Issues**: Acknowledge within 1-2 days
@@ -339,6 +357,7 @@ Track these metrics:
 - Active participants
 
 **Success Indicators:**
+
 - High engagement (views, comments, reactions)
 - Fast response times
 - Growing community participation
@@ -350,6 +369,7 @@ Track these metrics:
 ### Moving from Other Platforms
 
 If migrating from:
+
 - **Gitter/Slack**: Import FAQs, pin migration announcement
 - **Mailing Lists**: Archive old threads, point to discussions
 - **Stack Overflow**: Link to discussions for project-specific questions
@@ -365,6 +385,7 @@ If migrating from:
 ## Examples from Other Projects
 
 Study successful discussions implementations:
+
 - **Next.js**: Well-organized categories, active community
 - **Tailwind CSS**: Great Q&A with marked answers
 - **Astro**: Regular announcements and community engagement
@@ -373,6 +394,7 @@ Study successful discussions implementations:
 ## Automation Possibilities
 
 Consider automating:
+
 - Welcome message for first-time participants
 - Reminder to mark answers in Q&A
 - Monthly digest of top discussions

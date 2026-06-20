@@ -25,6 +25,7 @@ layer caught which defect.* It has two halves:
 Labeling schema (one row per defect):
 `{id, tool/subcommand, class, severity, caught_by, introduced_by, fix_origin, disposition,
 upstream_confirmed, evidence}`
+
 - **class:** logic / off-by-one / format-encoding / FP-ULP / memory / CLI-semantics / perf
 - **severity:** wrong-output / crash / silent-divergence
 - **caught_by:** unit · differential-parity · round-trip/metamorphic · fuzz · human-review · upstream-bug

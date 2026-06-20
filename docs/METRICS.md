@@ -232,6 +232,7 @@ to the prior binary — these are pure plumbing/allocation changes, never math.
 | 3 | shared VCF reader per-line alloc removed + `call` scratch reuse (PR #432) | `bcftools call -mv` | 22.08s → **15.55s** (−30%) | allocs/op 104k→**40k** (−61%), B/op −59%; fixed a latent gVCF string-retention bug |
 
 What the cycle confirmed about the floor (profile, not assumption):
+
 - `samtools stats` is **consumer-bound**, not decode-bound — its `observe()` loop
   is ~49% cumulative (inflate ~17%), so parallel decode is already hidden behind
   it and `-@` can't move it. `stats`/`depth`/`idxstats`/`view` were already wired

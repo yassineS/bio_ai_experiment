@@ -281,7 +281,7 @@ The format argument is `args->custom.gt_str`, which is only set for a `c:`
 custom template — for a bare `-n X` it is NULL, so upstream 1.23.1 prints
 `...cannot run with --new-gt (null)` (glibc renders the NULL pointer as
 `(null)`; on other libcs this is undefined behaviour). The message text
-("the FORMAT/AD annotation *does* exist") is itself the inverted-wording
+("the FORMAT/AD annotation _does_ exist") is itself the inverted-wording
 upstream uses and is preserved.
 
 **Our behaviour:** fixed-on-port. The native plugin prints the actual `-n`
@@ -338,8 +338,8 @@ matches the source).
 
 #### BCF header name-dedup across INFO/FILTER/FORMAT (wave 22)
 
-The wave-21 BCF correctness work assigned each `##INFO/##FILTER/
-##FORMAT` line a fresh monotonically-increasing unified IDX. htslib's
+The wave-21 BCF correctness work assigned each `##INFO`/`##FILTER`/`##FORMAT`
+line a fresh monotonically-increasing unified IDX. htslib's
 actual policy (vcf.c:1500-1530) is to **deduplicate by name across
 all three groups**: if a `##FORMAT=<ID=DP>` line follows a
 `##INFO=<ID=DP>` line, the FORMAT entry **reuses** the INFO entry's
@@ -684,8 +684,6 @@ as data. Pinned by `TestHapcount_BEDFirstLineWithData` and
 covers the three header conventions commonly seen in BED files in the
 wild.
 
-
-
 PR #55 (bedtools parity) fixed 7 discrepancies in our Go code; see
 `tools/PARITY_VALIDATION.md` for the bedtools list.
 
@@ -785,7 +783,7 @@ discrepancies in our Go code (not upstream), all fixed inline:
 #### mosdepth region (`--by`) mode: missing `region.dist.txt`, `*_region` summary rows, and per-base; misc. <a id="mosdepth-region-mode"></a>
 
 The region-mode parity audit (this PR) found several discrepancies, all on
-our side — these are upstream *behaviours* we now reproduce, not upstream
+our side — these are upstream _behaviours_ we now reproduce, not upstream
 bugs:
 
 - **`*.mosdepth.region.dist.txt` was not emitted.** Upstream writes a
@@ -818,8 +816,8 @@ bugs:
   skips references with no alignments before `write_summary` /
   `write_distribution` — so `summary.txt`, `global.dist.txt` and
   `region.dist.txt` only list references that carried ≥1 read (presence in
-  the index, *regardless of whether the read survives the MAPQ/flag/read-group
-  filters* — e.g. `-R MISSING` still yields a zero-depth row). The
+  the index, _regardless of whether the read survives the MAPQ/flag/read-group
+  filters_ — e.g. `-R MISSING` still yields a zero-depth row). The
   `per-base.bed.gz` and `regions.bed.gz` outputs, however, iterate every
   reference and DO list zero-coverage ones (a single depth-0 run / zero-mean
   windows). Our port previously listed every reference in the text files too.
@@ -920,7 +918,7 @@ files) plus binary-free unit tests (`TestUnitRegionSummaryAndDist`,
     orphan/proper-pair filtering.
 
   **Why this matters for the port:** the per-site ref/alt count therefore
-  reduces to read-flag filtering plus a direct, *unrealigned* CIGAR walk, which
+  reduces to read-flag filtering plus a direct, _unrealigned_ CIGAR walk, which
   the classic pileup path reproduces exactly. The native port
   (`native_plugin_vrfs.go`) is consequently **byte-for-byte** vs upstream
   1.23.1 on BOTH pure-SNV and indel sites — there is **no** proximity tolerance
@@ -942,9 +940,9 @@ files) plus binary-free unit tests (`TestUnitRegionSummaryAndDist`,
   EXACT severity lookup, not the substring scale.** `csq_rewrite_worst`
   (plugins/split-vep.c) picks the "worst" consequence term inside a single
   transcript's `&`-joined `Consequence` (e.g. `start_lost&splice_region`)
-  using `khash_str2int_get(args->csq2severity, term, ...)` — a *direct* hash
+  using `khash_str2int_get(args->csq2severity, term, ...)` — a _direct_ hash
   lookup of the whole term. That hash is keyed by the **scale tokens**
-  (`splice_region`, `missense`, …) plus any *full* terms lazily inserted by
+  (`splice_region`, `missense`, …) plus any _full_ terms lazily inserted by
   earlier `csq_to_severity` calls; it is **not** the substring matcher
   `csq_to_severity` uses. So a compound term whose parts are not themselves
   exact keys — e.g. `intron_variant&splice_region_variant`, where neither
@@ -960,7 +958,7 @@ files) plus binary-free unit tests (`TestUnitRegionSummaryAndDist`,
 
   Swapping the two terms flips the output to `intron_variant`, proving the
   choice is positional, not severity-based. By contrast `start_lost&...`
-  *does* pick `start_lost` because `start_lost`/`stop_gained` *are* exact
+  _does_ pick `start_lost` because `start_lost`/`stop_gained` _are_ exact
   scale tokens. This is surprising (most users expect `:worst` to use the
   same substring severity ordering as `-s worst` / `:term+`) and is arguably
   an upstream bug, but the native port replicates it **byte-for-byte**
@@ -1032,7 +1030,7 @@ files) plus binary-free unit tests (`TestUnitRegionSummaryAndDist`,
   (pkg/htsgo/bcf/writer_test.go).
 
 - **Our BCF writer mis-encoded three value cases** — RESOLVED. (1) A
-  missing INFO/FORMAT *integer* (`.`) was bit-truncated to `0` when the
+  missing INFO/FORMAT _integer_ (`.`) was bit-truncated to `0` when the
   column narrowed to int8/int16 (`byte(int8(MissingInt32))` == 0) instead
   of the width's missing sentinel (`0x80`/`0x8000`); `narrowInt8`/
   `narrowInt16` now map the sentinels. (2) A missing GT allele was stored
@@ -1053,7 +1051,7 @@ but turned out to be documented features:
 - **`int(0.1 * read_length)` window sizing.** Looks like a quirky
   default; turns out to be the only window sizing rule upstream supports
   (sickle has no `-w` flag) and is described in the project README. Note:
-  this rule is genuinely upstream behaviour, but our *port* had a defaulting
+  this rule is genuinely upstream behaviour, but our _port_ had a defaulting
   bug here — the CLI hardcoded `-w` to `10` instead of leaving it dynamic, so
   reads other than 100 bp were trimmed with the wrong window (one window short
   on ~1% of reads). Fixed by defaulting `-w` to `0` (dynamic per-read
@@ -1436,7 +1434,7 @@ is an explicit error rather than a crash.
 ## bcftools +parental-origin: NULL deref (segfault) on a site-only `-e`/`-i` whose expression matches no site
 
 `plugins/parental-origin.c` `process_record()` requests the per-sample mask
-from `filter_test(args->filter, rec, &smpl_pass)`. For a *site-only*
+from `filter_test(args->filter, rec, &smpl_pass)`. For a _site-only_
 expression (e.g. `QUAL<10`, no FORMAT term) htslib leaves `smpl_pass == NULL`.
 In the `FLT_EXCLUDE` branch, when the site does **not** pass the expression
 (`pass_site == 0`) the code falls into
@@ -1455,12 +1453,12 @@ the same NULL write through a different path) crashes.
 
 **Our behaviour:** fixed-on-port. A site-only expression that selects no
 per-sample mask is treated as a whole-site verdict: under `-e`, a site that
-does not match the expression is *kept* with all three trio members included
+does not match the expression is _kept_ with all three trio members included
 (the intended semantics), and under `-i` a non-matching site is dropped. No
 NULL write occurs, so the run completes and prints its summary instead of
-crashing. The byte-parity tests therefore exercise the *non-crashing* filter
+crashing. The byte-parity tests therefore exercise the _non-crashing_ filter
 forms (`-i QUAL>10`, per-sample `FMT/GQ` expressions) against the live
-upstream binary; the crashing form is asserted only to *not* crash in our
+upstream binary; the crashing form is asserted only to _not_ crash in our
 port, since upstream produces no output to compare against.
 
 ## bcftools +indel-stats: `-p` PED de-novo mode aborts on an indel site without FORMAT/AD
@@ -1502,7 +1500,7 @@ the AD-derived DVAF / DFRAC / NFRAC contributions are simply skipped for that
 genotype (guarded by `nad1 > 0` before the `update_indel_stats` call) instead
 of aborting the run. The byte-parity oracle therefore uses an AD-bearing trio
 fixture (where upstream does not crash) and the crashing AD-less form is
-asserted only to *not* crash in our port, since upstream produces no output to
+asserted only to _not_ crash in our port, since upstream produces no output to
 compare against.
 
 ## bcftools +prune: maxAF ranks by alt/ref, not allele frequency
@@ -1519,7 +1517,7 @@ buf->vcf[i].af = ntot ? (float)nalt/ntot : 0;   // alt/ref, capped to 0 when ref
 `bcf_calc_ac()` fills `ac[0]` with the **reference** allele count and `ac[1..]`
 with the ALT counts, so `af = nalt/nref` — the alt-to-ref ratio, **not** a true
 allele frequency `nalt/(nref+nalt)`. A monomorphic-ALT site (`nref==0`) gets
-`af = 0` and is therefore pruned *first*, even though its real frequency is the
+`af = 0` and is therefore pruned _first_, even though its real frequency is the
 highest possible (1.0).
 
 **Reproducer** (`-w 100bp` keeps both chr2 sites in one window; `-n 1` keeps the
@@ -1541,8 +1539,8 @@ crash/spec violation, so it is reproduced rather than fixed; the
 
 Two related header quirks are reproduced the same way: the soft-filter
 `##FILTER` description renders a negative bp window via integer division
-(`-ld_win/1000`), so `-f LABEL -w 100bp` yields *"within 0kb"*; and the
-`-a count` `CLUSTER_SIZE` header line is emitted with the *pre*-conversion
+(`-ld_win/1000`), so `-f LABEL -w 100bp` yields _"within 0kb"_; and the
+`-a count` `CLUSTER_SIZE` header line is emitted with the _pre_-conversion
 window value (printed before prune.c converts a positive `-w N` to `-N` bp).
 
 **Corrected false claims:** the pre-port native plugin rejected the `rand`
@@ -1625,11 +1623,11 @@ BGZF, plain gzip, or plain text. We therefore accept everything upstream accepts
 per-chromosome map (skip non-SNPs / non-[ACGT] REF / missing `.` IDs, first-wins
 on duplicate IDs) and the orientation decision (REF match → `none`, ALT match →
 `swap`+GT flip, otherwise → unresolved/`skip`) are reproduced exactly, so on the
-inputs upstream *does* accept the corrected VCF and the stderr stats summary are
+inputs upstream _does_ accept the corrected VCF and the stderr stats summary are
 byte-for-byte identical. Because this is a one-directional superset (we never
 reject an upstream-accepted input, and never change output for one), the live
 oracle fixture `tools/bcftools/testdata/parity/fixref_dbsnp.vcf.gz` is bgzipped
-+ tabix-indexed so the upstream binary can run for the byte-parity comparison
+and tabix-indexed so the upstream binary can run for the byte-parity comparison
 (`TestNativePluginFixrefUseID`); the plain-file acceptance and the pure
 map/orientation logic are covered by the binary-free `TestUnitFixref*` unit
 tests.
@@ -1681,7 +1679,7 @@ the full consequence string (the haplotype anchor). The marker stores a
 Those `bcf1_t` records live in a recycled ring buffer: `vbuf_push` does
 `SWAP(bcf1_t*, *rec_ptr, vrec->line)`, so once the anchor record's `vbuf`
 slot is flushed it is reused for a **later** incoming record. When a variant
-is shared between two *overlapping genes'* compound haplotypes, one gene's
+is shared between two _overlapping genes'_ compound haplotypes, one gene's
 anchor can be flushed and its `bcf1_t` recycled while the silent member is
 still buffered (held by the other gene's still-active transcript). The marker
 then prints the **recycled** record's position instead of the anchor's.
@@ -1701,7 +1699,7 @@ the marker is staged, so the shared members correctly print
 INFO/BCSQ consequence set and order, the FORMAT/BCSQ sample bitmask, the
 intron gene selection, and the splice-region ordering — is byte-identical to
 upstream over this multi-gene fixture; this recycled-pointer `@pos` is the one
-place our output is deliberately *more* correct than upstream's.
+place our output is deliberately _more_ correct than upstream's.
 
 A ready-to-file report for the upstream samtools/bcftools project (root-cause
 walk-through and a suggested fix) is staged at

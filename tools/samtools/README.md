@@ -104,7 +104,7 @@ output. The sort is stable.
 | `-n`  | `--by-name`                | Sort by QName (lexicographic).           |
 | `-N`  | `--by-natural-name`        | Sort by QName with numeric-run ordering. |
 | `-t`  | `--by-tag TAG`             | Sort by an Aux tag value.                |
-| `-m`  | `--max-mem N[K|M|G]`       | Per-shard memory budget (default 768M).  |
+| `-m`  | `--max-mem N[K\|M\|G]`       | Per-shard memory budget (default 768M).  |
 | `-T`  | `--tmpdir PREFIX`          | Tmpfile prefix for spill files.          |
 | `-l`  | `--compress-level N`       | BGZF deflate level 0..9.                 |
 | `-@`  | `--threads N`              | Accepted; single-threaded in v1.         |

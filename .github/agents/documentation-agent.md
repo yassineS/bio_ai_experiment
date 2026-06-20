@@ -1,6 +1,7 @@
 # Documentation Agent
 
 ## Purpose
+
 This agent is responsible for creating and maintaining comprehensive documentation for all recoded bioinformatics tools.
 
 ## Responsibilities
@@ -58,6 +59,7 @@ docs/
 ```
 
 Tool-specific documentation:
+
 ```
 tools/[tool-name]/docs/
 ├── README.md              # Tool overview
@@ -86,6 +88,7 @@ tools/[tool-name]/docs/
 - Explain what the code does
 
 Example:
+
 ````markdown
 ## Processing a FASTA File
 

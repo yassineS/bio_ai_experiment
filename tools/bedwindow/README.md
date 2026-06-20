@@ -79,4 +79,5 @@ The parity tests assert byte-for-byte equality against the live upstream
 bin hit-order, default-window, BED12-B, and strand cases; they `t.Fatalf`
 (never skip) when the binary is unavailable. Binary-free `TestUnit*` cases pin
 the bin comparator.
+
 ```

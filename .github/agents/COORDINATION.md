@@ -7,7 +7,9 @@ This document describes how different agents coordinate to achieve the project g
 ## Agent Roles
 
 ### 1. Tool Analysis Agent
+
 **Primary Focus**: Research and analysis
+
 - Identifies and catalogs bioinformatics tools
 - Assesses code quality, performance, and documentation
 - Prioritizes tools for recoding
@@ -17,7 +19,9 @@ This document describes how different agents coordinate to achieve the project g
 **Dependencies**: None (starting point)
 
 ### 2. GoLang Recoding Agent
+
 **Primary Focus**: Implementation
+
 - Recodes tools in Go
 - Maintains functional compatibility
 - Optimizes performance
@@ -27,7 +31,9 @@ This document describes how different agents coordinate to achieve the project g
 **Dependencies**: Tool Analysis Agent (receives tool specifications)
 
 ### 3. Testing Agent
+
 **Primary Focus**: Quality assurance
+
 - Creates comprehensive test suites
 - Validates functionality
 - Ensures code coverage
@@ -37,7 +43,9 @@ This document describes how different agents coordinate to achieve the project g
 **Dependencies**: GoLang Recoding Agent (receives code to test)
 
 ### 4. Documentation Agent
+
 **Primary Focus**: Knowledge capture
+
 - Documents code and APIs
 - Creates user guides
 - Maintains project documentation
@@ -47,7 +55,9 @@ This document describes how different agents coordinate to achieve the project g
 **Dependencies**: All agents (documents their outputs)
 
 ### 5. MCP Server Agent
+
 **Primary Focus**: Integration
+
 - Creates MCP servers for tools
 - Enables LLM integration
 - Simplifies tool access
@@ -59,6 +69,7 @@ This document describes how different agents coordinate to achieve the project g
 ## Workflow
 
 ### Phase 1: Discovery and Analysis
+
 ```
 Tool Analysis Agent
     ├── Identify top 100 tools
@@ -72,6 +83,7 @@ Output: Prioritized list of tools with detailed analysis
 ```
 
 ### Phase 2: Planning
+
 ```
 Tool Analysis Agent + Documentation Agent
     ├── Create detailed specifications for selected tool
@@ -83,6 +95,7 @@ Output: Tool specification document
 ```
 
 ### Phase 3: Implementation
+
 ```
 GoLang Recoding Agent
     ├── Design Go architecture
@@ -99,6 +112,7 @@ Output: Working Go implementation with initial docs
 ```
 
 ### Phase 4: Testing
+
 ```
 Testing Agent
     ├── Create test data
@@ -116,6 +130,7 @@ Output: Comprehensive test suite
 ```
 
 ### Phase 5: Integration
+
 ```
 MCP Server Agent
     ├── Design MCP server
@@ -132,6 +147,7 @@ Output: MCP server with documentation
 ```
 
 ### Phase 6: Iteration
+
 ```
 All Agents
     ├── Review feedback
@@ -207,6 +223,7 @@ Loop until: Tool is robust and well-documented
 Each phase has quality gates that must be passed before moving forward:
 
 ### Analysis Phase
+
 - ✓ Tool metadata complete
 - ✓ Code quality assessed
 - ✓ Performance baseline established
@@ -214,6 +231,7 @@ Each phase has quality gates that must be passed before moving forward:
 - ✓ Use cases documented
 
 ### Implementation Phase
+
 - ✓ Code passes linting
 - ✓ All exported items documented
 - ✓ Unit tests pass
@@ -221,6 +239,7 @@ Each phase has quality gates that must be passed before moving forward:
 - ✓ CLI works as expected
 
 ### Testing Phase
+
 - ✓ >80% code coverage
 - ✓ All edge cases tested
 - ✓ Integration tests pass
@@ -228,6 +247,7 @@ Each phase has quality gates that must be passed before moving forward:
 - ✓ No critical bugs
 
 ### Integration Phase
+
 - ✓ MCP server responds correctly
 - ✓ LLM integration tested
 - ✓ Error handling works
