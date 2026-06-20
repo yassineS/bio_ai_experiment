@@ -95,7 +95,6 @@ func TestHtslibLongRefs(t *testing.T) {
 // empty fixture the same way upstream does (both should error cleanly, not
 // crash or silently succeed).
 func TestHtslibEmptyFile(t *testing.T) {
-	t.Skip("PARITY GAP: empty/headerless SAM accepted (exit 0) where upstream rejects (exit 1) — truncated-input handling. Regression guard. See docs/PARITY_ROADMAP.md, docs/manuscript/bug_corpus.md.")
 	dir := htslibTest(t)
 	our := ourSamtools(t)
 	up := upSamtools(t)

@@ -2,11 +2,24 @@ package sam
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
 )
+
+// ErrNoSAMHeader reports that a text stream could not be read as SAM because
+// it has no recognisable header and no leading alignment record — i.e. it is
+// empty, blank, or arbitrary non-SAM text.
+//
+// This mirrors htslib's behaviour: hts_detect_format only classifies a
+// header-less text stream as SAM when its first line is a complete (11-column)
+// SAM record whose column types match (QNAME, integer FLAG, …). Anything else
+// is "empty" or "unknown text", for which sam_hdr_read returns NULL and
+// `samtools view` exits non-zero with "fail to read the header". A SAM with a
+// valid header but zero alignment records is NOT covered by this error.
+var ErrNoSAMHeader = errors.New("sam: no SAM header or leading alignment record (empty or non-SAM input)")
 
 // Reader is the interface implemented by both SAM and BAM readers so that
 // callers can iterate records without caring about the underlying format.
@@ -39,7 +52,60 @@ func NewSAMReader(r io.Reader) (*SAMReader, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Match htslib: a header-less text stream is only valid SAM when its very
+	// first line is a complete alignment record. ParseHeader leaves that line
+	// unconsumed in br, so peek (without consuming) and validate it. An empty
+	// stream, a blank first line, or arbitrary non-SAM text is rejected here
+	// the same way upstream's hts_detect_format declines to call it SAM.
+	if len(hdr.Lines) == 0 {
+		if err := validateLeadingSAMRecord(br); err != nil {
+			return nil, err
+		}
+	}
 	return &SAMReader{br: br, hdr: hdr}, nil
+}
+
+// validateLeadingSAMRecord peeks the first line still buffered in br (the line
+// ParseHeader stopped at) and reports an error if it is not a parseable SAM
+// alignment record. It does not consume any input, so the subsequent Read()
+// still observes the record. It is only called when no header lines were seen.
+func validateLeadingSAMRecord(br *bufio.Reader) error {
+	// Grow the peek window until we have a full first line or hit EOF. Most
+	// records are well under 4 KiB; long-CIGAR lines may exceed it, so keep
+	// expanding rather than truncating the line under inspection.
+	// Peek the bytes already buffered (ParseHeader has filled br by reading the
+	// stream up to this line). Asking for the buffer's full capacity returns
+	// everything available; a short read yields io.EOF, a long first line
+	// yields ErrBufferFull.
+	buf, err := br.Peek(br.Size())
+	if nl := indexNewline(buf); nl >= 0 {
+		buf = buf[:nl]
+	} else if err == bufio.ErrBufferFull {
+		// The first line is longer than br's buffer (e.g. a very long CIGAR or
+		// tag list). It clearly contains real record data, so defer to Read()
+		// rather than risk a false rejection on a truncated line.
+		return nil
+	}
+	// buf is now the first line (newline found) or, at EOF with no trailing
+	// newline, the entire remaining input.
+	line := strings.TrimRight(string(buf), "\r\n")
+	if line == "" {
+		return ErrNoSAMHeader
+	}
+	if _, perr := parseSAMRecord(line); perr != nil {
+		return ErrNoSAMHeader
+	}
+	return nil
+}
+
+// indexNewline returns the index of the first '\n' in b, or -1 if absent.
+func indexNewline(b []byte) int {
+	for i, c := range b {
+		if c == '\n' {
+			return i
+		}
+	}
+	return -1
 }
 
 // Header returns the parsed SAM header.
