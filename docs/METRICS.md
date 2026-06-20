@@ -217,6 +217,32 @@ floor: closing them further would require cgo into libdeflate, which the
 project deliberately
 forgoes to keep a single static, memory-safe binary (see `CLAUDE.md`).
 
+### I/O & decode optimization cycle (Tiers 1–3, measured 2026-06-20)
+
+A follow-up cycle targeting the tools still `>1×` on the I/O and decode fronts.
+Each tier shipped on its own branch/PR with byte-identity proof, the medium
+parity gate (0 DIVERGE), full `go test ./...`, and a before/after measurement
+on the medium fixtures (min-of-N wall, this box). All output is byte-identical
+to the prior binary — these are pure plumbing/allocation changes, never math.
+
+| tier | change | cell | before → after | note |
+|---|---|---|---|---|
+| 1 | parallel BGZF read on `sort`'s input path (PR #430) | `samtools sort -@4` | 1.54s → **1.14s** (−26%) | gap to upstream 1.49× → **1.11×**; `-@1` unchanged; bit-identical |
+| 2 | shallow BAM decode for `flagstat` — fixed prefix only, skip SEQ/QUAL/QName/aux (PR #431) | `samtools flagstat -@1` / `-@4` | 0.76s → **0.54s** (−28%) / 0.40s → **0.18s** (−54%) | ratios 1.87→**1.35** / 3.22→**1.50** |
+| 3 | shared VCF reader per-line alloc removed + `call` scratch reuse (PR #432) | `bcftools call -mv` | 22.08s → **15.55s** (−30%) | allocs/op 104k→**40k** (−61%), B/op −59%; fixed a latent gVCF string-retention bug |
+
+What the cycle confirmed about the floor (profile, not assumption):
+- `samtools stats` is **consumer-bound**, not decode-bound — its `observe()` loop
+  is ~49% cumulative (inflate ~17%), so parallel decode is already hidden behind
+  it and `-@` can't move it. `stats`/`depth`/`idxstats`/`view` were already wired
+  to the parallel reader; `sort`'s read side was the one genuine gap (Tier 1).
+- `bcftools call`'s residual ~40k allocs/op are **parity-locked output
+  formatting** (`strconv.FormatFloat` for QUAL/AD/PL, the GT/INFO builders) plus
+  the libm (`archExp`/`archLog` ~10.5%) and float-parse CPU floor. The safe
+  parse-path allocation lever is now exhausted; further gains would need cgo
+  (libdeflate) or algorithmic work on the pileup/`observe` engines, both
+  deliberately out of scope for a single static, memory-safe binary.
+
 ### Large tier — disk-bound in this environment
 
 A `large`-tier run (192 Mb reference, 2.5 M reads, 400 k variants) was
