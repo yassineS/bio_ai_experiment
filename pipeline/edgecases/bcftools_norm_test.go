@@ -42,7 +42,6 @@ chr1	100	.	A	G	50	PASS	AF=0.1	GT:AD	0/1:10,3
 // upstream — including FORMAT/AD (Number=R) and FORMAT/PL (Number=G), the
 // fields where a re-index bug silently corrupts depths and likelihoods.
 func TestBCFToolsNormReindex(t *testing.T) {
-	t.Skip("PARITY GAP (silent corruption, HIGH): bcftools norm does not re-index FORMAT Number=R/G (AD/PL) vectors on -m- split or -m+ join — per-allele depths/likelihoods are corrupted. Top-priority follow-up fix. Regression guard. See docs/PARITY_ROADMAP.md, docs/manuscript/bug_corpus.md.")
 	our := ourBin(t, "bcftools")
 	up := upBin(t, "bcftools")
 
