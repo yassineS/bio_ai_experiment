@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/alnio"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -82,9 +83,22 @@ func Sort(in io.Reader, out io.Writer, opts SortOptions) error {
 		opts.MaxMemBytes = SortDefaultMem
 	}
 
-	r, err := sam.NewReader(in)
+	// Decode the input with block-parallel BGZF inflation when -@/--threads
+	// asks for it. sort retains every record (it buffers and spills them), so
+	// it reads via Read() — which returns a fresh record each call — and never
+	// uses the allocation-free ReadInto fast path; the threaded reader is a
+	// drop-in here. The decoded record stream is byte-for-byte identical for any
+	// thread count, so the sorted output is unchanged; -@ only overlaps input
+	// inflation with the sort/spill work. opts.Threads is honoured verbatim
+	// (not widened to NumCPU): with no -@ it is 0/1 and NewReaderThreaded falls
+	// back to the existing single-threaded sam.NewReader path, so the default is
+	// behaviour-, output-, and performance-identical to before.
+	r, err := alnio.NewReaderThreaded(in, "", opts.Threads)
 	if err != nil {
 		return err
+	}
+	if rc, ok := r.(io.Closer); ok {
+		defer rc.Close()
 	}
 	hdr := r.Header()
 	// Build a reference-name → refID map for coordinate sort.

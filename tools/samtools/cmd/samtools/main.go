@@ -664,7 +664,16 @@ func runSort(args []string) int {
 		NoPG:          noPG,
 	}
 
-	in, err := iohelper.OpenReader(fs.Arg(0))
+	// With -@ >= 2 the input is opened raw (still BGZF-framed) so samtools.Sort
+	// can inflate its blocks in parallel; otherwise the standard decompressing
+	// opener is used. The decoded records — and thus the sorted output — are
+	// identical either way; only input-decode throughput changes.
+	var in io.ReadCloser
+	if threads >= 2 {
+		in, err = iohelper.OpenRaw(fs.Arg(0))
+	} else {
+		in, err = iohelper.OpenReader(fs.Arg(0))
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "samtools sort: %v\n", err)
 		return 1
