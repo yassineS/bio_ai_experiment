@@ -84,6 +84,11 @@ jobs:
         with:
           go-version-file: 'go.mod'
           cache: true
+      - name: Install upstream build dependencies (no libdeflate)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf automake libtool \
+            pkg-config perl zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev
       - name: go test -race
         run: go test -race -timeout 20m ./pkg/...
 
