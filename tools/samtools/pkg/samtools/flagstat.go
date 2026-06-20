@@ -48,38 +48,7 @@ func CountFlagstatThreaded(r io.Reader, threads int) (*FlagstatCounts, error) {
 	if rc, ok := rd.(io.Closer); ok {
 		defer rc.Close()
 	}
-	c := &FlagstatCounts{}
-	// flagstat only tallies flags, never retaining a record past add, so it
-	// uses the reader's allocation-free ReadInto when available (the
-	// single-threaded BAM path) and falls back to Read otherwise (CRAM, SAM,
-	// the threaded reader).
-	if ri, ok := rd.(interface {
-		ReadInto(*sam.Record) error
-	}); ok {
-		var rec sam.Record
-		for {
-			err := ri.ReadInto(&rec)
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return nil, err
-			}
-			c.add(&rec)
-		}
-		return c, nil
-	}
-	for {
-		rec, err := rd.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		c.add(rec)
-	}
-	return c, nil
+	return countFromReader(rd)
 }
 
 // add updates the counters for one record.
@@ -210,16 +179,64 @@ func FlagstatFile(path string, w io.Writer, threads int) error {
 		return err
 	}
 	defer rd.Close()
+	c, err := countFromReader(rd)
+	if err != nil {
+		return err
+	}
+	return c.Format(w)
+}
+
+// countFromReader tallies flagstat counts from rd, preferring the reader's
+// shallow decode (fixed-prefix fields only) when available, then the
+// allocation-free ReadInto, then a plain Read. flagstat never retains a record
+// past add, so reusing one record across calls is safe. The shallow path is
+// the common BAM case and skips the variable-length region (name/CIGAR/SEQ/
+// QUAL/aux) that flagstat never reads.
+func countFromReader(rd interface {
+	Read() (*sam.Record, error)
+}) (*FlagstatCounts, error) {
 	c := &FlagstatCounts{}
+	if rs, ok := rd.(interface {
+		ReadShallowInto(*sam.Record) error
+	}); ok {
+		var rec sam.Record
+		for {
+			err := rs.ReadShallowInto(&rec)
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return nil, err
+			}
+			c.add(&rec)
+		}
+		return c, nil
+	}
+	if ri, ok := rd.(interface {
+		ReadInto(*sam.Record) error
+	}); ok {
+		var rec sam.Record
+		for {
+			err := ri.ReadInto(&rec)
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return nil, err
+			}
+			c.add(&rec)
+		}
+		return c, nil
+	}
 	for {
 		rec, err := rd.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return err
+			return nil, err
 		}
 		c.add(rec)
 	}
-	return c.Format(w)
+	return c, nil
 }
