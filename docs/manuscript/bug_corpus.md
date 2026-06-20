@@ -74,8 +74,13 @@ harnesses were built — concrete evidence the methodology keeps finding real di
 - **A12** index byte-identity — FIXED (khash bin order + `compress_binning`; `.bai` byte-identical,
   `.csi`/`.tbi` payload-identical).
 - **A13** CRAM no-SEQ / out-of-bounds / unknown-ref encode+decode — FIXED.
-- **A14** SAM long-ref `POS`/`PNEXT` int32 overflow — *pending* (assess `int32→int64` blast radius).
-- **A15** empty/headerless file accepted vs upstream exit 1 — *in progress*.
+- **A14** SAM long-ref `POS`/`PNEXT`/`TLEN` int32 overflow — FIXED (migrated to int64 `hts_pos_t`
+  across `Record` + SAM/BAM/CRAM paths; BAM writer errors cleanly beyond int32, matching the
+  on-disk format limit; byte-exact for POS < 2^31).
+- **A15** empty/headerless file accepted vs upstream exit 1 — FIXED (reject when the first line is
+  not a valid 11-column SAM record; valid headerless-record and zero-record-with-header unaffected).
+
+**All eight gaps the validation harnesses surfaced are now closed.**
 - **A16** VCF/BCF float `%g` formatting (large/extreme magnitudes) — FIXED.
 - **A17** samtools flagstat mate-to-different-chr RNEXT miscount — FIXED.
 - **A18** bedtools merge unsorted/ragged-input rejection — FIXED.
