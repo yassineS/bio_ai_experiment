@@ -34,8 +34,13 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+  # Coverage over the whole module WITHOUT -race. Live-parity tests skip when
+  # they cannot build their upstream binary (hermetic runner); the upstream-parity
+  # job enforces them. -race is applied separately (the `race` job) to the
+  # concurrent code, because -race makes the sequential tool-parity suites
+  # (mosdepth/samtools) exceed the test timeout for no race-coverage benefit.
   test:
-    name: test -race -cover
+    name: test + cover
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,13 +49,30 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
       - name: go test
-        run: go test -race -coverprofile=coverage.txt -covermode=atomic ./...
+        run: go test -coverprofile=coverage.txt -covermode=atomic -timeout 25m ./...
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         if: success()
         with:
           files: ./coverage.txt
           fail_ci_if_error: false
+
+  # Race detector on the concurrent Go code (pkg/htsgo: the parallel BGZF
+  # reader/writer and threaded readers) — hermetic and fast. The tool packages
+  # are sequential parity harnesses with no concurrency to race-check, and are
+  # ~15-20x slower under -race, so they are covered by the `test` job instead.
+  race:
+    name: race (pkg)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: go test -race
+        run: go test -race -timeout 15m ./pkg/...
+
 
   build:
     name: build
