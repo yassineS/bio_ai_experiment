@@ -441,11 +441,25 @@ func (e *recordEncoder) encodeRecord(rec *sam.Record) error {
 	b := e.buffers
 	mapped := rec.Flag&sam.FlagUnmapped == 0
 
+	// A record whose SEQ is "*" carries no query bases. htslib still
+	// stores its alignment: for a mapped no-SEQ record the read length is
+	// the CIGAR's query length and the read features describe the CIGAR
+	// (the match runs are implicit, reconstructed from the reference span),
+	// with the CRAM_FLAG_NO_SEQ flag telling the decoder to discard the
+	// reconstructed bases and qualities and render SEQ/QUAL as "*". An
+	// unmapped no-SEQ record simply has a zero read length. The SAM reader
+	// stores a "*" SEQ as the empty string, so either form means "no
+	// sequence".
+	noSeq := rec.Seq == "" || rec.Seq == "*"
+
 	// CRAM per-record flags: quality is always preserved in its own
 	// series, and every record is encoded detached so it carries its own
 	// mate fields (the simple writer never uses the downstream-mate
-	// optimisation).
+	// optimisation). A no-SEQ record additionally sets CRAM_FLAG_NO_SEQ.
 	cf := int32(cfQualityPreserved | cfDetached)
+	if noSeq {
+		cf |= cfNoSeq
+	}
 
 	b.bf = e.putU(b.bf, int32(rec.Flag))
 	b.cf = e.putU(b.cf, cf)
@@ -457,9 +471,17 @@ func (e *recordEncoder) encodeRecord(rec *sam.Record) error {
 		b.ri = e.putS(b.ri, refID)
 	}
 
+	// The stored read length is the number of query bases the read
+	// features account for. With a real SEQ this is len(SEQ); for a mapped
+	// no-SEQ record there is no SEQ, so it is the CIGAR's query length (the
+	// span the implicit match runs and base-carrying features cover); for
+	// an unmapped no-SEQ record it is zero.
 	readLen := len(rec.Seq)
-	if rec.Seq == "*" {
+	if noSeq {
 		readLen = 0
+		if mapped {
+			readLen = rec.Cigar.QueryLength()
+		}
 	}
 	b.rl = e.putU(b.rl, int32(readLen))
 	e.numBases += int64(readLen)

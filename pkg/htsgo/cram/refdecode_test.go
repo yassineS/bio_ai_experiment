@@ -145,13 +145,27 @@ func TestReferenceBaseAtBounds(t *testing.T) {
 }
 
 // TestReconstructReferenceTooShort checks that a match run reaching past
-// the slice's resolved reference span is a hard error, not a silent
-// short read.
+// the slice's resolved reference span is tolerated (not a hard error):
+// the in-bounds bases come from the reference and the overhang is filled
+// with 'N', with needsReference set. This mirrors htslib, which decodes
+// alignments extending past the reference end (its c1#bounds fixture)
+// rather than rejecting them; the overhanging bases are recovered from the
+// verbatim features the encoder stored for them.
 func TestReconstructReferenceTooShort(t *testing.T) {
 	rd := newRefDecoder([]byte("ACGT"), 1, nil)
 	// A 10-base read at POS 1 needs reference 1..10, but the span is 4.
-	if _, _, _, err := rd.reconstructMapped(nil, 10, 1); err == nil {
-		t.Error("a match run past the reference span must error")
+	seq, _, cig, err := rd.reconstructMapped(nil, 10, 1)
+	if err != nil {
+		t.Fatalf("a match run past the reference span must be tolerated, got error: %v", err)
+	}
+	if got, want := string(seq), "ACGTNNNNNN"; got != want {
+		t.Errorf("reconstructed seq = %q; want %q (ref prefix then 'N' overhang)", got, want)
+	}
+	if cig.String() != "10M" {
+		t.Errorf("reconstructed CIGAR = %q; want 10M", cig.String())
+	}
+	if !rd.needsReference {
+		t.Error("an overhang past the reference span must set needsReference")
 	}
 }
 

@@ -260,9 +260,20 @@ func TestFASTASpanMemoised(t *testing.T) {
 	if string(second) != "ACGT" {
 		t.Errorf("second span = %q, want ACGT", second)
 	}
-	// A span past the contig end is a hard error.
-	if _, err := r.fastaSpan("chr1", 1, 999); err == nil {
-		t.Error("a span past the contig end must error")
+	// A span past the contig end is tolerated (htslib's c1#bounds: reads
+	// overhanging the reference): fastaSpan returns the available prefix
+	// clamped to the contig rather than erroring. The decoder fills any
+	// uncovered overhang with 'N'.
+	clamped, err := r.fastaSpan("chr1", 1, 999)
+	if err != nil {
+		t.Fatalf("a span past the contig end must be tolerated, got error: %v", err)
+	}
+	if string(clamped) != "ACGTACGTACGTACGTACGT" {
+		t.Errorf("clamped span = %q, want the full 20-base contig", clamped)
+	}
+	// A span starting entirely past the contig end yields no bases.
+	if past, err := r.fastaSpan("chr1", 100, 4); err != nil || past != nil {
+		t.Errorf("span starting past the contig = %q, err %v; want nil,nil", past, err)
 	}
 }
 

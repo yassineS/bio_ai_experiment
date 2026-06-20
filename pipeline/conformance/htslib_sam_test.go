@@ -109,7 +109,6 @@ func seqOf(sam string) []string {
 //     CRAM round-trip (CRAM auto-adds MD/NM tags, so the correct oracle is
 //     upstream's own CRAM output, not the original SAM).
 func TestHtslibSAM_CRAMRoundTrip(t *testing.T) {
-	t.Skip("PARITY GAP: CRAM encoder rejects valid htslib fixtures upstream round-trips (c1#noseq: no-SEQ records; c1#bounds: reads past reference end; c1#unknown: unknown ref). Regression guard. See docs/PARITY_ROADMAP.md, docs/manuscript/bug_corpus.md.")
 	dir := htslibTest(t)
 	our := ourSamtools(t)
 	up := upSamtools(t)

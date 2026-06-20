@@ -129,13 +129,35 @@ func (rd *recordDecoder) fillReferenceMatch(seq []byte, covered []bool, readPos,
 		return nil
 	}
 	idx := refPos - rd.refStart
-	if idx < 0 || int(idx)+int(n) > len(rd.refBases) {
-		return errFormat("match run needs reference bases %d-%d but the slice reference span covers %d-%d",
-			refPos, refPos+n-1, rd.refStart, rd.refStart+int32(len(rd.refBases))-1)
+	if idx < 0 {
+		return errFormat("match run needs reference bases %d-%d but the slice reference span starts at %d",
+			refPos, refPos+n-1, rd.refStart)
 	}
-	copy(seq[readPos:readPos+n], rd.refBases[idx:idx+n])
+	// An alignment may extend past the reference end (htslib's c1#bounds:
+	// a read whose span overhangs the contig). htslib tolerates this,
+	// filling the overhang from whatever reference it has and 'N' beyond.
+	// Copy the in-bounds prefix and fill the remainder with 'N', flagging
+	// the record as reference-needing so a fully reference-backed decode
+	// still reports the shortfall. The overhanging bases were stored
+	// verbatim by the encoder, so a correct round-trip overwrites these
+	// 'N's; this only matters when an implicit match runs off the end.
+	avail := int32(len(rd.refBases)) - idx
+	if avail < 0 {
+		avail = 0
+	}
+	if avail > n {
+		avail = n
+	}
+	if avail > 0 {
+		copy(seq[readPos:readPos+avail], rd.refBases[idx:idx+avail])
+	}
 	for i := int32(0); i < n; i++ {
-		covered[readPos+i] = true
+		if i < avail {
+			covered[readPos+i] = true
+		} else {
+			seq[readPos+i] = 'N'
+			rd.needsReference = true
+		}
 	}
 	return nil
 }

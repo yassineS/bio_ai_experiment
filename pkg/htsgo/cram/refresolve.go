@@ -203,9 +203,25 @@ func (rr *referenceResolver) fastaSpan(contig string, start, span int32) ([]byte
 	}
 	rr.lastContig = contig
 	rr.lastBases = whole
+	if start < 1 {
+		return nil, errFormat("reference contig %q: slice start %d is out of range", contig, start)
+	}
+	if int64(start-1) > int64(len(whole)) {
+		// The slice begins entirely past the contig end; no reference bases
+		// are available. The records covering this span were encoded
+		// verbatim, so reconstruction needs no reference — return an empty
+		// span rather than erroring.
+		return nil, nil
+	}
 	if end > int64(len(whole)) {
-		return nil, errFormat("reference contig %q is %d bases, too short for slice span %d-%d",
-			contig, len(whole), start, int64(start)+int64(span)-1)
+		// The slice span overhangs the contig end (an alignment extending
+		// past the reference, e.g. htslib's c1#bounds). htslib tolerates
+		// this — it warns "Ref pos outside of ref sequence boundary" and
+		// proceeds with the bases it has, the overhanging bases having been
+		// stored verbatim by the encoder. Return the available prefix
+		// (clamped to the contig) instead of erroring; fillReferenceMatch
+		// supplies 'N' for any position the encoder did not cover verbatim.
+		return whole[start-1:], nil
 	}
 	return whole[start-1 : end], nil
 }
