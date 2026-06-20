@@ -23,11 +23,12 @@ subcommand coverage is complete.
 
 - **13 in-scope tool families**, shipped as **53 drop-in POSIX CLI binaries**
   (`git ls-files 'tools/*/cmd/*/main.go' | … | sort -u | wc -l`).
-- The repository vendors **53 upstream submodules** under `reference_code/`, but
-  ~40 of those (bwa, STAR, salmon, …) are **reference material from the phase-1
-  tool survey** (`analysis/`, the top-~200 ranking), *not* in-scope-but-unported
-  tools. They are vendored for provenance, not slated for porting (see
-  `CLAUDE.md`: "no longer taking on new tools").
+- `reference_code/` vendors **11 upstream submodules** — the source of every
+  ported tool, kept as read-only parity oracles (htslib, htscodecs, samtools,
+  bcftools, bedtools, seqtk, prinseq, sickle, skewer, fastp, vcftools). The
+  ~40 phase-1 *survey* submodules (bwa, STAR, salmon, …) that were never ported
+  have been removed (the survey ranking itself remains under `analysis/`), so
+  `reference_code/` now contains only what the project actually reimplements.
 
 So the correct manuscript claim is **"complete reimplementation of a bounded,
 named tool set,"** not "a subset of an open-ended porting effort."
