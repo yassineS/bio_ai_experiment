@@ -1,40 +1,97 @@
 name: CI
 
-# Temporarily disabled while the project is in early/heavy-iteration phase.
-# Agents are running `gofmt`, `go vet`, `go test -race -cover ./...`, `go build ./...`,
-# and markdownlint locally and recording the results in each PR description.
-#
-# To re-enable, replace the manual-only trigger below with:
-#   on:
-#     push:
-#       branches: [ main, develop ]
-#     pull_request:
-#       branches: [ main, develop ]
-#
-# The job definitions kept below are the previous configuration, ready to wire back up.
+# Runs on every push to main and every PR targeting main. The repository is a
+# SINGLE Go module (github.com/yassineS/bio_ai_experiment) — all jobs operate at
+# the repo root, not per-tool. The Go version is read from go.mod via
+# `go-version-file` so the toolchain always matches the module's declared version.
 
 on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  noop:
-    name: CI disabled
+  lint:
+    name: gofmt + vet
     runs-on: ubuntu-latest
     steps:
-      - name: Note
-        run: echo "CI is temporarily disabled. Checks are run locally by contributing agents and documented in each PR."
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l $(git ls-files '*.go' | grep -v '^reference_code/'))
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"; echo "$unformatted"; exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
 
+  test:
+    name: test -race -cover
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: go test
+        run: go test -race -coverprofile=coverage.txt -covermode=atomic ./...
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        if: success()
+        with:
+          files: ./coverage.txt
+          fail_ci_if_error: false
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: go build
+        run: go build ./...
+
+  markdown-lint:
+    name: markdown lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint Markdown
+        uses: DavidAnson/markdownlint-cli2-action@v16
+        with:
+          globs: |
+            **/*.md
+            !reference_code
+
+  # Independent re-execution of the byte-exact parity suite against freshly built
+  # upstream binaries. This is the canonical, non-self-reported validation the
+  # manuscript relies on (docs/manuscript/04 §1, §4b): the parity gate runs in
+  # clean CI, not locally by a contributor. Builds htslib/bcftools/samtools from
+  # the vendored submodules, then runs every `*Upstream*` parity test.
   upstream-parity:
-    name: Upstream parity (live)
+    name: upstream parity (live)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Set up Go
-        uses: actions/setup-go@v4
+      - uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
+          go-version-file: 'go.mod'
+          cache: true
       - name: Install htslib build dependencies
         run: |
           sudo apt-get update
@@ -43,108 +100,10 @@ jobs:
       - name: Build htslib
         run: |
           cd reference_code/htslib
-          autoreconf -i
-          ./configure
-          make -j"$(nproc)"
+          autoreconf -i && ./configure && make -j"$(nproc)"
       - name: Build bcftools
-        run: |
-          cd reference_code/bcftools
-          make -j"$(nproc)"
+        run: cd reference_code/bcftools && make -j"$(nproc)"
       - name: Build samtools
-        run: |
-          cd reference_code/samtools
-          make -j"$(nproc)"
+        run: cd reference_code/samtools && make -j"$(nproc)"
       - name: Run live upstream-parity tests
-        run: go test -run Upstream ./tools/...
-
-# --- Previous job definitions (kept for easy re-enable) -----------------------
-#
-#  lint:
-#    name: Lint
-#    runs-on: ubuntu-latest
-#    steps:
-#      - uses: actions/checkout@v4
-#      - name: Set up Go
-#        uses: actions/setup-go@v4
-#        with:
-#          go-version: '1.21'
-#      - name: Run gofmt
-#        run: |
-#          if find . -name "*.go" -not -path "./vendor/*" | grep -q .; then
-#            unformatted=$(gofmt -l $(find . -name "*.go" -not -path "./vendor/*"))
-#            if [ -n "$unformatted" ]; then
-#              echo "The following files are not formatted:"
-#              echo "$unformatted"
-#              exit 1
-#            fi
-#          else
-#            echo "No Go files found, skipping gofmt"
-#          fi
-#      - name: Run go vet
-#        run: |
-#          if find . -name "go.mod" -not -path "./vendor/*" | grep -q .; then
-#            for dir in $(find . -name "go.mod" -not -path "./vendor/*" -exec dirname {} \;); do
-#              echo "Running go vet in $dir"
-#              (cd "$dir" && go vet ./...)
-#            done
-#          else
-#            echo "No Go modules found, skipping go vet"
-#          fi
-#
-#  test:
-#    name: Test
-#    runs-on: ubuntu-latest
-#    steps:
-#      - uses: actions/checkout@v4
-#      - name: Set up Go
-#        uses: actions/setup-go@v4
-#        with:
-#          go-version: '1.21'
-#      - name: Run tests
-#        run: |
-#          if find . -name "go.mod" -not -path "./vendor/*" | grep -q .; then
-#            for dir in $(find . -name "go.mod" -not -path "./vendor/*" -exec dirname {} \;); do
-#              echo "Running tests in $dir"
-#              (cd "$dir" && go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...)
-#            done
-#          else
-#            echo "No Go modules found, skipping tests"
-#          fi
-#      - name: Upload coverage
-#        uses: codecov/codecov-action@v3
-#        if: success()
-#        with:
-#          files: ./coverage.txt
-#          fail_ci_if_error: false
-#
-#  build:
-#    name: Build
-#    runs-on: ubuntu-latest
-#    steps:
-#      - uses: actions/checkout@v4
-#      - name: Set up Go
-#        uses: actions/setup-go@v4
-#        with:
-#          go-version: '1.21'
-#      - name: Build tools
-#        run: |
-#          if find . -name "go.mod" -not -path "./vendor/*" | grep -q .; then
-#            for dir in $(find . -name "go.mod" -not -path "./vendor/*" -exec dirname {} \;); do
-#              echo "Building in $dir"
-#              (cd "$dir" && go build -v ./...)
-#            done
-#          else
-#            echo "No Go modules found, skipping build"
-#          fi
-#
-#  markdown-lint:
-#    name: Markdown Lint
-#    runs-on: ubuntu-latest
-#    steps:
-#      - uses: actions/checkout@v4
-#      - name: Lint Markdown files
-#        uses: avto-dev/markdown-lint@v1
-#        with:
-#          config: '.markdownlint.json'
-#          args: '**/*.md'
-#          ignore: 'reference_code'
+        run: go test -run Upstream ./tools/... ./pkg/...

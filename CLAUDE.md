@@ -143,10 +143,14 @@ go build ./tools/seqtk/cmd/seqtk                  # build a single tool binary
 go run ./tools/seqtk/cmd/seqtk comp file.fasta    # run a tool without installing
 ```
 
-CI (`.github/workflows/ci.yml`) runs: `gofmt -l`, `go vet ./...`,
-`go test -race -coverprofile=... ./...`, `go build ./...`, and markdown lint
-(`**/*.md`). Keep markdown well-formed. Note: CI pins Go 1.21 while `go.mod`
-declares 1.24.9 — stick to language/stdlib features available in 1.21.
+CI (`.github/workflows/ci.yml`) runs on every push to `main` and every PR
+targeting `main`: `gofmt -l`, `go vet ./...`, `go test -race -coverprofile=...
+./...`, `go build ./...`, markdown lint (`**/*.md`), and a live
+**upstream-parity** job that builds htslib/bcftools/samtools from the submodules
+and runs the `*Upstream*` parity tests against them (the independent,
+non-self-reported re-execution of the byte-exact gate). Keep markdown
+well-formed. The Go toolchain is read from `go.mod` via `go-version-file`, so it
+matches the declared version (currently 1.24.9) — there is no separate 1.21 pin.
 
 ## Conventions
 
