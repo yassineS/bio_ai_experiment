@@ -34,22 +34,32 @@ jobs:
       - name: go vet
         run: go vet ./...
 
-  # Coverage over the whole module WITHOUT -race. Live-parity tests skip when
-  # they cannot build their upstream binary (hermetic runner); the upstream-parity
-  # job enforces them. -race is applied separately (the `race` job) to the
-  # concurrent code, because -race makes the sequential tool-parity suites
-  # (mosdepth/samtools) exceed the test timeout for no race-coverage benefit.
+  # Coverage over the whole module WITHOUT -race. The tool test suites are NOT
+  # hermetic: their live-parity helpers build the upstream binary on demand and
+  # compare against it, so the job checks out the (11 kept) submodules and installs
+  # the C build deps — WITHOUT libdeflate, so htslib uses the zlib deflate backend
+  # the parity goldens were generated against (libdeflate changes BGZF bytes).
+  # -race is applied separately (the `race` job) to the concurrent code, because
+  # -race makes the sequential tool-parity suites (mosdepth/samtools) exceed the
+  # test timeout for no race-coverage benefit.
   test:
     name: test + cover
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: actions/setup-go@v5
         with:
           go-version-file: 'go.mod'
           cache: true
+      - name: Install upstream build dependencies (no libdeflate — see above)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf automake libtool \
+            pkg-config perl zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev
       - name: go test
-        run: go test -coverprofile=coverage.txt -covermode=atomic -timeout 25m ./...
+        run: go test -coverprofile=coverage.txt -covermode=atomic -timeout 35m ./...
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         if: success()
@@ -58,20 +68,24 @@ jobs:
           fail_ci_if_error: false
 
   # Race detector on the concurrent Go code (pkg/htsgo: the parallel BGZF
-  # reader/writer and threaded readers) — hermetic and fast. The tool packages
-  # are sequential parity harnesses with no concurrency to race-check, and are
-  # ~15-20x slower under -race, so they are covered by the `test` job instead.
+  # reader/writer and threaded readers). Submodules are checked out because some
+  # pkg tests (e.g. the CRAM codec) read vendored test vectors from a submodule.
+  # The tool packages are sequential parity harnesses with no concurrency to
+  # race-check and are ~15-20x slower under -race, so they are covered by the
+  # `test` job instead.
   race:
     name: race (pkg)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: actions/setup-go@v5
         with:
           go-version-file: 'go.mod'
           cache: true
       - name: go test -race
-        run: go test -race -timeout 15m ./pkg/...
+        run: go test -race -timeout 20m ./pkg/...
 
 
   build:

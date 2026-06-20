@@ -75,7 +75,7 @@ func upstreamBcftoolsCsqSlice4(t *testing.T) string {
 		upstreamBcftoolsCsqSlice4Bin = p
 	})
 	if upstreamBcftoolsCsqSlice4Err != nil {
-		t.Fatalf("upstream bcftools unavailable: %v", upstreamBcftoolsCsqSlice4Err)
+		t.Skipf("upstream bcftools unavailable: %v", upstreamBcftoolsCsqSlice4Err)
 	}
 	return upstreamBcftoolsCsqSlice4Bin
 }

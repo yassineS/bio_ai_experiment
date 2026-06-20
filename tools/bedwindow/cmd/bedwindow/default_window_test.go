@@ -52,7 +52,7 @@ func upstreamBedtools(t *testing.T) string {
 		upstreamPath = bin
 	})
 	if upstreamErr != nil || upstreamPath == "" {
-		t.Fatalf("upstream bedtools unavailable: %v", upstreamErr)
+		t.Skipf("upstream bedtools unavailable: %v", upstreamErr)
 	}
 	return upstreamPath
 }
