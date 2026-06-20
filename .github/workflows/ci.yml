@@ -131,6 +131,36 @@ jobs:
       - name: go build
         run: go build ./...
 
+  # Cross-platform validation on macOS (Darwin/arm64). The tools are pure Go
+  # (cgo-free), so this guards against platform-specific breakage: build tags,
+  # syscall/path/endianness assumptions, and anything that compiles on Linux but
+  # not Darwin. It runs `go test -short`, which skips the live-upstream parity
+  # tests (those build the upstream C tools and compare byte-for-byte against
+  # them — the upstream binaries link a different system zlib/libc on macOS, so
+  # their compressed-output/`%g` bytes legitimately differ from the Linux-built
+  # goldens). The hermetic, pure-Go unit/snapshot tests DO run here, so Darwin
+  # gets real test coverage; the byte-exact parity gate stays on the Linux jobs.
+  # No C build deps are needed because `-short` builds no upstream binary.
+  macos:
+    name: macOS (build + short tests)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Some hermetic tests read vendored corpora from submodules (e.g. the
+          # CRAM codec vectors); they are pure-Go and run under -short.
+          submodules: recursive
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: go vet
+        run: go vet ./...
+      - name: go build
+        run: go build ./...
+      - name: go test (short — hermetic only; live-upstream parity skipped)
+        run: go test -short -timeout 25m ./...
+
   markdown-lint:
     name: markdown lint
     runs-on: ubuntu-latest

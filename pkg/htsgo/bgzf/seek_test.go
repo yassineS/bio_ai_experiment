@@ -25,6 +25,9 @@ var (
 
 func upstreamHtslibBgzipGzi(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	upstreamBgzipGziOnce.Do(func() {
 		htslibDir, err := filepath.Abs("../../../reference_code/htslib")
 		if err != nil {

@@ -52,6 +52,9 @@ var (
 // t.Fatalf with an actionable message.
 func buildRolloutHarness(t *testing.T) rolloutHarness {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	upstreamBcftoolsCliRolloutOnce.Do(func() {
 		tmp, err := os.MkdirTemp("", "bcftools-cli-rollout-*")
 		if err != nil {

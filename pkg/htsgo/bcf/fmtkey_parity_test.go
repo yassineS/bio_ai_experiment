@@ -25,6 +25,9 @@ var (
 
 func upstreamBcftoolsFmtKey(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	upstreamBcftoolsOnce.Do(func() {
 		bcfDir, err := filepath.Abs("../../../reference_code/bcftools")
 		if err != nil {

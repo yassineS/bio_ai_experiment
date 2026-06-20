@@ -30,6 +30,9 @@ var (
 
 func upstreamHtslibTabix(t *testing.T) (tabixBin, bgzipBin string) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	upstreamOnce.Do(func() {
 		root, err := repoRoot()
 		if err != nil {

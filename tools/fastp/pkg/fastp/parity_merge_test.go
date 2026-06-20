@@ -34,6 +34,9 @@ var (
 // against the real upstream, never skip.
 func ensureUpstreamFastpMerge(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	upstreamFastpMergeOnce.Do(func() {
 		dir, err := filepath.Abs(filepath.Join("..", "..", "..", "..", "reference_code", "fastp"))
 		if err != nil {

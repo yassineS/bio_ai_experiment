@@ -70,6 +70,9 @@ var upstreamBcftoolsMpileupIndelOnce upstreamBcftoolsMpileupIndelState
 // the caller can t.Fatalf.
 func upstreamBcftoolsMpileupIndel(t *testing.T) (bin string, srcMissing bool) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	s := &upstreamBcftoolsMpileupIndelOnce
 	s.once.Do(func() {
 		root, err := filepath.Abs(filepath.Join("..", "..", "..", "..", "reference_code", "bcftools"))

@@ -42,6 +42,9 @@ func run(dir, name string, args ...string) ([]byte, error) {
 // than a silently skipped test.
 func upstreamBcftools(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	bcftoolsBinOnce.Do(func() {
 		bcftoolsBinPath, bcftoolsBinErr = buildBcftools()
 	})

@@ -23,6 +23,9 @@ var (
 
 func upstreamBedtools(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	upstreamOnce.Do(func() {
 		_, file, _, _ := runtime.Caller(0)
 		dir := filepath.Dir(file)

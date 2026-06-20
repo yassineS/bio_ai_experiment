@@ -160,6 +160,9 @@ var (
 // rather than a silently-skipped test.
 func upstreamBcftoolsMendelian2(t *testing.T) (bin, pluginDir string) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	upstreamBcftoolsMendelian2Once.Do(func() {
 		root := repoRootForMendelian2(t)
 		bin := filepath.Join(root, "reference_code", "bcftools", "bcftools")

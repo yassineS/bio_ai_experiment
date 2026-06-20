@@ -59,6 +59,9 @@ var upstreamSamtoolsOnce struct {
 // An already-built reference_code/samtools/samtools is reused as-is.
 func upstreamSamtoolsBinary(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	root := repoRootForTest(t)
 	upstreamSamtoolsOnce.Do(func() {
 		upstreamSamtoolsOnce.path, upstreamSamtoolsOnce.err = buildUpstreamSamtools(root)

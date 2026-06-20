@@ -49,6 +49,9 @@ func repoRoot(t *testing.T) string {
 // binary and its `htsutil` helper.
 func upstream(t *testing.T) (bedtools, htsutil string) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	upstreamOnce.Do(func() {
 		root := repoRoot(t)
 		dir := filepath.Join(root, "reference_code", "bedtools")

@@ -24,6 +24,9 @@ var (
 
 func upstreamSamtoolsCram(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	upstreamSamtoolsCramOnce.Do(func() {
 		samDir, err := filepath.Abs("../../../reference_code/samtools")
 		if err != nil {

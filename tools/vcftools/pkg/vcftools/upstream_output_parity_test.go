@@ -48,6 +48,9 @@ var errUpstreamNotInitialised = errors.New("reference_code/vcftools submodule no
 
 func upstreamVcftools(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	upstreamVcftoolsOnce.Do(func() {
 		upstreamVcftoolsPath, upstreamVcftoolsErr = buildUpstreamVcftools()
 	})
