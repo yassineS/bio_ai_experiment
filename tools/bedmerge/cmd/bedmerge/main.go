@@ -63,7 +63,8 @@ Examples:
 
 Notes:
   - Coordinates are 0-based, half-open [start, end)
-  - Input does not need to be pre-sorted; bedmerge sorts internally
+  - Input must be coordinate-sorted (chrom, then start), like bedtools merge;
+    out-of-order or inconsistent-field-count records are rejected
   - Adjacent (book-ended) intervals are merged by default
 `
 
@@ -219,6 +220,7 @@ func run(args []string) int {
 		ColumnOps:    columnOps,
 		Precision:    precision,
 		Warn:         os.Stderr,
+		Filename:     input,
 		OutputFields: bedmerge.OutputFields{
 			Count:    showCount,
 			BedGraph: bedGraph,
@@ -248,7 +250,22 @@ func run(args []string) int {
 // (stranded-VCF, bad -S argument) and a generic message otherwise.
 func reportMergeError(err error, input string) {
 	var bamErr *bedmerge.BAMColumnError
+	var fieldErr *bedmerge.FieldCountError
+	var sortErr *bedmerge.SortOrderError
 	switch {
+	case errors.As(err, &sortErr):
+		// Upstream prints the message and the offending record on separate lines.
+		fmt.Fprintf(os.Stderr,
+			"Error: Sorted input specified, but the file %s has the following out of order record\n%s\n",
+			sortErr.Filename, sortErr.Line)
+	case errors.As(err, &fieldErr):
+		if fieldErr.TypeChecker {
+			fmt.Fprintln(os.Stderr, "Error: Type checker found wrong number of fields while tokenizing data line.")
+			fmt.Fprintln(os.Stderr, `Perhaps you have extra TAB at the end of your line? Check with "cat -t"`)
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: line number %d of file %s has %d fields, but %d were expected.\n",
+				fieldErr.LineNum, fieldErr.Filename, fieldErr.Got, fieldErr.Want)
+		}
 	case errors.As(err, &bamErr):
 		if bamErr.Flags {
 			fmt.Fprintln(os.Stderr, "***** ERROR: Requested column 2 of a BAM file, which is the Flags field.")

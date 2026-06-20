@@ -88,7 +88,7 @@ func (t Target) resolve(cacheDir string) (resolvedTarget, error) {
 // stdin. timeout bounds the run; exceeding it sets TimedOut.
 func runOneSide(bin string, template []string, subcommand string, prependSub bool,
 	input []byte, dir string, timeout time.Duration, env []string) RunOutcome {
-	args, usesFile := resolveArgs(template, dir, input)
+	args, usesFile, inputPath := resolveArgs(template, dir, input)
 	if prependSub && subcommand != "" {
 		args = append([]string{subcommand}, args...)
 	}
@@ -107,7 +107,7 @@ func runOneSide(bin string, template []string, subcommand string, prependSub boo
 	cmd.Stderr = &errb
 	err := cmd.Run()
 
-	res := RunOutcome{Stdout: out.Bytes(), Stderr: errb.Bytes()}
+	res := RunOutcome{Stdout: out.Bytes(), Stderr: errb.Bytes(), inputPath: inputPath}
 	if ctx.Err() == context.DeadlineExceeded {
 		res.TimedOut = true
 		return res
@@ -134,20 +134,24 @@ func runOneSide(bin string, template []string, subcommand string, prependSub boo
 }
 
 // resolveArgs substitutes "{in}" in template with a temp-file path holding
-// input (written under dir). It reports whether a file was used; if no "{in}"
-// token appears the input is meant for stdin and usesFile is false.
-func resolveArgs(template []string, dir string, input []byte) (args []string, usesFile bool) {
+// input (written under dir). It reports whether a file was used (usesFile) and
+// the substituted temp-file path (inputPath, empty for stdin runs). The input
+// is written once even when "{in}" appears multiple times (e.g. -a {in} -b
+// {in}), so both occurrences point at the same file.
+func resolveArgs(template []string, dir string, input []byte) (args []string, usesFile bool, inputPath string) {
 	args = make([]string, len(template))
 	for i, a := range template {
 		if a == "{in}" {
-			path := writeTemp(dir, input)
-			args[i] = path
+			if inputPath == "" {
+				inputPath = writeTemp(dir, input)
+			}
+			args[i] = inputPath
 			usesFile = true
 			continue
 		}
 		args[i] = a
 	}
-	return args, usesFile
+	return args, usesFile, inputPath
 }
 
 // writeTemp writes input to a uniquely named file under dir and returns its
@@ -170,6 +174,13 @@ func writeTemp(dir string, input []byte) string {
 func (rt resolvedTarget) execute(input []byte, dir string, timeout time.Duration, ourEnv []string) (ours, up RunOutcome, class DivergenceClass, detail string) {
 	ours = runOneSide(rt.ourBin, rt.ourTemplate(), rt.Subcommand, rt.UsesSubcommand, input, dir, timeout, ourEnv)
 	up = runOneSide(rt.upBin, rt.upTemplate(), rt.Subcommand, true, input, dir, timeout, nil)
+	// Each side wrote the input to its own temp file; a tool that echoes that
+	// path in a diagnostic would otherwise diverge on the path token alone.
+	// Rewrite each side's own path to a common placeholder before classifying.
+	ours.Stdout = normalizePath(ours.Stdout, ours.inputPath)
+	ours.Stderr = normalizePath(ours.Stderr, ours.inputPath)
+	up.Stdout = normalizePath(up.Stdout, up.inputPath)
+	up.Stderr = normalizePath(up.Stderr, up.inputPath)
 	class, detail = Diff(ours, up)
 	return ours, up, class, detail
 }

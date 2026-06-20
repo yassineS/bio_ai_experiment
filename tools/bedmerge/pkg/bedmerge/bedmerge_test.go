@@ -2,6 +2,7 @@ package bedmerge
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -34,11 +35,12 @@ chr1	300	400
 
 func TestMergeStrandFilter(t *testing.T) {
 	// Mixed strands: only the requested strand survives, then a positional
-	// merge runs over the survivors (BED3 output).
+	// merge runs over the survivors (BED3 output). Input must be sorted by
+	// start, which upstream bedtools merge (and now bedmerge) requires.
 	input := "chr1\t10\t50\ta\t0\t+\n" +
 		"chr1\t20\t60\tb\t0\t-\n" +
-		"chr1\t40\t80\tc\t0\t+\n" +
-		"chr1\t30\t70\td\t0\t.\n"
+		"chr1\t30\t70\td\t0\t.\n" +
+		"chr1\t40\t80\tc\t0\t+\n"
 
 	plus, err := mergeToString(input, MergeOptions{StrandFilter: "+"})
 	if err != nil {
@@ -229,29 +231,25 @@ chr1	350	450`
 }
 
 func TestMergeUnsorted(t *testing.T) {
-	// Input is not sorted - should still work
-	input := `chr1	300	400
-chr1	100	200
-chr1	150	250`
-
-	expected := `chr1	100	250
-chr1	300	400
-`
+	// Upstream `bedtools merge` requires coordinate-sorted input and rejects an
+	// out-of-order record with a SortOrderError; bedmerge matches that. Here the
+	// second record (start 100) is before the first (start 300) on chr1.
+	input := "chr1\t300\t400\nchr1\t100\t200\nchr1\t150\t250\n"
 
 	reader := strings.NewReader(input)
 	var buf bytes.Buffer
 
-	count, err := Merge(reader, &buf, MergeOptions{})
-	if err != nil {
-		t.Fatalf("Merge failed: %v", err)
+	_, err := Merge(reader, &buf, MergeOptions{Filename: "in.bed"})
+	var sortErr *SortOrderError
+	if !errors.As(err, &sortErr) {
+		t.Fatalf("expected *SortOrderError for unsorted input, got %v", err)
 	}
-
-	if count != 2 {
-		t.Errorf("Expected 2 merged intervals, got %d", count)
+	if sortErr.Filename != "in.bed" {
+		t.Errorf("SortOrderError filename = %q, want in.bed", sortErr.Filename)
 	}
-
-	if buf.String() != expected {
-		t.Errorf("Output mismatch.\nExpected:\n%s\nGot:\n%s", expected, buf.String())
+	// Upstream prints the offending record (the out-of-order chr1 100 200).
+	if sortErr.Line != "chr1\t100\t200" {
+		t.Errorf("SortOrderError line = %q, want chr1\\t100\\t200", sortErr.Line)
 	}
 }
 

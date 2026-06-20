@@ -34,6 +34,28 @@ type RunOutcome struct {
 	// TimedOut reports the run exceeded the per-invocation deadline; treated like
 	// a crash for classification (it indicates a hang on adversarial input).
 	TimedOut bool
+	// inputPath is the temp file the input was written to for this side (empty
+	// for stdin runs). Each side gets a distinct temp file, so tools that echo
+	// their -i argument in an error message (e.g. bedtools merge's sort/field
+	// diagnostics) would otherwise diverge purely on the path token. The
+	// per-target driver normalizes this path to a fixed placeholder before
+	// classifying, so only a genuine wording difference is compared.
+	inputPath string
+}
+
+// inputPathPlaceholder is the token both sides' input file paths are rewritten
+// to before stderr/stdout comparison, so a diagnostic that legitimately echoes
+// the input file name does not register as a divergence on the path alone.
+const inputPathPlaceholder = "<INPUT>"
+
+// normalizePath returns a copy of out with every occurrence of path (the side's
+// own temp input file) replaced by inputPathPlaceholder. A nil/empty path or
+// output is returned unchanged.
+func normalizePath(out []byte, path string) []byte {
+	if len(out) == 0 || path == "" {
+		return out
+	}
+	return bytes.ReplaceAll(out, []byte(path), []byte(inputPathPlaceholder))
 }
 
 // terminal reports whether the outcome ended abnormally (crash or timeout).
