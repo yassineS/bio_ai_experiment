@@ -20,6 +20,11 @@ package tabix
 // 4681 + 32768 = 37449.
 const MaxBin = 37449
 
+// BAINLvls is the number of levels below the root in the BAI/default-CSI bin
+// hierarchy (levels 1..5). It is htslib's n_lvls for min_shift 14, depth 5
+// and is the depth compress_binning walks when folding small bins upward.
+const BAINLvls = 5
+
 // TileSize is the linear index granularity: one entry per 16,384 bp.
 const TileSize = 1 << 14
 

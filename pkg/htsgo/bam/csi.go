@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 
 	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
@@ -49,11 +48,13 @@ type CSIIndex struct {
 }
 
 // MetaBinCSI returns the pseudo-bin number for a CSI of the given depth.
-// htslib places the meta pseudo-bin one past the last regular bin, i.e.
-// at the total regular-bin count: sum of 8^k for k = 0..depth.
+// htslib places the meta pseudo-bin one past the last regular bin: with
+// n_bins regular bins numbered 0..n_bins-1, META_BIN(idx) == n_bins + 1.
+// BinLimit() is the regular-bin count (n_bins), so the meta bin is
+// BinLimit() + 1.
 func MetaBinCSI(minShift, depth int32) uint32 {
 	c := tabix.NewCSI(minShift, depth)
-	return c.BinLimit()
+	return c.BinLimit() + 1
 }
 
 // csiRefBuilder is the in-progress per-reference state for the CSI
@@ -68,7 +69,11 @@ func MetaBinCSI(minShift, depth int32) uint32 {
 // first locus the bin spans), including large records that overlap a
 // bin's left edge yet are assigned to a coarser parent bin.
 type csiRefBuilder struct {
-	bins      map[uint32]*tabix.CSIBin
+	bins map[uint32]*tabix.CSIBin
+	// order records bin IDs in first-appearance (insertion) order so Finish
+	// can replay htslib's khash insertion sequence and reproduce its on-disk
+	// bin ordering byte-for-byte.
+	order     []uint32
 	linear    []uint64
 	firstVOff uint64
 	lastVOff  uint64
@@ -143,6 +148,7 @@ func (b *CSIBuilder) AddRecord(refID int, beg, end int64, vBeg, vEnd uint64, map
 	if !ok {
 		bin = &tabix.CSIBin{ID: binID}
 		ref.bins[binID] = bin
+		ref.order = append(ref.order, binID)
 	}
 	if n := len(bin.Chunks); n > 0 && uint64(bin.Chunks[n-1].End) >= vBeg {
 		if tabix.VOffset(vEnd) > bin.Chunks[n-1].End {
@@ -223,31 +229,55 @@ func loffsetForBin(binID uint32, depth int32, linear []uint64) tabix.VOffset {
 // is the spec-defined loffset and never exceeds vBeg of any record whose
 // span overlaps the bin's region.
 func (b *CSIBuilder) Finish() *CSIIndex {
-	metaBin := b.csi.BinLimit()
+	nBins := b.csi.BinLimit()
+	metaBin := nBins + 1
 	b.csi.NoCoor = b.noCoor
 	b.csi.Refs = make([]tabix.CSIRef, b.totalRefs)
 	for i, ref := range b.refs {
-		bins := make([]tabix.CSIBin, 0, len(ref.bins)+1)
-		for _, bb := range ref.bins {
-			cb := *bb
-			cb.LOffset = loffsetForBin(cb.ID, b.csi.Depth, ref.linear)
-			bins = append(bins, cb)
+		// Assemble bins in first-appearance (insertion) order, then append
+		// the meta pseudo-bin last, mirroring htslib's khash insertion
+		// order. OrderBins reproduces htslib's khash iteration order and
+		// compress_binning so the serialised .csi is byte-identical to
+		// `samtools index -c`. Each surviving bin's loffset is the
+		// linear-index value of its leftmost finest-level tile (see
+		// loffsetForBin), which compress_binning preserves on the parent
+		// when a small child bin is folded in.
+		inserted := make([]tabix.BinEntry, 0, len(ref.order)+1)
+		for _, id := range ref.order {
+			bb := ref.bins[id]
+			chunks := make([]tabix.BinChunk, len(bb.Chunks))
+			for j, c := range bb.Chunks {
+				chunks[j] = tabix.BinChunk{Beg: c.Beg, End: c.End}
+			}
+			inserted = append(inserted, tabix.BinEntry{
+				ID:      id,
+				LOffset: loffsetForBin(id, b.csi.Depth, ref.linear),
+				Chunks:  chunks,
+			})
 		}
 		if ref.haveOff || ref.mapped > 0 || ref.unmapped > 0 {
-			// The pseudo-bin LOffset is unused; its two chunks carry
-			// (firstVOff, lastVOff) and (mapped, unmapped) exactly as the
-			// BAI meta pseudo-bin does.
-			meta := tabix.CSIBin{
+			// The pseudo-bin LOffset is 0: htslib's update_loff sets loff = 0
+			// for every bin whose key is >= n_bins (the meta pseudo-bin). Its
+			// two chunks carry (firstVOff, lastVOff) and (mapped, unmapped)
+			// exactly as the BAI meta pseudo-bin does.
+			inserted = append(inserted, tabix.BinEntry{
 				ID:      metaBin,
-				LOffset: tabix.VOffset(ref.firstVOff),
-				Chunks: []tabix.CSIChunk{
+				LOffset: 0,
+				Chunks: []tabix.BinChunk{
 					{Beg: tabix.VOffset(ref.firstVOff), End: tabix.VOffset(ref.lastVOff)},
 					{Beg: tabix.VOffset(ref.mapped), End: tabix.VOffset(ref.unmapped)},
 				},
-			}
-			bins = append(bins, meta)
+			})
 		}
-		sort.Slice(bins, func(a, c int) bool { return bins[a].ID < bins[c].ID })
+		ordered := tabix.OrderBins(inserted, int(b.csi.Depth), nBins, metaBin)
+		bins := make([]tabix.CSIBin, len(ordered))
+		for j, e := range ordered {
+			chunks := make([]tabix.CSIChunk, len(e.Chunks))
+			for k, c := range e.Chunks {
+				chunks[k] = tabix.CSIChunk{Beg: c.Beg, End: c.End}
+			}
+			bins[j] = tabix.CSIBin{ID: e.ID, LOffset: e.LOffset, Chunks: chunks}
+		}
 		b.csi.Refs[i] = tabix.CSIRef{Bins: bins}
 	}
 	return &CSIIndex{CSI: b.csi}
@@ -328,7 +358,7 @@ func ReadCSIFile(path string) (*CSIIndex, error) {
 // MetaCounts returns the (mapped, unmapped) counts stored in the CSI
 // pseudo-bin for the given reference, or (0, 0, false) when absent.
 func (idx *CSIIndex) MetaCounts(refID int) (mapped, unmapped uint64, ok bool) {
-	metaBin := idx.CSI.BinLimit()
+	metaBin := idx.CSI.BinLimit() + 1
 	if refID < 0 || refID >= len(idx.CSI.Refs) {
 		return 0, 0, false
 	}
@@ -344,7 +374,7 @@ func (idx *CSIIndex) MetaCounts(refID int) (mapped, unmapped uint64, ok bool) {
 // in the CSI pseudo-bin for the given reference, or (0, 0, false) when
 // absent.
 func (idx *CSIIndex) MetaBounds(refID int) (first, last uint64, ok bool) {
-	metaBin := idx.CSI.BinLimit()
+	metaBin := idx.CSI.BinLimit() + 1
 	if refID < 0 || refID >= len(idx.CSI.Refs) {
 		return 0, 0, false
 	}

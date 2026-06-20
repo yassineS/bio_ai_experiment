@@ -544,17 +544,40 @@ func (idx *Index) Write(w io.Writer) error {
 		// (n_mapped, n_unmapped) record counts. Append it for Build-produced
 		// indexes (parsed indexes already carry it in Bins).
 		bins := ref.Bins
-		if idx.synthMeta && ref.metaSet {
-			bins = append(append([]Bin(nil), bins...), Bin{
-				ID: MetaBinID,
-				Chunks: []Chunk{
-					{Beg: ref.metaOffBeg, End: ref.metaOffEnd},
-					{Beg: VOffset(ref.nMapped), End: VOffset(0)},
-				},
-			})
+		if idx.synthMeta {
+			// Build-produced index: ref.Bins is in first-appearance
+			// (insertion) order. Replay htslib's khash insertion — regular
+			// bins in that order, then the meta pseudo-bin last — and run
+			// OrderBins to reproduce htslib's khash iteration order and
+			// compress_binning, so the serialised .tbi is byte-identical to
+			// `tabix` / `bcftools index`.
+			inserted := make([]BinEntry, 0, len(ref.Bins)+1)
+			for _, b := range ref.Bins {
+				chunks := make([]BinChunk, len(b.Chunks))
+				for j, c := range b.Chunks {
+					chunks[j] = BinChunk{Beg: c.Beg, End: c.End}
+				}
+				inserted = append(inserted, BinEntry{ID: b.ID, Chunks: chunks})
+			}
+			if ref.metaSet {
+				inserted = append(inserted, BinEntry{
+					ID: MetaBinID,
+					Chunks: []BinChunk{
+						{Beg: ref.metaOffBeg, End: ref.metaOffEnd},
+						{Beg: VOffset(ref.nMapped), End: VOffset(0)},
+					},
+				})
+			}
+			ordered := OrderBins(inserted, BAINLvls, MaxBin, MetaBinID)
+			bins = make([]Bin, len(ordered))
+			for j, e := range ordered {
+				chunks := make([]Chunk, len(e.Chunks))
+				for k, c := range e.Chunks {
+					chunks[k] = Chunk{Beg: c.Beg, End: c.End}
+				}
+				bins[j] = Bin{ID: e.ID, Chunks: chunks}
+			}
 		}
-		// Sort bins by ID for stable output.
-		sort.Slice(bins, func(a, b int) bool { return bins[a].ID < bins[b].ID })
 		if err := binary.Write(bw, binary.LittleEndian, int32(len(bins))); err != nil {
 			return err
 		}

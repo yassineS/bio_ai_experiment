@@ -9,6 +9,7 @@ import (
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/cram"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix"
 )
 
 // IndexOptions configures the index builder. The zero value selects the
@@ -42,7 +43,23 @@ func Index(in io.Reader, out io.Writer, opts IndexOptions) error {
 
 	hdr := br.Header()
 	if opts.SelectCSI {
-		idx, err := bam.BuildCSI(br, len(hdr.Refs), int32(opts.CSIMinShift), bam.DefaultCSIDepth)
+		// htslib's sam_index picks the CSI hierarchy depth dynamically from
+		// the longest reference (hts_adjust_csi_settings) starting from
+		// min_shift 14 (or the user's -m value) and n_lvls 0 — it does NOT
+		// always use the BAI-equivalent depth 5. Reproduce that so the .csi
+		// is byte-identical to `samtools index -c`.
+		minShift := int32(opts.CSIMinShift)
+		if minShift <= 0 {
+			minShift = bam.DefaultCSIMinShift
+		}
+		var maxLen int64
+		for _, r := range hdr.Refs {
+			if int64(r.Length) > maxLen {
+				maxLen = int64(r.Length)
+			}
+		}
+		minShift, depth := tabix.AdjustCSISettings(maxLen, minShift)
+		idx, err := bam.BuildCSI(br, len(hdr.Refs), minShift, depth)
 		if err != nil {
 			return err
 		}

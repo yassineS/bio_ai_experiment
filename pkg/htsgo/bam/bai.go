@@ -56,7 +56,11 @@ type BAIIndex struct {
 // baiRefBuilder is the in-progress per-reference state used by the BAI
 // builder while it streams records.
 type baiRefBuilder struct {
-	bins   map[uint32]*BAIBin
+	bins map[uint32]*BAIBin
+	// order records bin IDs in first-appearance (insertion) order so Finish
+	// can replay htslib's khash insertion sequence and reproduce its on-disk
+	// bin ordering byte-for-byte.
+	order  []uint32
 	linear []uint64
 	// firstVOff and lastVOff record the smallest and largest virtual offsets
 	// of any mapped record on this reference. The "pseudo-bin" stores them
@@ -136,6 +140,7 @@ func (b *BAIBuilder) AddRecord(refID, beg, end int, vBeg, vEnd uint64, mapped bo
 	if !ok {
 		bin = &BAIBin{BinID: binID}
 		ref.bins[binID] = bin
+		ref.order = append(ref.order, binID)
 	}
 	if n := len(bin.Chunks); n > 0 && bin.Chunks[n-1].End >= vBeg {
 		// Merge contiguous / overlapping chunks. This both keeps the chunk
@@ -186,23 +191,37 @@ func (b *BAIBuilder) Finish() *BAIIndex {
 				seen = true
 			}
 		}
-		// Bin slice — sort by ID for deterministic output.
-		bins := make([]BAIBin, 0, len(ref.bins)+1)
-		for _, bb := range ref.bins {
-			bins = append(bins, *bb)
+		// Assemble bins in first-appearance (insertion) order, then append
+		// the meta pseudo-bin last, exactly as htslib inserts them into its
+		// per-reference khash. OrderBins then reproduces htslib's khash
+		// iteration order and compress_binning so the serialised bin list is
+		// byte-identical to `samtools index`.
+		inserted := make([]tabix.BinEntry, 0, len(ref.order)+1)
+		for _, id := range ref.order {
+			bb := ref.bins[id]
+			chunks := make([]tabix.BinChunk, len(bb.Chunks))
+			for j, c := range bb.Chunks {
+				chunks[j] = tabix.BinChunk{Beg: tabix.VOffset(c.Beg), End: tabix.VOffset(c.End)}
+			}
+			inserted = append(inserted, tabix.BinEntry{ID: id, Chunks: chunks})
 		}
-		sort.Slice(bins, func(a, b int) bool { return bins[a].BinID < bins[b].BinID })
 		// Inject the meta pseudo-bin if we saw at least one record on this
 		// ref. htslib emits it unconditionally for refs touched by any
 		// record (mapped or unmapped on this ref).
 		if ref.haveOff || ref.mapped > 0 || ref.unmapped > 0 {
-			meta := BAIBin{BinID: MetaBin, Chunks: []BAIChunk{
-				{Beg: ref.firstVOff, End: ref.lastVOff},
-				{Beg: ref.mapped, End: ref.unmapped},
-			}}
-			// Insert in sorted position (MetaBin > all regular bins, so
-			// just append).
-			bins = append(bins, meta)
+			inserted = append(inserted, tabix.BinEntry{ID: MetaBin, Chunks: []tabix.BinChunk{
+				{Beg: tabix.VOffset(ref.firstVOff), End: tabix.VOffset(ref.lastVOff)},
+				{Beg: tabix.VOffset(ref.mapped), End: tabix.VOffset(ref.unmapped)},
+			}})
+		}
+		ordered := tabix.OrderBins(inserted, tabix.BAINLvls, tabix.MaxBin, MetaBin)
+		bins := make([]BAIBin, len(ordered))
+		for j, e := range ordered {
+			chunks := make([]BAIChunk, len(e.Chunks))
+			for k, c := range e.Chunks {
+				chunks[k] = BAIChunk{Beg: uint64(c.Beg), End: uint64(c.End)}
+			}
+			bins[j] = BAIBin{BinID: e.ID, Chunks: chunks}
 		}
 		idx.Refs[i] = BAIRef{Bins: bins, Linear: lin}
 	}
@@ -248,11 +267,13 @@ func WriteBAI(w io.Writer, idx *BAIIndex) error {
 			}
 		}
 	}
-	// Optional trailer — htslib emits n_no_coor whenever it is non-zero.
-	if idx.NoCoor > 0 {
-		if err := binary.Write(bw, binary.LittleEndian, idx.NoCoor); err != nil {
-			return err
-		}
+	// Trailer — htslib always emits the n_no_coor field (8 bytes), even when
+	// it is zero (idx_save_core writes it for the in-memory path, and the
+	// on-the-fly BAI writer defers the same 8 bytes to file close). Emit it
+	// unconditionally so the on-disk .bai is byte-identical to `samtools
+	// index`. Our ReadBAI tolerates the field being absent for older inputs.
+	if err := binary.Write(bw, binary.LittleEndian, idx.NoCoor); err != nil {
+		return err
 	}
 	return bw.Flush()
 }

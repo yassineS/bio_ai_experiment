@@ -2,20 +2,31 @@ package edgecases
 
 import (
 	"bytes"
+	"compress/gzip"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
 // TestIndexByteIdentity builds .bai, .csi and .tbi indexes with our tools and
-// with upstream on the *same* bgzipped input, and asserts the index files are
-// byte-identical. Byte-identity depends on (a) identical BGZF block boundaries
-// in the shared input (guaranteed here — both index the same file) and (b) an
-// identical bin/interval layout. A divergence is a real finding: an index that
-// is functionally usable but not byte-identical breaks the "drop-in" promise
-// and signals a bin-list discrepancy.
+// with upstream on the *same* bgzipped input, and asserts the index payloads
+// match. Identity depends on (a) identical BGZF block boundaries in the shared
+// input (guaranteed here — both index the same file) and (b) an identical
+// bin/interval layout, including htslib's khash bin ordering and
+// compress_binning (the formerly-divergent "extra empty bin 4696" came from
+// not reproducing compress_binning). A divergence is a real finding: it
+// signals a bin-list or interval-layout discrepancy.
+//
+// The .bai index is stored uncompressed, so it is compared byte-for-byte. The
+// .csi and .tbi indexes are BGZF-compressed; the DEFLATE backend differs
+// between our writer (klauspost/compress) and upstream htslib (libdeflate/
+// zlib), so the *compressed* bytes are not expected to match even when the
+// index is identical (the same caveat the repo documents for all BGZF output,
+// see docs/PARITY_ROADMAP.md). For those two we therefore compare the
+// BGZF-decompressed index payload, which is the bin/interval layout this test
+// exists to pin.
 func TestIndexByteIdentity(t *testing.T) {
-	t.Skip("PARITY GAP: our index writer emits an extra empty bin (4696) per reference, so .bai/.csi/.tbi are not byte-identical to upstream (region queries return identical counts — functionally equivalent). Regression guard. See docs/PARITY_ROADMAP.md, docs/manuscript/bug_corpus.md.")
 	fix := smallFixtureDir(t)
 	if fix == "" {
 		t.Skip("pipeline/.fixtures/small not present; run the fixture generator")
@@ -48,7 +59,7 @@ func TestIndexByteIdentity(t *testing.T) {
 		upIdx := filepath.Join(dir, "up.csi")
 		mustRun(t, our, "index", "-c", "-o", ourIdx, bam)
 		mustRun(t, up, "index", "-c", "-o", upIdx, bam)
-		assertByteIdentical(t, "CSI", ourIdx, upIdx)
+		assertPayloadIdentical(t, "CSI", ourIdx, upIdx)
 	})
 
 	t.Run("tbi", func(t *testing.T) {
@@ -67,8 +78,43 @@ func TestIndexByteIdentity(t *testing.T) {
 		copyFileTo(t, gz, upGz)
 		mustRun(t, ourTabix, "-p", "vcf", ourGz)
 		mustRun(t, upTabix, "-p", "vcf", upGz)
-		assertByteIdentical(t, "TBI", ourGz+".tbi", upGz+".tbi")
+		assertPayloadIdentical(t, "TBI", ourGz+".tbi", upGz+".tbi")
 	})
+}
+
+// assertPayloadIdentical BGZF/gzip-decompresses both index files and compares
+// the decompressed bytes. It is used for the .csi and .tbi indexes, whose
+// compressed framing legitimately differs between DEFLATE backends while the
+// decoded index payload must be byte-identical.
+func assertPayloadIdentical(t testing.TB, kind, ours, up string) {
+	t.Helper()
+	ob := gunzipFile(t, ours)
+	ub := gunzipFile(t, up)
+	if !bytes.Equal(ob, ub) {
+		t.Errorf("PARITY GAP: %s index payload is not byte-identical to upstream (ours %d bytes, upstream %d bytes; first diff at byte %d).\n"+
+			"  Both indexed the same input, so this is a bin/interval-layout difference, not a BGZF-offset one.",
+			kind, len(ob), len(ub), firstDiff(ob, ub))
+	}
+}
+
+// gunzipFile reads a BGZF/gzip file and returns its decompressed bytes.
+func gunzipFile(t testing.TB, path string) []byte {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer f.Close()
+	gr, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatalf("gzip %s: %v", path, err)
+	}
+	defer gr.Close()
+	b, err := io.ReadAll(gr)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return b
 }
 
 // copyInto copies src into a fresh t.TempDir() and returns the new path, or ""
