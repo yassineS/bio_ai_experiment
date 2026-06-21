@@ -58,3 +58,7 @@ target bedtools-intersect: exitcode-differs found (origin=mutation), minimized 1
 target bedtools-intersect: exitcode-differs found (origin=mutation), minimized 196863->4 bytes
 target bedtools-intersect: exitcode-differs found (origin=mutation), minimized 196868->4 bytes
 target bedtools-intersect: exitcode-differs found (origin=mutation), minimized 196862->4 bytes
+target bgzip-decompress: one-crashed found (origin=mutation), minimized 119464->520 bytes
+target bgzip-decompress: stdout-differs found (origin=mutation), minimized 119462->314 bytes
+target bgzip-decompress: stderr-differs found (origin=structured), minimized 214->1 bytes
+target bgzip-decompress: stderr-differs found (origin=raw), minimized 3->1 bytes
