@@ -55,6 +55,9 @@ func Run(man *fixtures.Manifest, cacheDir string) []Result {
 	out = append(out, e.bamViaCRAM())
 	out = append(out, e.vcfViaBCF())
 	out = append(out, e.fastq())
+	// Explicitly bidirectional ours↔upstream interop for every container format
+	// plus index (.bai/.csi/.tbi) interop. Each skips cleanly without upstream.
+	out = append(out, e.interopChecks()...)
 	return out
 }
 
