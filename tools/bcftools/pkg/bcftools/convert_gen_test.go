@@ -26,6 +26,9 @@ var (
 // performed at most once per test process.
 func upstreamBcftoolsConvertGen(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	upstreamGenOnce.Do(func() {
 		root, err := filepath.Abs(filepath.Join("..", "..", "..", ".."))
 		if err != nil {

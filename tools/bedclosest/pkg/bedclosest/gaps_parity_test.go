@@ -50,6 +50,9 @@ func gapsRepoRoot(t *testing.T) string {
 // sibling packages' builders.
 func upstreamBedtoolsGaps(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	upstreamBedtoolsGapsOnce.Do(func() {
 		root := gapsRepoRoot(t)
 		dir := filepath.Join(root, "reference_code", "bedtools")

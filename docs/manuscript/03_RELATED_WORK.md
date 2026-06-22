@@ -23,7 +23,7 @@ Many primary PDFs were egress-blocked during research; treat every specific perc
   (The Register).** Do **not** cite "260,000 dev-years/hours" (a conflation).
 - **IBM watsonx Code Assistant for Z** (COBOL→Java). `[PR]`, qualitative only; the rigorous
   adjacent item is the eval-methodology preprint *Quality Evaluation of COBOL to Java Code
-  Transformation* (arXiv:2507.23356). 
+  Transformation* (arXiv:2507.23356).
 - **XMainframe** (arXiv:2408.04660), **MainframeBench**, **COBOLEval** — COBOL LLM benchmarks. `[V]`
 
 *Positioning:* all are **same-or-cross-language migration of proprietary code, test-suite-gated,
@@ -88,6 +88,7 @@ shipped CLIs validated byte-for-byte.
 ## 4. AI rewrites of real tools — the novelty verdict ★
 
 **No peer-reviewed byte-exact whole-tool parity result exists (mid-2026).** Closest cases:
+
 - **wedeo** (Claude-built FFmpeg-in-Rust): bit-exact CI on *individual codecs* (H.264 79/79),
   but partial, slower, no whole tool. `[V]` (GitHub/HN)
 - **RustQC** (Seqera, Claude-built): 15 QC tools→1 binary, **byte-identical featureCounts only**,
@@ -153,6 +154,7 @@ ICML'24). Reproducibility: ACM Artifact Review & Badging. Metamorphic testing in
 ## Domain "what's hard" specifics (reviewer-probe list — see also `02 §B`)
 
 Ranked by likelihood of silently breaking byte-exactness (for the failure-modes section):
+
 1. **Float `%g` formatting + QUAL/PL last-ULP rounding** — Go `strconv` vs C `printf` differ in
    shortest-float digits and `inf`/`nan` spelling; glibc vs Go `math` differ at the last ULP.
 2. **CRAM reference-MD5 (M5) handling** — wrong ref → *silent* base corruption (worst class);

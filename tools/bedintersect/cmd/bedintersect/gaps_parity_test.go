@@ -26,6 +26,9 @@ var (
 
 func upstreamBedtoolsGaps(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	upstreamBedtoolsGapsOnce.Do(func() {
 		root, err := repoRoot()
 		if err != nil {

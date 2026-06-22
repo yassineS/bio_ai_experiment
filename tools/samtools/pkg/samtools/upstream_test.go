@@ -42,6 +42,9 @@ func run(dir, name string, args ...string) ([]byte, error) {
 // than a silently skipped test.
 func upstreamSamtools(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	samtoolsBinOnce.Do(func() {
 		samtoolsBinPath, samtoolsBinErr = buildSamtools()
 	})
@@ -54,6 +57,12 @@ func upstreamSamtools(t *testing.T) string {
 // buildSamtools ensures the htslib + samtools submodules are present and
 // built, returning the path to the samtools executable.
 func buildSamtools() (string, error) {
+	// `-short` skips every test that needs the upstream binary (live parity).
+	// Callers turn this error into t.Skip, keeping `go test -short ./...`
+	// hermetic (e.g. the macOS CI job, which builds no upstream tool).
+	if testing.Short() {
+		return "", fmt.Errorf("skipping upstream-binary parity test in -short mode")
+	}
 	root := mustRepoRoot()
 	// Serialise across processes: `go test ./tools/...` runs the bcftools
 	// and samtools test binaries concurrently, and both build into the

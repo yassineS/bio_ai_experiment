@@ -34,6 +34,9 @@ var (
 // non-nil (binary unavailable) and t.Fatalf on any subsequent mismatch.
 func upstreamFastp(t *testing.T) (string, error) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	upstreamFastpOnce.Do(func() {
 		root := filepath.Join("..", "..", "..", "..", "reference_code", "fastp")
 		abs, err := filepath.Abs(filepath.Join(root, "fastp"))

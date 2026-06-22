@@ -52,6 +52,9 @@ func repoRoot(t *testing.T) string {
 // avoid colliding with builders in sibling packages.
 func upstreamBedtools(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	upstreamBedtoolsOnce.Do(func() {
 		root := repoRoot(t)
 		dir := filepath.Join(root, "reference_code", "bedtools")

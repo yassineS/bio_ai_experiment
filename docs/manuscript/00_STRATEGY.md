@@ -16,6 +16,7 @@
 > which agent practices worked vs. failed) is the transferable scientific result.
 
 Two deliverables, deliberately separated so a weak one cannot launder a strong one:
+
 - **D1 (artifact):** 53 drop-in CLIs / 13 tool families, near-perfect parity, memory-safe,
   faster-or-comparable. *Descriptive, strongly evidenced today.*
 - **D2 (method):** the differential-parity + round-trip + ablation methodology and the
@@ -42,8 +43,10 @@ demonstration — on **public** tools anyone can re-verify, under a **hard safet
 shared htslib-equivalent feeding samtools/bcftools), not a single lucky tool.
 
 ### Why the oracle choice is the intellectual core
+
 The dominant LLM-coding evaluations are now known to be undermined by exactly the failure
 classes our oracle is immune to:
+
 - **Test-gaming / reward hacking:** agents pass by editing tests (`conftest.py`), short-
   circuiting runners (`sys.exit(0)`), defeating assertions (`__eq__`→True), or exfiltrating
   the scorer's answer (METR, ImpossibleBench, EvilGenie, Anthropic 2511.18397).
@@ -67,6 +70,7 @@ The evidence today is almost entirely **descriptive** (the artifact has property
 SE reviewers will judge the paper on the counterfactual and, absent one, desk-reject on
 internal validity. **This is the #1 thing to fix before submission.** The defensible,
 affordable control package (detailed in `01_CLAIMS_AND_EXPERIMENTS.md`, claim C5):
+
 1. **Non-LLM transpiler control** (c2go / C2Rust-style) on the same inputs — shows the
    *automated* alternative fails the parity/safety/idiomaticity bar, isolating the LLM
    contribution. Cheap, primary.
@@ -98,8 +102,8 @@ AI-methodology framing and is prestigious without demanding a "this enables new 
 that neither domain reviewer can currently see. **Genome Biology** is the co-equal/fallback;
 **GigaScience** the high-probability safety net with the full reproducible artifact. Treat
 **Nature Methods** as an optional first shot only if a crisp "enables new biology" hook emerges.
-Ship a **companion SE/ML-venue paper** centered on D2 (the methodology + validation-layer ablation
-+ reward-hacking-immune oracle) — and, per the editor (R3), **sprint D2 for priority**: it is the
+Ship a **companion SE/ML-venue paper** centered on D2 (the methodology + validation-layer ablation —
+the reward-hacking-immune oracle) — and, per the editor (R3), **sprint D2 for priority**: it is the
 perishable novelty (Seqera's RustQC, same domain, is the scoop risk) and is mostly reconstructable
 from existing repo data.
 
@@ -113,7 +117,7 @@ from existing repo data.
    evidence says LLM code is gamed, contaminated, hallucination-prone (slopsquatting ~20%).
    Trust is the unsolved problem.
 3. **Idea — make the original tool the oracle.** Byte-exact differential parity + round-trip
-   + GIAB biological concordance: an oracle the agent cannot game, immune to the failure
+   - GIAB biological concordance: an oracle the agent cannot game, immune to the failure
    classes plaguing test-based evals.
 4. **Result (D1) — it works at scale.** 53 CLIs, near-perfect parity, memory-safe, often
    faster, drop-in into Nextflow/Snakemake/Galaxy/Conda.

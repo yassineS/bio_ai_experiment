@@ -42,6 +42,9 @@ var (
 
 func upstreamSamtools(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	upstreamSamtoolsOnce.Do(func() {
 		samDir, err := filepath.Abs(filepath.Join("..", "..", "..", "..", "reference_code", "samtools"))
 		if err != nil {

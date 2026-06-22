@@ -30,6 +30,9 @@ var (
 // fails the test, so CI without the submodule still passes.
 func upstreamBedtoolsOptional(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	upstreamOptOnce.Do(func() {
 		root, err := repoRoot()
 		if err != nil {

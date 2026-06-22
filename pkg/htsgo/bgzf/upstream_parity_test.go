@@ -25,6 +25,9 @@ var (
 // target only. The result is memoised via upstreamBgzipOnce.
 func upstreamHtslibBgzip(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	upstreamBgzipOnce.Do(func() {
 		root := repoRoot(t)
 		htsDir := filepath.Join(root, "reference_code", "htslib")

@@ -70,15 +70,22 @@ The main objectives of this repository are to use AI agents to:
 ## Repository structure
 
 Single Go module at the root (`github.com/yassineS/bio_ai_experiment`); no
-per-tool `go.mod`, no third-party Go dependencies. Reference upstream sources
-are vendored as git submodules under `reference_code/` for parity work.
+per-tool `go.mod`. Third-party Go dependencies are kept to an absolute minimum
+— the standard library and the in-tree `pkg/` libraries are preferred, and the
+only sanctioned externals are `gonum` (linear algebra for the vcftools PCA
+family), `klauspost/compress` (the DEFLATE backend for BGZF/gzip I/O), and
+`ulikunitz/xz` (LZMA decode confined to the CRAM codec layer). Reference
+upstream sources are vendored as git submodules under `reference_code/` for
+parity work.
 
 ```text
 bio_ai_experiment/
-├── go.mod                 # single root module
+├── go.mod                 # single root module (Go 1.24.x)
 ├── pkg/                   # shared libraries
-│   ├── bioformats/        # fasta, fastq, vcf, bed, sam, bcf, iohelper
-│   └── cliflag/           # POSIX short + GNU long flag helpers
+│   ├── htsgo/             # fasta, fastq, vcf, bed, gff, sam, bcf, bam,
+│   │                      #   bgzf, tabix, cram, region, iohelper, …
+│   ├── cliflag/           # POSIX short + GNU long flag helpers
+│   └── cppsort/           # C++-compatible sort helpers for byte-exact parity
 ├── tools/                 # tool ports, one subdir per tool
 │   ├── PORTING_STATUS.md  # per-tool feature status
 │   ├── PARITY_VALIDATION.md  # byte-for-byte audit results
@@ -86,21 +93,28 @@ bio_ai_experiment/
 │       ├── cmd/<tool>/main.go     # CLI entry
 │       ├── pkg/<tool>/            # logic + tests
 │       └── README.md
+├── pipeline/              # validation harnesses: GIAB concordance,
+│                          #   differential fuzzing, conformance + edge cases
 ├── docs/
 │   ├── PARITY_ROADMAP.md      # authoritative gap list
 │   ├── UPSTREAM_BUGS.md       # bugs in originals we do not carry
 │   ├── CLI_CONVENTIONS.md     # CLI rules
+│   ├── manuscript/            # manuscript plan + labeled bug corpus
 │   └── archive/               # historical Phase 0/1 docs
 ├── analysis/                  # tool ranking + research
+├── scripts/                   # repo scripts (e.g. recompute-metrics.sh)
 ├── reference_code/            # upstream sources as submodules (parity work)
 └── .github/agents/            # AI-agent role descriptions
 ```
+
+> The legacy `pkg/bioformats/` package no longer exists — all format parsing
+> moved to `pkg/htsgo/` (the migration completed across PRs A–I).
 
 ## Getting Started
 
 ### Prerequisites
 
-- Go 1.21 or later
+- Go 1.24+ (the exact toolchain is pinned in `go.mod`)
 - Git
 - Basic understanding of bioinformatics tools
 
@@ -144,7 +158,9 @@ go test ./pkg/seqtk
 
 ### Using Shared Libraries
 
-The bioformats library provides reusable parsers for common file formats:
+The `pkg/htsgo` library provides reusable parsers/writers for common file
+formats (FASTA/FASTQ/VCF/BCF/BED/GFF/SAM/BAM/CRAM, plus BGZF/tabix and a
+transparent gzip/BGZF + stdin/stdout I/O helper):
 
 ```bash
 # View library documentation
@@ -153,23 +169,28 @@ go doc github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta
 
 ## Current status
 
-**No port in this repo is at 1:1 feature parity yet.** Every tool below has
-a *working subset* of upstream functionality; the authoritative gap list is
-[`docs/PARITY_ROADMAP.md`](docs/PARITY_ROADMAP.md), and upstream bugs we
-identify but choose not to carry over are tracked in
+The project is **no longer taking on new tools**; the focus is driving the
+tools already started to **100% upstream feature parity** (every flag, input
+format, and edge case), with bug fixes, better docs, and parity tests for
+everything. Many tools are byte-exact against upstream today (the htslib core
+and `seqtk` among them) and the live `upstream-parity` CI job re-checks this on
+every run; the per-tool/per-feature state is tracked in
+[`PROJECT_STATUS.md`](PROJECT_STATUS.md) (summary) and
+[`docs/PARITY_ROADMAP.md`](docs/PARITY_ROADMAP.md) (the authoritative gap
+list). Upstream bugs we identify but choose not to carry over are tracked in
 [`docs/UPSTREAM_BUGS.md`](docs/UPSTREAM_BUGS.md).
 
 ### Shared libraries (`pkg/`)
 
-- `pkg/htsgo/{fasta,fastq,vcf,bed,gff,sam,bcf,bgzf,tabix,bam,region,iohelper}` — parsers, writers,
-  and a transparent gzip/BGZF I/O helper (BGZF auto-detected via the
-  `BC` extra-subfield magic).
+- `pkg/htsgo/{fasta,fastq,vcf,bed,gff,sam,bcf,bam,bgzf,tabix,cram,region,iohelper}`
+  — parsers, writers, and a transparent gzip/BGZF + stdin/stdout I/O helper
+  (BGZF auto-detected via the `BC` extra-subfield magic).
 - `pkg/cliflag` — POSIX short + GNU long flag wiring on a standard
   `flag.FlagSet`.
 
 ### Tools ported
 
-~50 tool ports as of 2026-06. The canonical completion table lives in
+53 drop-in CLIs as of 2026-06. The canonical completion table lives in
 [`PROJECT_STATUS.md`](PROJECT_STATUS.md); [`tools/README.md`](tools/README.md)
 indexes every tool, [`tools/PORTING_STATUS.md`](tools/PORTING_STATUS.md) is the
 per-subcommand feature inventory, and
@@ -220,17 +241,40 @@ corrected on the way (see each PR for details).
 > later wave. For the current per-tool/per-feature state always trust
 > `PROJECT_STATUS.md` and `docs/PARITY_ROADMAP.md`, not this historical table.
 
-`prinseq`, `seqtk`, and `fastp` have **not yet** been parity-validated; the
-common-path tests pass but 1:1 byte-equivalence with upstream is untested.
+Since those original audits, live byte-for-byte parity harnesses have been
+added for far more of the surface — including `seqtk` (glibc `drand48`
+`sample`/`randbase` + Mott `trimfq`) and the `prinseq` corpus — and the
+`pipeline/` validation suites (GIAB concordance, differential fuzzing,
+htslib/htscodecs conformance, and a silent-corruption edge-case battery) extend
+the gate beyond the upstream regression tests. `fastp` remains validated mainly
+on the common path. Per-tool parity status is tracked in
+[`PROJECT_STATUS.md`](PROJECT_STATUS.md) and
+[`docs/PARITY_ROADMAP.md`](docs/PARITY_ROADMAP.md).
 
 ### CI
 
-The CI workflow (`.github/workflows/ci.yml`) is currently a no-op
-(`workflow_dispatch`-only) while the project is in heavy iteration; the full
-job config (`gofmt -l`, `go vet ./...`, `go test -race -cover ./...`,
-`go build ./...`, markdown lint over `**/*.md`) is kept commented in the file
-ready to re-enable. Run those checks locally before pushing and record the
-output in your PR.
+The CI workflow (`.github/workflows/ci.yml`) runs on every push to `main` and
+every PR targeting `main`. Jobs:
+
+- **gofmt + vet** — `gofmt -l` and `go vet ./...`.
+- **test + cover** — `go test -coverprofile … ./...` over the whole module.
+  The tool suites are not hermetic (their live-parity helpers compare against
+  the real upstream binary), so this job pre-builds htslib/bcftools/samtools/
+  bedtools once, serially, before the parallel test run.
+- **race (pkg)** — `go test -race ./pkg/...` for the concurrent code (the
+  parallel BGZF reader/writer and threaded readers).
+- **build** — `go build ./...`.
+- **macOS (build + short tests)** — `go build`/`go vet`/`go test -short ./...`
+  on `macos-latest`: the tools are pure-Go (cgo-free), so this guards Darwin
+  portability while `-short` skips the live-upstream parity tests (whose
+  byte-exact goldens are Linux-built).
+- **markdown lint** — `markdownlint-cli2` over `**/*.md` (excluding
+  `reference_code`).
+- **upstream parity (live)** — the independent, non-self-reported re-execution
+  of the byte-exact gate: builds htslib/bcftools/samtools from the submodules
+  and runs the `*Upstream*` parity tests against them.
+
+Run `gofmt -w .`, `go vet ./...`, and `go test ./...` locally before pushing.
 
 ## Documentation
 

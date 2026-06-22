@@ -60,6 +60,9 @@ func repoRootForAnnotate(t *testing.T) string {
 // any failure so a missing toolchain surfaces as a hard error.
 func upstreamBcftoolsAnnotate(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	root := repoRootForAnnotate(t)
 	upstreamAnnotateOnce.Do(func() {
 		htslib := filepath.Join(root, "reference_code", "htslib")

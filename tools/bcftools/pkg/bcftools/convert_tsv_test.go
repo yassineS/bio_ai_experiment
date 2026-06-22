@@ -34,6 +34,9 @@ var (
 // build runs at most once.
 func upstreamBcftoolsConvertTsv(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	upstreamConvertTsvOnce.Do(func() {
 		repoRoot, err := filepath.Abs(filepath.Join("..", "..", "..", ".."))
 		if err != nil {

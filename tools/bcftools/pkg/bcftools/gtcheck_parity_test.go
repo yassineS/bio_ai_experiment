@@ -43,6 +43,9 @@ var upstreamGtcheckErr error
 // upstream bcftools binary from reference_code/bcftools.
 func upstreamBcftoolsGtcheck(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping upstream-binary parity test in -short mode")
+	}
 	upstreamGtcheckOnce.Do(func() {
 		repo, err := repoRootGtcheck()
 		if err != nil {
