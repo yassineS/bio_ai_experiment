@@ -14,11 +14,18 @@ the manuscript's HEAVY-TIER validation for this repository and commit the result
 artifacts back. Work autonomously; only stop to ask me if a decision is genuinely
 ambiguous or a run fails for a real (non-transient) reason.
 
-DATA ON THIS BOX (paths I am giving you — verify they exist before using):
-  REF   = /ABS/PATH/GRCh38.fa                 # indexed reference (.fa + .fai)
-  BAM   = /ABS/PATH/HG002.GRCh38.wgs.bam       # whole-genome, MULTI-CONTIG, indexed
-  VCF   = /ABS/PATH/HG002.GRCh38.vcf.gz         # bgzipped + indexed (.tbi/.csi)
-  SCRATCH = /ABS/PATH/scratch                   # >= 60 GB free (1 TB if you scale up)
+DATA ON THIS BOX
+
+This box has 250G free total, use that carefully. 
+
+For fasta reference pull from here: https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/release/references/GRCh37/. test samtools indexing.
+
+For testing fastq operations use one untrimmed fastq pair from https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/NA12878/Garvan_NA12878_HG001_HiSeq_Exome/ to test adaptor trimming. use fastp before and afer and compare the trimmed version from the repo.
+
+For BAM operations tests use one of bam files from the same repo pointed above. Test samtools merge etc. with another bam file from the same location. after merging using reference-based cram compression.
+
+For vcf files, use https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/release/AshkenazimTrio/HG002_NA24385_son/NISTv4.2.1/GRCh37/ files.
+
 (If any path is wrong or missing, tell me before proceeding. Do NOT subset to a
 single chromosome — the whole point is MULTI-CONTIG coverage.)
 
