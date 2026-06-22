@@ -139,18 +139,35 @@ func TestParityUsesStripProvenance(t *testing.T) {
 // exit verdicts: matching verdicts PASS, mismatched DIVERGE.
 func TestQuickcheckParityVerdict(t *testing.T) {
 	bam := writeFile(t, "x.bam", "not really a bam")
-	// both /bin/true => both OK => PASS
-	cfgOK := config{bins: binset{oursSamtools: "/bin/true", upSamtools: "/bin/true"},
+	// Use portable fake binaries rather than /bin/true and /bin/false, which
+	// live at /usr/bin (not /bin) on macOS — hardcoding /bin/* made both execs
+	// fail-to-launch there, collapsing the DIVERGE case into "both FAIL".
+	okBin := fakeExit(t, "exit 0")
+	badBin := fakeExit(t, "exit 1")
+	// both succeed => both OK => PASS
+	cfgOK := config{bins: binset{oursSamtools: okBin, upSamtools: okBin},
 		in: inputs{bam: bam}, reps: 1}
 	if res := runCell(cfgOK, quickcheckSpec()); res.Status != "PASS" {
 		t.Fatalf("both-OK quickcheck: status=%q detail=%q", res.Status, res.Detail)
 	}
-	// ours true, upstream false => verdicts differ => DIVERGE
-	cfgDiff := config{bins: binset{oursSamtools: "/bin/true", upSamtools: "/bin/false"},
+	// ours succeeds, upstream fails => verdicts differ => DIVERGE
+	cfgDiff := config{bins: binset{oursSamtools: okBin, upSamtools: badBin},
 		in: inputs{bam: bam}, reps: 1}
 	if res := runCell(cfgDiff, quickcheckSpec()); res.Status != "DIVERGE" {
 		t.Fatalf("mismatched quickcheck: status=%q detail=%q", res.Status, res.Detail)
 	}
+}
+
+// fakeExit writes a tiny executable shell script that ignores its arguments and
+// exits with the given status (e.g. "exit 0" / "exit 1"), returning its path.
+// It stands in for /bin/true and /bin/false portably across Linux and macOS.
+func fakeExit(t *testing.T, body string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "fake")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+	return p
 }
 
 func quickcheckSpec() cellSpec {
