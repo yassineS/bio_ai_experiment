@@ -1,0 +1,1149 @@
+{
+  "scale": "medium",
+  "seed": 1,
+  "generated": "2026-06-22T13:05:58.89759426Z",
+  "results": [
+    {
+      "tool": "samtools",
+      "name": "view_bam_base",
+      "args": [
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1164,
+      "upstream_ms": 643,
+      "timing_ratio": 1.8108312578651788
+    },
+    {
+      "tool": "samtools",
+      "name": "view_bam_flagh",
+      "args": [
+        "{bam}",
+        "-h"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 942,
+      "upstream_ms": 413,
+      "timing_ratio": 2.281107887032009
+    },
+    {
+      "tool": "samtools",
+      "name": "view_bam_flagH",
+      "args": [
+        "{bam}",
+        "-H"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 6,
+      "upstream_ms": 4,
+      "timing_ratio": 1.5304658101783277
+    },
+    {
+      "tool": "samtools",
+      "name": "view_bam_flagc",
+      "args": [
+        "{bam}",
+        "-c"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 528,
+      "upstream_ms": 304,
+      "timing_ratio": 1.7351336327263016
+    },
+    {
+      "tool": "samtools",
+      "name": "view_bam_flagq_20",
+      "args": [
+        "{bam}",
+        "-q",
+        "20"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 980,
+      "upstream_ms": 425,
+      "timing_ratio": 2.301142321707358
+    },
+    {
+      "tool": "samtools",
+      "name": "view_bam_flagq_30",
+      "args": [
+        "{bam}",
+        "-q",
+        "30"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 854,
+      "upstream_ms": 403,
+      "timing_ratio": 2.1142970211771894
+    },
+    {
+      "tool": "samtools",
+      "name": "view_bam_flagf_x2",
+      "args": [
+        "{bam}",
+        "-f",
+        "0x2"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 521,
+      "upstream_ms": 301,
+      "timing_ratio": 1.7293180495948908
+    },
+    {
+      "tool": "samtools",
+      "name": "view_bam_flagf_x10",
+      "args": [
+        "{bam}",
+        "-f",
+        "0x10"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 691,
+      "upstream_ms": 349,
+      "timing_ratio": 1.9784610966916207
+    },
+    {
+      "tool": "samtools",
+      "name": "view_bam_flagF_x100",
+      "args": [
+        "{bam}",
+        "-F",
+        "0x100"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 825,
+      "upstream_ms": 406,
+      "timing_ratio": 2.0317777108449793
+    },
+    {
+      "tool": "samtools",
+      "name": "view_bam_flagF_x10",
+      "args": [
+        "{bam}",
+        "-F",
+        "0x10"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 688,
+      "upstream_ms": 354,
+      "timing_ratio": 1.9419652044515059
+    },
+    {
+      "tool": "samtools",
+      "name": "view_bam_flagL_bed",
+      "args": [
+        "{bam}",
+        "-L",
+        "{bed}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 871,
+      "upstream_ms": 403,
+      "timing_ratio": 2.1590865208236147
+    },
+    {
+      "tool": "samtools",
+      "name": "view_bam_combo_count_q30",
+      "args": [
+        "{bam}",
+        "-c",
+        "-q",
+        "30"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 537,
+      "upstream_ms": 306,
+      "timing_ratio": 1.7558175862993073
+    },
+    {
+      "tool": "samtools",
+      "name": "view_bam_combo_count_L",
+      "args": [
+        "{bam}",
+        "-c",
+        "-L",
+        "{bed}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 566,
+      "upstream_ms": 316,
+      "timing_ratio": 1.7886611469095006
+    },
+    {
+      "tool": "samtools",
+      "name": "view_bam_combo_f2_F256_q20_count",
+      "args": [
+        "{bam}",
+        "-f",
+        "0x2",
+        "-F",
+        "0x100",
+        "-q",
+        "20",
+        "-c"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 562,
+      "upstream_ms": 314,
+      "timing_ratio": 1.789748971076282
+    },
+    {
+      "tool": "samtools",
+      "name": "view_bam_combo_header_plus_body",
+      "args": [
+        "{bam}",
+        "-h",
+        "-q",
+        "20"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 815,
+      "upstream_ms": 464,
+      "timing_ratio": 1.7581831754586443
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_view_region_contig",
+      "args": [
+        "{bam}",
+        "chr1"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 112,
+      "upstream_ms": 58,
+      "timing_ratio": 1.9174577066584606
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_view_region_range",
+      "args": [
+        "{bam}",
+        "chr1:1-5000"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 173,
+      "upstream_ms": 5,
+      "timing_ratio": 34.27458803156619
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_view_region_count",
+      "args": [
+        "-c",
+        "{bam}",
+        "chr2"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 147,
+      "upstream_ms": 42,
+      "timing_ratio": 3.44302818832673
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_view_cram_body",
+      "args": [
+        "-T",
+        "{fasta}",
+        "{cram}"
+      ],
+      "input": "cram",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 2385,
+      "upstream_ms": 344,
+      "timing_ratio": 6.918217247149036
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_view_cram_header",
+      "args": [
+        "-H",
+        "-T",
+        "{fasta}",
+        "{cram}"
+      ],
+      "input": "cram",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 7,
+      "upstream_ms": 4,
+      "timing_ratio": 1.600254768726975
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_view_cram_count",
+      "args": [
+        "-c",
+        "-T",
+        "{fasta}",
+        "{cram}"
+      ],
+      "input": "cram",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 2109,
+      "upstream_ms": 45,
+      "timing_ratio": 46.437503702687906
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_view_cram_q30",
+      "args": [
+        "-q",
+        "30",
+        "-T",
+        "{fasta}",
+        "{cram}"
+      ],
+      "input": "cram",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 2408,
+      "upstream_ms": 294,
+      "timing_ratio": 8.182116601811746
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_view_cram_decode_sam_heavy",
+      "args": [
+        "-T",
+        "{fasta}",
+        "{cram}"
+      ],
+      "input": "cram",
+      "compare": "ByteExact",
+      "heavy": true,
+      "status": "PASS",
+      "ours_ms": 2358,
+      "upstream_ms": 312,
+      "timing_ratio": 7.551016945901118
+    },
+    {
+      "tool": "samtools",
+      "name": "view_subsample_seed",
+      "args": [
+        "-s",
+        "11.5",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 795,
+      "upstream_ms": 367,
+      "timing_ratio": 2.1639794412556266
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_sort_name_sam",
+      "args": [
+        "-n",
+        "-O",
+        "sam",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1359,
+      "upstream_ms": 591,
+      "timing_ratio": 2.2983568662350224
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_sort_byname_tag",
+      "args": [
+        "-N",
+        "-O",
+        "sam",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1417,
+      "upstream_ms": 566,
+      "timing_ratio": 2.5027835149562927
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_sort_name_sam_heavy",
+      "args": [
+        "-n",
+        "-O",
+        "sam",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": true,
+      "status": "PASS",
+      "ours_ms": 1397,
+      "upstream_ms": 718,
+      "timing_ratio": 1.9444210397954855
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_sort_coord_sam",
+      "args": [
+        "-O",
+        "sam",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 918,
+      "upstream_ms": 448,
+      "timing_ratio": 2.046486052186558
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_flagstat",
+      "args": [
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 444,
+      "upstream_ms": 320,
+      "timing_ratio": 1.3838203909723357
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_idxstats",
+      "args": [
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 7,
+      "upstream_ms": 4,
+      "timing_ratio": 1.70544547012659
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_stats",
+      "args": [
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 959,
+      "upstream_ms": 852,
+      "timing_ratio": 1.1253174510710167
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_quickcheck",
+      "args": [
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 6,
+      "upstream_ms": 4,
+      "timing_ratio": 1.4174005317468896
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_dict",
+      "args": [
+        "{fasta}"
+      ],
+      "input": "fasta",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 118,
+      "upstream_ms": 61,
+      "timing_ratio": 1.9280369095760161
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_stats_heavy",
+      "args": [
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": true,
+      "status": "PASS",
+      "ours_ms": 944,
+      "upstream_ms": 854,
+      "timing_ratio": 1.1051268487214154
+    },
+    {
+      "tool": "samtools",
+      "name": "depth_base",
+      "args": [
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 936,
+      "upstream_ms": 866,
+      "timing_ratio": 1.081135950567324
+    },
+    {
+      "tool": "samtools",
+      "name": "depth_flaga",
+      "args": [
+        "{bam}",
+        "-a"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1332,
+      "upstream_ms": 900,
+      "timing_ratio": 1.4798322025319512
+    },
+    {
+      "tool": "samtools",
+      "name": "depth_flagr_chr1",
+      "args": [
+        "{bam}",
+        "-r",
+        "chr1"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 467,
+      "upstream_ms": 116,
+      "timing_ratio": 4.008742174150159
+    },
+    {
+      "tool": "samtools",
+      "name": "depth_flagb_bed",
+      "args": [
+        "{bam}",
+        "-b",
+        "{bed}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1527,
+      "upstream_ms": 957,
+      "timing_ratio": 1.5953099338746468
+    },
+    {
+      "tool": "samtools",
+      "name": "depth_combo_all_region",
+      "args": [
+        "{bam}",
+        "-a",
+        "-r",
+        "chr1:1-4000"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 293,
+      "upstream_ms": 6,
+      "timing_ratio": 45.297819947587485
+    },
+    {
+      "tool": "samtools",
+      "name": "depth_combo_all_bed",
+      "args": [
+        "{bam}",
+        "-a",
+        "-b",
+        "{bed}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1622,
+      "upstream_ms": 973,
+      "timing_ratio": 1.6653247809595553
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_coverage",
+      "args": [
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 13742,
+      "upstream_ms": 686,
+      "timing_ratio": 20.012852903500885
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_coverage_region",
+      "args": [
+        "-r",
+        "chr1",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 7892,
+      "upstream_ms": 90,
+      "timing_ratio": 87.29359388251297
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_depth_mapq_filter",
+      "args": [
+        "-Q",
+        "20",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1034,
+      "upstream_ms": 1003,
+      "timing_ratio": 1.0311440550720536
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_depth_baseq_filter",
+      "args": [
+        "-q",
+        "10",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1080,
+      "upstream_ms": 805,
+      "timing_ratio": 1.3411751523572404
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_calmd",
+      "args": [
+        "{bam}",
+        "{fasta}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1103,
+      "upstream_ms": 498,
+      "timing_ratio": 2.2118065167466385
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_consensus",
+      "args": [
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 14245,
+      "upstream_ms": 2805,
+      "timing_ratio": 5.078486584396356
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_consensus_region",
+      "args": [
+        "-r",
+        "chr1:1-2000",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 884,
+      "upstream_ms": 7,
+      "timing_ratio": 124.35592952377607
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_fastq",
+      "args": [
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1023,
+      "upstream_ms": 582,
+      "timing_ratio": 1.757148826737284
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_fastq_n",
+      "args": [
+        "-n",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1097,
+      "upstream_ms": 560,
+      "timing_ratio": 1.9587500766031027
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_fastq_heavy",
+      "args": [
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": true,
+      "status": "PASS",
+      "ours_ms": 1099,
+      "upstream_ms": 571,
+      "timing_ratio": 1.9222704637102945
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_tview_text",
+      "args": [
+        "-d",
+        "T",
+        "{bam}",
+        "{fasta}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 653,
+      "upstream_ms": 81,
+      "timing_ratio": 8.03946655687115
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_mpileup_pileup",
+      "args": [
+        "-f",
+        "{fasta}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 21528,
+      "upstream_ms": 9924,
+      "timing_ratio": 2.169115440286069
+    },
+    {
+      "tool": "samtools",
+      "name": "cat_concat",
+      "args": [
+        "-o",
+        "-",
+        "{bam}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "BAMDecoded",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 3514,
+      "upstream_ms": 97,
+      "timing_ratio": 35.882452221496244
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_markdup",
+      "args": [
+        "{bam}",
+        "-"
+      ],
+      "input": "bam",
+      "compare": "BAMDecoded",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 2604,
+      "upstream_ms": 2514,
+      "timing_ratio": 1.0357312650340893
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_fixmate",
+      "args": [
+        "{bam_namesorted}",
+        "-"
+      ],
+      "input": "bam",
+      "compare": "BAMDecoded",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1956,
+      "upstream_ms": 2927,
+      "timing_ratio": 0.6685161159803328
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_addreplacerg",
+      "args": [
+        "-r",
+        "ID:x\\tSM:y",
+        "{bam}",
+        "-"
+      ],
+      "input": "bam",
+      "compare": "BAMDecoded",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1770,
+      "upstream_ms": 429,
+      "timing_ratio": 4.125433283759987
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_merge",
+      "args": [
+        "-s",
+        "1",
+        "-f",
+        "-",
+        "{bam}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "BAMDecoded",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 2716,
+      "upstream_ms": 2805,
+      "timing_ratio": 0.9680703470580748
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_reheader",
+      "args": [
+        "-c",
+        "cat",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "BAMDecoded",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1780,
+      "upstream_ms": 45,
+      "timing_ratio": 38.99869106761926
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_split",
+      "args": [
+        "-f",
+        "{out}_%!.bam",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "BAMDecoded",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1945,
+      "upstream_ms": 2622,
+      "timing_ratio": 0.7419448510721418
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_import",
+      "args": [
+        "{fastq}"
+      ],
+      "input": "fastq",
+      "compare": "BAMDecoded",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1491,
+      "upstream_ms": 192,
+      "timing_ratio": 7.747863427361664
+    },
+    {
+      "tool": "samtools",
+      "name": "samtools_phase",
+      "args": [
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 10714,
+      "upstream_ms": 2127,
+      "timing_ratio": 5.036321448311155
+    },
+    {
+      "tool": "samtools",
+      "name": "view_bam_base",
+      "args": [
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 852,
+      "upstream_ms": 435,
+      "timing_ratio": 1.9552529620324428
+    },
+    {
+      "tool": "samtools",
+      "name": "view_bam_flagH",
+      "args": [
+        "{bam}",
+        "-H"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 7,
+      "upstream_ms": 4,
+      "timing_ratio": 1.7105253942866085
+    },
+    {
+      "tool": "samtools",
+      "name": "view_bam_flagc",
+      "args": [
+        "{bam}",
+        "-c"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 556,
+      "upstream_ms": 352,
+      "timing_ratio": 1.578659242367981
+    },
+    {
+      "tool": "samtools",
+      "name": "view_bam_flagq_30",
+      "args": [
+        "{bam}",
+        "-q",
+        "30"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 864,
+      "upstream_ms": 402,
+      "timing_ratio": 2.1484580749961877
+    },
+    {
+      "tool": "samtools",
+      "name": "view_bam_flagf_x10",
+      "args": [
+        "{bam}",
+        "-f",
+        "0x10"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 730,
+      "upstream_ms": 366,
+      "timing_ratio": 1.992634496080169
+    },
+    {
+      "tool": "samtools",
+      "name": "view_bam_flagF_x10",
+      "args": [
+        "{bam}",
+        "-F",
+        "0x10"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 702,
+      "upstream_ms": 364,
+      "timing_ratio": 1.927036906305047
+    },
+    {
+      "tool": "samtools",
+      "name": "view_bam_combo_count_q30",
+      "args": [
+        "{bam}",
+        "-c",
+        "-q",
+        "30"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 540,
+      "upstream_ms": 304,
+      "timing_ratio": 1.775333493331955
+    },
+    {
+      "tool": "samtools",
+      "name": "view_bam_combo_header_and_reads",
+      "args": [
+        "{bam}",
+        "-h"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 817,
+      "upstream_ms": 440,
+      "timing_ratio": 1.8542505555179905
+    },
+    {
+      "tool": "samtools",
+      "name": "view_cram_body",
+      "args": [
+        "-T",
+        "{fasta}",
+        "{cram}"
+      ],
+      "input": "cram",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 2491,
+      "upstream_ms": 335,
+      "timing_ratio": 7.433953063904192
+    },
+    {
+      "tool": "samtools",
+      "name": "view_cram_count",
+      "args": [
+        "-c",
+        "-T",
+        "{fasta}",
+        "{cram}"
+      ],
+      "input": "cram",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 2006,
+      "upstream_ms": 45,
+      "timing_ratio": 43.915191080575035
+    },
+    {
+      "tool": "samtools",
+      "name": "view_cram_decode_sam_heavy",
+      "args": [
+        "-T",
+        "{fasta}",
+        "{cram}"
+      ],
+      "input": "cram",
+      "compare": "ByteExact",
+      "heavy": true,
+      "status": "PASS",
+      "ours_ms": 2426,
+      "upstream_ms": 333,
+      "timing_ratio": 7.278906102877555
+    }
+  ],
+  "summary": {
+    "total": 72,
+    "pass": 72,
+    "similar": 0,
+    "diverge": 0,
+    "skip": 0,
+    "error": 0
+  }
+}

@@ -1,0 +1,1588 @@
+{
+  "scale": "medium",
+  "seed": 1,
+  "generated": "2026-06-22T13:22:21.946256631Z",
+  "results": [
+    {
+      "tool": "bgzip",
+      "name": "bgzip_decompress",
+      "args": [
+        "-d",
+        "-c",
+        "{vcf}"
+      ],
+      "input": "vcf",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 21,
+      "upstream_ms": 67,
+      "timing_ratio": 0.312318968124846
+    },
+    {
+      "tool": "bgzip",
+      "name": "bgzip_decompress_heavy",
+      "args": [
+        "-d",
+        "-c",
+        "{vcf}"
+      ],
+      "input": "vcf",
+      "compare": "ByteExact",
+      "heavy": true,
+      "status": "PASS",
+      "ours_ms": 16,
+      "upstream_ms": 16,
+      "timing_ratio": 1.0336142430991182
+    },
+    {
+      "tool": "bgzip",
+      "name": "bgzip_compress",
+      "args": [
+        "-c",
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "BGZFDecoded",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 29,
+      "upstream_ms": 100,
+      "timing_ratio": 0.2918886893660043
+    },
+    {
+      "tool": "bgzip",
+      "name": "bgzip_reindex",
+      "args": [
+        "-r",
+        "{out}.vcf.gz"
+      ],
+      "input": "vcf",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 4,
+      "upstream_ms": 11,
+      "timing_ratio": 0.43966039396740425
+    },
+    {
+      "tool": "tabix",
+      "name": "tabix_region_contig",
+      "args": [
+        "{vcf}",
+        "chr1"
+      ],
+      "input": "vcf",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 51,
+      "upstream_ms": 7,
+      "timing_ratio": 6.7184601445784145
+    },
+    {
+      "tool": "tabix",
+      "name": "tabix_region_range",
+      "args": [
+        "{vcf}",
+        "chr1:1-2000"
+      ],
+      "input": "vcf",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 4,
+      "upstream_ms": 3,
+      "timing_ratio": 1.2235611664069705
+    },
+    {
+      "tool": "tabix",
+      "name": "tabix_region_chr2",
+      "args": [
+        "{vcf}",
+        "chr2"
+      ],
+      "input": "vcf",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 36,
+      "upstream_ms": 6,
+      "timing_ratio": 5.395753799108724
+    },
+    {
+      "tool": "tabix",
+      "name": "tabix_region_with_header",
+      "args": [
+        "-h",
+        "{vcf}",
+        "chr1"
+      ],
+      "input": "vcf",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 36,
+      "upstream_ms": 6,
+      "timing_ratio": 6.0668689695214075
+    },
+    {
+      "tool": "tabix",
+      "name": "tabix_list_chroms",
+      "args": [
+        "-l",
+        "{vcf}"
+      ],
+      "input": "vcf",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 5,
+      "upstream_ms": 4,
+      "timing_ratio": 1.2523949539508712
+    },
+    {
+      "tool": "tabix",
+      "name": "tabix_region_heavy",
+      "args": [
+        "{vcf}",
+        "chr1"
+      ],
+      "input": "vcf",
+      "compare": "ByteExact",
+      "heavy": true,
+      "status": "PASS",
+      "ours_ms": 38,
+      "upstream_ms": 6,
+      "timing_ratio": 6.357615289984502
+    },
+    {
+      "tool": "tabix",
+      "name": "tabix_regions_bed",
+      "args": [
+        "-R",
+        "{bed}",
+        "{vcf}"
+      ],
+      "input": "vcf",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 42141,
+      "upstream_ms": 266,
+      "timing_ratio": 157.8944262879206
+    },
+    {
+      "tool": "htsfile",
+      "name": "htsfile_identify",
+      "args": [
+        "{vcf}",
+        "{bam}",
+        "{fasta}"
+      ],
+      "input": "vcf",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 11,
+      "upstream_ms": 4,
+      "timing_ratio": 2.6605561205709014
+    },
+    {
+      "tool": "htsfile",
+      "name": "htsfile_copy",
+      "args": [
+        "-c",
+        "{vcf}"
+      ],
+      "input": "vcf",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 81,
+      "upstream_ms": 43,
+      "timing_ratio": 1.8864804053292927
+    },
+    {
+      "tool": "mosdepth",
+      "name": "mosdepth_default",
+      "args": [
+        "{out}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "SKIP",
+      "detail": "upstream mosdepth release binary is only published for linux/amd64; skipping on this platform (mirrors the per-tool mosdepth parity gate)",
+      "ours_ms": 0,
+      "upstream_ms": 0
+    },
+    {
+      "tool": "mosdepth",
+      "name": "mosdepth_fast_mode",
+      "args": [
+        "--fast-mode",
+        "{out}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "SKIP",
+      "detail": "upstream mosdepth release binary is only published for linux/amd64; skipping on this platform (mirrors the per-tool mosdepth parity gate)",
+      "ours_ms": 0,
+      "upstream_ms": 0
+    },
+    {
+      "tool": "mosdepth",
+      "name": "mosdepth_mapq20",
+      "args": [
+        "--mapq",
+        "20",
+        "{out}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "SKIP",
+      "detail": "upstream mosdepth release binary is only published for linux/amd64; skipping on this platform (mirrors the per-tool mosdepth parity gate)",
+      "ours_ms": 0,
+      "upstream_ms": 0
+    },
+    {
+      "tool": "mosdepth",
+      "name": "mosdepth_flag",
+      "args": [
+        "--flag",
+        "1796",
+        "{out}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "SKIP",
+      "detail": "upstream mosdepth release binary is only published for linux/amd64; skipping on this platform (mirrors the per-tool mosdepth parity gate)",
+      "ours_ms": 0,
+      "upstream_ms": 0
+    },
+    {
+      "tool": "mosdepth",
+      "name": "mosdepth_by_bed_regions",
+      "args": [
+        "--by",
+        "{bed}",
+        "{out}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "SKIP",
+      "detail": "upstream mosdepth release binary is only published for linux/amd64; skipping on this platform (mirrors the per-tool mosdepth parity gate)",
+      "ours_ms": 0,
+      "upstream_ms": 0
+    },
+    {
+      "tool": "mosdepth",
+      "name": "mosdepth_by_window_regions",
+      "args": [
+        "--by",
+        "500",
+        "{out}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "SKIP",
+      "detail": "upstream mosdepth release binary is only published for linux/amd64; skipping on this platform (mirrors the per-tool mosdepth parity gate)",
+      "ours_ms": 0,
+      "upstream_ms": 0
+    },
+    {
+      "tool": "mosdepth",
+      "name": "mosdepth_by_bed_thresholds",
+      "args": [
+        "--by",
+        "{bed}",
+        "--thresholds",
+        "1,5,10",
+        "{out}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": true,
+      "status": "SKIP",
+      "detail": "upstream mosdepth release binary is only published for linux/amd64; skipping on this platform (mirrors the per-tool mosdepth parity gate)",
+      "ours_ms": 0,
+      "upstream_ms": 0
+    },
+    {
+      "tool": "mosdepth",
+      "name": "mosdepth_default_heavy",
+      "args": [
+        "{out}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": true,
+      "status": "SKIP",
+      "detail": "upstream mosdepth release binary is only published for linux/amd64; skipping on this platform (mirrors the per-tool mosdepth parity gate)",
+      "ours_ms": 0,
+      "upstream_ms": 0
+    },
+    {
+      "tool": "mosdepth",
+      "name": "mosdepth_by_summary_region_rows",
+      "args": [
+        "--by",
+        "{bed}",
+        "{out}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "SKIP",
+      "detail": "upstream mosdepth release binary is only published for linux/amd64; skipping on this platform (mirrors the per-tool mosdepth parity gate)",
+      "ours_ms": 0,
+      "upstream_ms": 0
+    },
+    {
+      "tool": "mosdepth",
+      "name": "mosdepth_by_region_dist",
+      "args": [
+        "--by",
+        "{bed}",
+        "{out}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "SKIP",
+      "detail": "upstream mosdepth release binary is only published for linux/amd64; skipping on this platform (mirrors the per-tool mosdepth parity gate)",
+      "ours_ms": 0,
+      "upstream_ms": 0
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_seq_fq_base",
+      "args": [
+        "{fastq}"
+      ],
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 225,
+      "upstream_ms": 163,
+      "timing_ratio": 1.3850765476105658
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_seq_fq_flagA",
+      "args": [
+        "{fastq}",
+        "-A"
+      ],
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 127,
+      "upstream_ms": 92,
+      "timing_ratio": 1.37947163193252
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_seq_fq_flagr",
+      "args": [
+        "{fastq}",
+        "-r"
+      ],
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 227,
+      "upstream_ms": 185,
+      "timing_ratio": 1.2311310127190223
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_seq_fq_flagL_95",
+      "args": [
+        "{fastq}",
+        "-L",
+        "95"
+      ],
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 154,
+      "upstream_ms": 112,
+      "timing_ratio": 1.3716573897533495
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_seq_fq_flagq_20",
+      "args": [
+        "{fastq}",
+        "-q",
+        "20"
+      ],
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 162,
+      "upstream_ms": 170,
+      "timing_ratio": 0.9504789552117205
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_seq_fq_flagl_60",
+      "args": [
+        "{fastq}",
+        "-l",
+        "60"
+      ],
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 159,
+      "upstream_ms": 118,
+      "timing_ratio": 1.3525774131574189
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_seq_fq_combo_rev_upper",
+      "args": [
+        "{fastq}",
+        "-r",
+        "-U"
+      ],
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 210,
+      "upstream_ms": 214,
+      "timing_ratio": 0.9797001799372853
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_seq_fq_combo_qmask_n",
+      "args": [
+        "{fastq}",
+        "-q",
+        "20",
+        "-n",
+        "N"
+      ],
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 186,
+      "upstream_ms": 153,
+      "timing_ratio": 1.2117812479679029
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_comp_fa",
+      "args": [
+        "{fasta}"
+      ],
+      "input": "fasta",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 133,
+      "upstream_ms": 81,
+      "timing_ratio": 1.635591565240648
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_comp_fq",
+      "args": [
+        "{fastq}"
+      ],
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 564,
+      "upstream_ms": 553,
+      "timing_ratio": 1.02116091019004
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_fqchk",
+      "args": [
+        "{fastq}"
+      ],
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 146,
+      "upstream_ms": 82,
+      "timing_ratio": 1.7779754584207497
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_fqchk_q20",
+      "args": [
+        "-q",
+        "20",
+        "{fastq}"
+      ],
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 165,
+      "upstream_ms": 85,
+      "timing_ratio": 1.9291833494104251
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_size_fq",
+      "args": [
+        "{fastq}"
+      ],
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 77,
+      "upstream_ms": 40,
+      "timing_ratio": 1.9001357804034698
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_size_fa",
+      "args": [
+        "{fasta}"
+      ],
+      "input": "fasta",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 29,
+      "upstream_ms": 9,
+      "timing_ratio": 3.188847633073903
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_trimfq",
+      "args": [
+        "{fastq}"
+      ],
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 289,
+      "upstream_ms": 182,
+      "timing_ratio": 1.5888750020833133
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_trimfq_q",
+      "args": [
+        "-q",
+        "0.05",
+        "{fastq}"
+      ],
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 284,
+      "upstream_ms": 188,
+      "timing_ratio": 1.5096336846781413
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_trimfq_be",
+      "args": [
+        "-b",
+        "5",
+        "-e",
+        "5",
+        "{fastq}"
+      ],
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 156,
+      "upstream_ms": 108,
+      "timing_ratio": 1.4474449659463706
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_sample_count",
+      "args": [
+        "-s11",
+        "{fastq}",
+        "200"
+      ],
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 97,
+      "upstream_ms": 44,
+      "timing_ratio": 2.21341913523355
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_sample_frac",
+      "args": [
+        "-s11",
+        "{fastq}",
+        "0.1"
+      ],
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 110,
+      "upstream_ms": 56,
+      "timing_ratio": 1.9684253597476362
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_hpc_fa",
+      "args": [
+        "{fasta}"
+      ],
+      "input": "fasta",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 78,
+      "upstream_ms": 54,
+      "timing_ratio": 1.435067980974589
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_hpc_fq",
+      "args": [
+        "{fastq}"
+      ],
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 259,
+      "upstream_ms": 203,
+      "timing_ratio": 1.2736989053029948
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_gap_fa",
+      "args": [
+        "{fasta}"
+      ],
+      "input": "fasta",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 48,
+      "upstream_ms": 19,
+      "timing_ratio": 2.558543703745482
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_subseq_bed",
+      "args": [
+        "{fasta}",
+        "{bed}"
+      ],
+      "input": "fasta",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 54,
+      "upstream_ms": 160,
+      "timing_ratio": 0.3377859543925175
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_mergepe",
+      "args": [
+        "{fastq1}",
+        "{fastq2}"
+      ],
+      "input": "fastq_paired",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 382,
+      "upstream_ms": 326,
+      "timing_ratio": 1.1733499052801057
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_dropse",
+      "args": [
+        "{fastq}"
+      ],
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 89,
+      "upstream_ms": 46,
+      "timing_ratio": 1.9194175102344617
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_randbase",
+      "args": [
+        "{fasta}"
+      ],
+      "input": "fasta",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 134,
+      "upstream_ms": 60,
+      "timing_ratio": 2.2040504830894996
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_telo",
+      "args": [
+        "{fasta}"
+      ],
+      "input": "fasta",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 45,
+      "upstream_ms": 10,
+      "timing_ratio": 4.232413803230434
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_listhet",
+      "args": [
+        "{fasta}"
+      ],
+      "input": "fasta",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 49,
+      "upstream_ms": 16,
+      "timing_ratio": 2.9918683817787275
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_hety",
+      "args": [
+        "{fasta}"
+      ],
+      "input": "fasta",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 102,
+      "upstream_ms": 80,
+      "timing_ratio": 1.2718819521141147
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_seq_fa",
+      "args": [
+        "{fasta}"
+      ],
+      "input": "fasta",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 59,
+      "upstream_ms": 28,
+      "timing_ratio": 2.0680429082779823
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_seq_fq_to_fa_heavy",
+      "args": [
+        "-A",
+        "{fastq}"
+      ],
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": true,
+      "status": "PASS",
+      "ours_ms": 123,
+      "upstream_ms": 93,
+      "timing_ratio": 1.314537729027012
+    },
+    {
+      "tool": "seqtk",
+      "name": "seqtk_cutN",
+      "args": [
+        "-n",
+        "100",
+        "{fasta}"
+      ],
+      "input": "fasta",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 57,
+      "upstream_ms": 71,
+      "timing_ratio": 0.8063398299399294
+    },
+    {
+      "tool": "prinseq",
+      "name": "prinseq_min_len",
+      "args": null,
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1510,
+      "upstream_ms": 2648,
+      "timing_ratio": 0.5703654120454346
+    },
+    {
+      "tool": "prinseq",
+      "name": "prinseq_max_len",
+      "args": null,
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1361,
+      "upstream_ms": 2874,
+      "timing_ratio": 0.4737498869523269
+    },
+    {
+      "tool": "prinseq",
+      "name": "prinseq_trim_left",
+      "args": null,
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1571,
+      "upstream_ms": 2664,
+      "timing_ratio": 0.5896678930085203
+    },
+    {
+      "tool": "prinseq",
+      "name": "prinseq_trim_right",
+      "args": null,
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1494,
+      "upstream_ms": 2792,
+      "timing_ratio": 0.5350538454095715
+    },
+    {
+      "tool": "prinseq",
+      "name": "prinseq_trim_qual_right",
+      "args": null,
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1640,
+      "upstream_ms": 7871,
+      "timing_ratio": 0.20839784706959977
+    },
+    {
+      "tool": "prinseq",
+      "name": "prinseq_trim_qual_left",
+      "args": null,
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1519,
+      "upstream_ms": 6819,
+      "timing_ratio": 0.22287599807635328
+    },
+    {
+      "tool": "prinseq",
+      "name": "prinseq_min_qual_mean",
+      "args": null,
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1426,
+      "upstream_ms": 6890,
+      "timing_ratio": 0.2070255491942063
+    },
+    {
+      "tool": "prinseq",
+      "name": "prinseq_max_ns",
+      "args": null,
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 3192,
+      "upstream_ms": 2519,
+      "timing_ratio": 1.266998356039177
+    },
+    {
+      "tool": "sickle",
+      "name": "sickle_se_base",
+      "args": null,
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1348,
+      "upstream_ms": 1203,
+      "timing_ratio": 1.1202257440650027
+    },
+    {
+      "tool": "sickle",
+      "name": "sickle_se_q30",
+      "args": null,
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1295,
+      "upstream_ms": 1225,
+      "timing_ratio": 1.0566816136661126
+    },
+    {
+      "tool": "sickle",
+      "name": "sickle_se_l30",
+      "args": null,
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1358,
+      "upstream_ms": 1170,
+      "timing_ratio": 1.160420404812574
+    },
+    {
+      "tool": "sickle",
+      "name": "sickle_se_no5prime",
+      "args": null,
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1158,
+      "upstream_ms": 1256,
+      "timing_ratio": 0.9219100304103616
+    },
+    {
+      "tool": "sickle",
+      "name": "sickle_se_truncn",
+      "args": null,
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1149,
+      "upstream_ms": 1151,
+      "timing_ratio": 0.9982226091508144
+    },
+    {
+      "tool": "sickle",
+      "name": "sickle_se_q30_l40",
+      "args": null,
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1085,
+      "upstream_ms": 1109,
+      "timing_ratio": 0.9785392374478229
+    },
+    {
+      "tool": "sickle",
+      "name": "sickle_pe_base",
+      "args": null,
+      "input": "fastq_paired",
+      "compare": "ByteExact",
+      "heavy": true,
+      "status": "PASS",
+      "ours_ms": 2209,
+      "upstream_ms": 2235,
+      "timing_ratio": 0.9883381115196966
+    },
+    {
+      "tool": "sickle",
+      "name": "sickle_se_cli_default_window",
+      "args": null,
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1194,
+      "upstream_ms": 1158,
+      "timing_ratio": 1.0311073128174209
+    },
+    {
+      "tool": "skewer",
+      "name": "skewer_se_base",
+      "args": null,
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 2383,
+      "upstream_ms": 2078,
+      "timing_ratio": 1.1466980020695858
+    },
+    {
+      "tool": "skewer",
+      "name": "skewer_se_minlen30",
+      "args": null,
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 2116,
+      "upstream_ms": 1937,
+      "timing_ratio": 1.0924903818424136
+    },
+    {
+      "tool": "skewer",
+      "name": "skewer_se_full_heavy",
+      "args": null,
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": true,
+      "status": "PASS",
+      "ours_ms": 2101,
+      "upstream_ms": 1934,
+      "timing_ratio": 1.0861137609923601
+    },
+    {
+      "tool": "fastp",
+      "name": "fastp_cut_tail",
+      "args": null,
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 2998,
+      "upstream_ms": 797,
+      "timing_ratio": 3.758823936883271
+    },
+    {
+      "tool": "fastp",
+      "name": "fastp_default_filter",
+      "args": null,
+      "input": "fastq",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 3537,
+      "upstream_ms": 557,
+      "timing_ratio": 6.342800137985307
+    },
+    {
+      "tool": "fastp",
+      "name": "fastp_detect_adapter_pe_heavy",
+      "args": null,
+      "input": "fastq_paired",
+      "compare": "ByteExact",
+      "heavy": true,
+      "status": "PASS",
+      "ours_ms": 24273,
+      "upstream_ms": 3259,
+      "timing_ratio": 7.446188780468184
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_freq",
+      "args": [
+        "--vcf",
+        "{vcf_plain}",
+        "--freq",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 2339,
+      "upstream_ms": 164,
+      "timing_ratio": 14.261119285745583
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_counts",
+      "args": [
+        "--vcf",
+        "{vcf_plain}",
+        "--counts",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 2088,
+      "upstream_ms": 78,
+      "timing_ratio": 26.654499978324353
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_freq2",
+      "args": [
+        "--vcf",
+        "{vcf_plain}",
+        "--freq2",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 2265,
+      "upstream_ms": 89,
+      "timing_ratio": 25.376059173055708
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_depth",
+      "args": [
+        "--vcf",
+        "{vcf_plain}",
+        "--depth",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 53,
+      "upstream_ms": 44,
+      "timing_ratio": 1.2021260858521716
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_site_depth",
+      "args": [
+        "--vcf",
+        "{vcf_plain}",
+        "--site-depth",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1618,
+      "upstream_ms": 1517,
+      "timing_ratio": 1.0665729933556494
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_site_mean_depth",
+      "args": [
+        "--vcf",
+        "{vcf_plain}",
+        "--site-mean-depth",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "DIVERGE",
+      "detail": "output file \".ldepth.mean\": first diff at line 2:\n  ours:     chr1\t15\t56\t-nan\n  upstream: chr1\t15\t56\tnan",
+      "ours_ms": 1995,
+      "upstream_ms": 1554,
+      "timing_ratio": 1.283406015105563
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_site_pi",
+      "args": [
+        "--vcf",
+        "{vcf_plain}",
+        "--site-pi",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 2417,
+      "upstream_ms": 1558,
+      "timing_ratio": 1.551653894532938
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_window_pi",
+      "args": [
+        "--vcf",
+        "{vcf_plain}",
+        "--window-pi",
+        "1000",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 590,
+      "upstream_ms": 333,
+      "timing_ratio": 1.7697005121547074
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_tstv_summary",
+      "args": [
+        "--vcf",
+        "{vcf_plain}",
+        "--TsTv-summary",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 54,
+      "upstream_ms": 35,
+      "timing_ratio": 1.5703341735634564
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_missing_indv",
+      "args": [
+        "--vcf",
+        "{vcf_plain}",
+        "--missing-indv",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 54,
+      "upstream_ms": 43,
+      "timing_ratio": 1.2457491020174616
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_missing_site",
+      "args": [
+        "--vcf",
+        "{vcf_plain}",
+        "--missing-site",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1522,
+      "upstream_ms": 1556,
+      "timing_ratio": 0.9779779092283983
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_het",
+      "args": [
+        "--vcf",
+        "{vcf_plain}",
+        "--het",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 66,
+      "upstream_ms": 56,
+      "timing_ratio": 1.1862092261134958
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_singletons",
+      "args": [
+        "--vcf",
+        "{vcf_plain}",
+        "--singletons",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 2333,
+      "upstream_ms": 2021,
+      "timing_ratio": 1.1545383884433802
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_recode_heavy",
+      "args": [
+        "--vcf",
+        "{vcf_plain}",
+        "--recode",
+        "--recode-INFO-all",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 105,
+      "upstream_ms": 172,
+      "timing_ratio": 0.610606595626818
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_het_multi",
+      "args": [
+        "--vcf",
+        "{vcf_multi_plain}",
+        "--het",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_multi_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 4,
+      "upstream_ms": 1,
+      "timing_ratio": 3.1286873945724007
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_relatedness",
+      "args": [
+        "--vcf",
+        "{vcf_multi_plain}",
+        "--relatedness",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_multi_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 5,
+      "upstream_ms": 1,
+      "timing_ratio": 3.868282124540231
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_relatedness2",
+      "args": [
+        "--vcf",
+        "{vcf_multi_plain}",
+        "--relatedness2",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_multi_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 4,
+      "upstream_ms": 1,
+      "timing_ratio": 3.32756628316536
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_freq_multi",
+      "args": [
+        "--vcf",
+        "{vcf_multi_plain}",
+        "--freq",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_multi_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 5,
+      "upstream_ms": 1,
+      "timing_ratio": 3.962893362044752
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_missing_indv_multi",
+      "args": [
+        "--vcf",
+        "{vcf_multi_plain}",
+        "--missing-indv",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_multi_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 4,
+      "upstream_ms": 1,
+      "timing_ratio": 3.40752088319585
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_window_pi_heavy",
+      "args": [
+        "--vcf",
+        "{vcf_plain}",
+        "--window-pi",
+        "500",
+        "--window-pi-step",
+        "250",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": true,
+      "status": "PASS",
+      "ours_ms": 1272,
+      "upstream_ms": 783,
+      "timing_ratio": 1.623617018607926
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_geno_r2",
+      "args": [
+        "--vcf",
+        "{vcf_multi_plain}",
+        "--geno-r2",
+        "--ld-window-bp",
+        "3000",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_multi_plain",
+      "compare": "ByteExact",
+      "heavy": true,
+      "status": "PASS",
+      "ours_ms": 4,
+      "upstream_ms": 1,
+      "timing_ratio": 2.843652075292511
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_hap_r2",
+      "args": [
+        "--vcf",
+        "{vcf_phased_plain}",
+        "--hap-r2",
+        "--ld-window-bp",
+        "3000",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_multi_plain",
+      "compare": "ByteExact",
+      "heavy": true,
+      "status": "PASS",
+      "ours_ms": 1075,
+      "upstream_ms": 18809,
+      "timing_ratio": 0.05716717905589389
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_matrix012",
+      "args": [
+        "--vcf",
+        "{vcf_multi_plain}",
+        "--012",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_multi_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 4,
+      "upstream_ms": 1,
+      "timing_ratio": 3.1827823679823375
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_lroh",
+      "args": [
+        "--vcf",
+        "{vcf_multi_plain}",
+        "--LROH",
+        "--chr",
+        "chr1",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_multi_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 4,
+      "upstream_ms": 1,
+      "timing_ratio": 3.413190732159407
+    },
+    {
+      "tool": "vcftools",
+      "name": "vcftools_hardy",
+      "args": [
+        "--vcf",
+        "{vcf_plain}",
+        "--hardy",
+        "--out",
+        "{out}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "DIVERGE",
+      "detail": "output file \".hwe\": first diff at line 2:\n  ours:     chr1\t15\t0/0/1\t0.00/0.00/1.00\t-nan\t1.000000e+00\t1.000000e+00\t1.000000e+00\n  upstream: chr1\t15\t0/0/1\t0.00/0.00/1.00\tnan\t1.000000e+00\t1.000000e+00\t1.000000e+00",
+      "ours_ms": 2392,
+      "upstream_ms": 1665,
+      "timing_ratio": 1.4367146476849288
+    }
+  ],
+  "summary": {
+    "total": 102,
+    "pass": 90,
+    "similar": 0,
+    "diverge": 2,
+    "skip": 10,
+    "error": 0
+  }
+}
