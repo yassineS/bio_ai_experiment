@@ -87,6 +87,9 @@ cells:
 - `bedtools` family: OOM-killed on a heavy cell (e.g. `genomecov -d` per-base
   over the medium genome → multi-GB ours+upstream buffers).
 - QC/htslib group: fits (90 PASS / 2 arm64-FP DIVERGE / 10 mosdepth SKIP).
+- `mosdepth` group: SKIP on `arm64` (amd64-only release); subsequently run in an
+  emulated `linux/amd64` container — **10/10 PASS** byte-exact
+  ([`medium_tier/mosdepth/`](medium_tier/mosdepth/)).
 
 The large tier (≈19–30 GB fixtures + bigger per-cell buffers) is out of reach
 here entirely. The Docker VM was **not** enlarged because the host was running

@@ -1,0 +1,182 @@
+{
+  "scale": "medium",
+  "seed": 1,
+  "generated": "2026-06-22T13:45:22.521374506Z",
+  "results": [
+    {
+      "tool": "mosdepth",
+      "name": "mosdepth_default",
+      "args": [
+        "{out}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1345,
+      "upstream_ms": 554,
+      "timing_ratio": 2.4247257791828583
+    },
+    {
+      "tool": "mosdepth",
+      "name": "mosdepth_fast_mode",
+      "args": [
+        "--fast-mode",
+        "{out}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1317,
+      "upstream_ms": 533,
+      "timing_ratio": 2.471796503652094
+    },
+    {
+      "tool": "mosdepth",
+      "name": "mosdepth_mapq20",
+      "args": [
+        "--mapq",
+        "20",
+        "{out}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1285,
+      "upstream_ms": 518,
+      "timing_ratio": 2.4771557063020593
+    },
+    {
+      "tool": "mosdepth",
+      "name": "mosdepth_flag",
+      "args": [
+        "--flag",
+        "1796",
+        "{out}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1317,
+      "upstream_ms": 525,
+      "timing_ratio": 2.505281589489948
+    },
+    {
+      "tool": "mosdepth",
+      "name": "mosdepth_by_bed_regions",
+      "args": [
+        "--by",
+        "{bed}",
+        "{out}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 12351,
+      "upstream_ms": 831,
+      "timing_ratio": 14.855299715805726
+    },
+    {
+      "tool": "mosdepth",
+      "name": "mosdepth_by_window_regions",
+      "args": [
+        "--by",
+        "500",
+        "{out}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 10009,
+      "upstream_ms": 603,
+      "timing_ratio": 16.58519802935422
+    },
+    {
+      "tool": "mosdepth",
+      "name": "mosdepth_by_bed_thresholds",
+      "args": [
+        "--by",
+        "{bed}",
+        "--thresholds",
+        "1,5,10",
+        "{out}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": true,
+      "status": "PASS",
+      "ours_ms": 12481,
+      "upstream_ms": 975,
+      "timing_ratio": 12.793344739854499
+    },
+    {
+      "tool": "mosdepth",
+      "name": "mosdepth_default_heavy",
+      "args": [
+        "{out}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": true,
+      "status": "PASS",
+      "ours_ms": 1326,
+      "upstream_ms": 552,
+      "timing_ratio": 2.4002353526921225
+    },
+    {
+      "tool": "mosdepth",
+      "name": "mosdepth_by_summary_region_rows",
+      "args": [
+        "--by",
+        "{bed}",
+        "{out}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 12484,
+      "upstream_ms": 817,
+      "timing_ratio": 15.265577475621194
+    },
+    {
+      "tool": "mosdepth",
+      "name": "mosdepth_by_region_dist",
+      "args": [
+        "--by",
+        "{bed}",
+        "{out}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 12235,
+      "upstream_ms": 804,
+      "timing_ratio": 15.209593268992762
+    }
+  ],
+  "summary": {
+    "total": 10,
+    "pass": 10,
+    "similar": 0,
+    "diverge": 0,
+    "skip": 0,
+    "error": 0
+  }
+}
