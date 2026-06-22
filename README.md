@@ -52,8 +52,7 @@ The main objectives of this repository are to use AI agents to:
      drop-in replacement (getopt-style bundling, short + long options) — see
      [docs/CLI_CONVENTIONS.md](docs/CLI_CONVENTIONS.md)
    - The earlier plan to ship per-tool Model Context Protocol (MCP) servers has
-     been **descoped**; standalone CLIs are the supported interface (see
-     [mcp-servers/README.md](mcp-servers/README.md))
+     been **descoped**; standalone CLIs are the supported interface
 
 ## Ultimate Goals
 
@@ -63,8 +62,8 @@ The main objectives of this repository are to use AI agents to:
 - **Feature Parity + POSIX-Compliant CLIs**: each ported tool's terminal target
   is 100% feature parity with its original *and* a POSIX-compliant CLI (see
   [docs/CLI_CONVENTIONS.md](docs/CLI_CONVENTIONS.md)). Until a tool gets there
-  it is documented in [tools/PORTING_STATUS.md](tools/PORTING_STATUS.md) as
-  "Partial".
+  it is tracked in [docs/PARITY_ROADMAP.md](docs/PARITY_ROADMAP.md) as a
+  remaining gap.
 - **Document AI Agent Utility**: Track and document the effectiveness (or lack thereof) of coding agents in this process
 
 ## Repository structure
@@ -87,8 +86,6 @@ bio_ai_experiment/
 │   ├── cliflag/           # POSIX short + GNU long flag helpers
 │   └── cppsort/           # C++-compatible sort helpers for byte-exact parity
 ├── tools/                 # tool ports, one subdir per tool
-│   ├── PORTING_STATUS.md  # per-tool feature status
-│   ├── PARITY_VALIDATION.md  # byte-for-byte audit results
 │   └── <tool>/
 │       ├── cmd/<tool>/main.go     # CLI entry
 │       ├── pkg/<tool>/            # logic + tests
@@ -191,12 +188,11 @@ list). Upstream bugs we identify but choose not to carry over are tracked in
 ### Tools ported
 
 53 drop-in CLIs as of 2026-06. The canonical completion table lives in
-[`PROJECT_STATUS.md`](PROJECT_STATUS.md); [`tools/README.md`](tools/README.md)
-indexes every tool, [`tools/PORTING_STATUS.md`](tools/PORTING_STATUS.md) is the
-per-subcommand feature inventory, and
-[`docs/PARITY_ROADMAP.md`](docs/PARITY_ROADMAP.md) is the authoritative gap
-list. See [`docs/README.md`](docs/README.md) for the docs map (which doc owns
-what).
+[`PROJECT_STATUS.md`](PROJECT_STATUS.md), and
+[`docs/PARITY_ROADMAP.md`](docs/PARITY_ROADMAP.md) is the authoritative
+per-tool/per-subcommand gap list. See [`docs/README.md`](docs/README.md) for the
+docs map (which doc owns what); each tool also has its own
+`tools/<tool>/README.md`.
 
 Highlights:
 
@@ -278,9 +274,7 @@ Run `gofmt -w .`, `go vet ./...`, and `go test ./...` locally before pushing.
 
 ## Documentation
 
-- [`tools/README.md`](tools/README.md) — per-tool table + quick start
-- [`tools/PORTING_STATUS.md`](tools/PORTING_STATUS.md) — feature status + coverage per tool
-- [`tools/PARITY_VALIDATION.md`](tools/PARITY_VALIDATION.md) — byte-for-byte audit results vs upstream
+- [`PROJECT_STATUS.md`](PROJECT_STATUS.md) — top-level per-tool completion table
 - [`docs/PARITY_ROADMAP.md`](docs/PARITY_ROADMAP.md) — authoritative gap list
 - [`docs/UPSTREAM_BUGS.md`](docs/UPSTREAM_BUGS.md) — bugs in upstream we deliberately do not carry
 - [`docs/CLI_CONVENTIONS.md`](docs/CLI_CONVENTIONS.md) — CLI flag rules (POSIX short + GNU long)
