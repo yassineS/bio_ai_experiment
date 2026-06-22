@@ -8,7 +8,8 @@ data download, or LLM-API budget. It is written to be executed by an **agent
 The cheap, in-sandbox Tier-A pieces are already done and committed under
 `docs/manuscript/results/` (conformance, differential fuzzing, parity CIs,
 flag-compat, the transpiler counterfactual). What remains here is the
-**resource-heavy** set: GIAB concordance, the large-tier parity+performance run,
+**resource-heavy** set: real-data (GIAB-file) parity + interop + perf, the
+large-tier parity+performance run,
 and the K-run reproducibility study. Two further items (a timed human-port
 anchor and a second independent bug-corpus labeler) need *people*, not a box,
 and are out of scope for this runbook — see "Not in scope" at the end.
@@ -103,39 +104,53 @@ Record the box so the numbers are anchored:
   > docs/manuscript/results/large_tier/hardware.md
 ```
 
-## 3. H2 — GIAB biological concordance (the domain-credibility experiment)
+## 3. H2 — Real-data parity + round-trip interop + performance (multi-contig)
 
-Full recipe, data URLs, and config schema are in
-[`docs/GIAB_CONCORDANCE.md`](../GIAB_CONCORDANCE.md). Summary:
+We do **not** run the GIAB biological-concordance experiment (no truth set /
+`hap.py` / `vcfeval`). Instead the GIAB files are used as **real, whole-genome,
+multi-contig inputs** for pure our-vs-upstream **differential parity** and
+**performance**, plus **bidirectional round-trip interop**. No truth set is
+needed — the upstream binary is the oracle.
 
-1. **Get the data** (NIST GIAB FTP / HTTPS mirror): per-sample v4.2.1 truth
-   VCF + `.tbi` + high-confidence BED; the GA4GH stratification BEDs (incl.
-   **CMRG** and `alldifficultregions`); a reference build with `.fai` (and an
-   RTG **SDF** for vcfeval); and an aligned-reads **BAM** per sample. WGS BAMs
-   are 50–100 GB each — **start with HG002 + chr20** for a fast credible run,
-   then scale to HG001–HG007 whole-genome if disk allows (~0.5–1 TB).
-2. **Get the engines:** `hap.py` (via the `pkrusche/hap.py` Docker image) and/or
-   `vcfeval` (RTG Tools). Either works; both is best.
-3. **Configure and run:**
+> **Multi-contig is required.** Run on the **full multi-chromosome** BAM/VCF, not
+> a single-contig subset: cross-contig behaviour (BAI/CSI multi-ref bins, RNEXT
+> `=` vs mate-on-another-contig, coordinate sort across contigs, per-contig
+> `idxstats`) is exactly what a one-chromosome run misses.
 
-   ```bash
-   go run ./pipeline/cmd/giab-concordance -print-config > giab.json
-   $EDITOR giab.json     # fill reference, reads_bam, truth_vcf, high_conf_bed,
-                         # stratifications[], happy_bin/vcfeval_bin, sdf_template
-   go run ./pipeline/cmd/giab-concordance -config giab.json \
-     -out "$PWD/docs/manuscript/results/giab" -v
-   ```
+### H2a — Real-data parity + perf (`realparity`)
 
-4. **Pass criteria / headline:**
-   - `genotype_or_filter_flips == 0` in the ours-vs-upstream stage (every diff is
-     a QUAL/PL last-place wobble that leaves GT and PASS/FAIL intact) — this is
-     the record-exact claim.
-   - In the biological stage, ours and upstream **precision / recall / F1** match
-     per variant type per stratum (including CMRG + difficult regions).
-   - Commit `giab_concordance.{json,md}` under `docs/manuscript/results/giab/`.
+`pipeline/cmd/realparity` runs the ports against the upstream binaries on a real
+reference + BAM/CRAM/VCF and reports, per cell, byte-exact-after-provenance
+parity (the repo's exact definition: `runner.StripProvenance` +
+`CompareByteExact`) **and** wall/CPU/peak-RSS with ours/upstream ratios. Cells
+span samtools (`view`/`flagstat`/`idxstats`/`stats`/`depth`/`quickcheck`/BAM/
+`sort`/CRAM) and bcftools (`view`/`norm -f`/`stats`/`query`); cross-contig cells
+are flagged `†`.
 
-Run one config per sample (and per build) you want in the paper; name the output
-dirs `giab/HG002_GRCh38/`, etc.
+```bash
+go run ./pipeline/cmd/realparity \
+  -ref /data/ref/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna \
+  -bam /data/HG002/HG002.GRCh38.bam \
+  -vcf /data/HG002/HG002.GRCh38.vcf.gz \
+  -reps 5 -out "$PWD/docs/manuscript/results/realdata/HG002_GRCh38" -v
+```
+
+- Use the **whole-genome** BAM/VCF (do not pass `-region` for the full run; use a
+  region only for a quick smoke).
+- **Pass gate:** every cell `PASS` (zero `DIVERGE`); the command exits non-zero on
+  a genuine divergence. A cell `SKIP`s if its input is absent.
+- Commit `report.{json,md}` under `docs/manuscript/results/realdata/<sample>/`.
+
+### H2b — Bidirectional round-trip interop + the full flag matrix (`full-validation`)
+
+The full-flag parity matrix (all 53 CLIs) **and** the bidirectional container
+interop (`ours-writes/upstream-reads` *and* `upstream-writes/ours-reads` for
+BGZF/BAM/CRAM/VCF.gz/BCF/FASTQ + `.bai`/`.csi`/`.tbi` region queries, on
+multi-contig fixtures) already run inside `full-validation` (§2 H1). Run it at
+the large tier to exercise them at scale; the interop checks use the harness's
+own multi-contig fixtures and need no external data. Nothing extra to configure
+here beyond H1 — just confirm `report.md` shows `0 DIVERGE/ERROR` and
+`roundtrip.md` shows every interop check `PASS`.
 
 ## 4. H3 — K-run process-reproducibility (needs LLM-API budget)
 
@@ -163,7 +178,7 @@ Protocol:
 
 ```bash
 go run ./pipeline/cmd/full-validation -scales=smoke,small -reps=2   # minutes
-go run ./pipeline/cmd/giab-concordance                              # SKIPs w/o data, exit 0
+go run ./pipeline/cmd/realparity                                    # SKIPs w/o data, exit 0
 ```
 
 Both should exit 0. If `full-validation` smoke/small is not clean, fix that
@@ -186,7 +201,7 @@ before spending hours on large.
    ```bash
    npx --yes markdownlint-cli2@0.13.0 "docs/manuscript/results/**/*.md"
    git add docs/manuscript/results pipeline/   # pipeline/ only if you changed bench/stats code
-   git commit -m "manuscript/results: large-tier perf + GIAB concordance + K-run"
+   git commit -m "manuscript/results: large-tier perf + real-data parity + K-run"
    git push -u origin claude/heavy-tier-results
    ```
 
