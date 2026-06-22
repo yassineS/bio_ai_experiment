@@ -1,5 +1,18 @@
 # Bioinformatics Package Analysis
 
+> **Historical survey record (October 2025).** This directory is the *origin*
+> of the project: the one-off ranking exercise that chose which tools to port.
+> It is kept for reference, **not** for current status or planning. Its
+> forward-looking sections below — "Next Steps", tool selection, and the
+> "Create MCP server interfaces" recommendations — are **superseded**: the
+> project no longer takes on new tools, and MCP servers were descoped in favour
+> of drop-in POSIX CLIs. For where the port actually stands, see
+> [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md) and
+> [`../docs/PARITY_ROADMAP.md`](../docs/PARITY_ROADMAP.md); for scope/speed
+> metrics see [`../docs/METRICS.md`](../docs/METRICS.md). The current pick of
+> candidate new tools (if the scope ever reopens) lives in
+> [`tool_ranking_2026.md`](tool_ranking_2026.md).
+
 This directory contains comprehensive analysis of bioinformatics, genomics, and population genetics software packages, identifying opportunities for improvement through code rewrites and enhanced documentation.
 
 ## Overview

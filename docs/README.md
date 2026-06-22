@@ -35,8 +35,9 @@ restating numbers.
 - [`PLUGIN_PROTOCOL.md`](PLUGIN_PROTOCOL.md) — the bcftools plugin subprocess
   protocol.
 - [`../pkg/htsgo/README.md`](../pkg/htsgo/README.md) — format library docs.
-- [`../PERFORMANCE_BENCHMARKS.md`](../PERFORMANCE_BENCHMARKS.md) — speed vs
-  the originals.
+- [`METRICS.md`](METRICS.md) — scope, lines-of-code, and speed vs the originals
+  (the manuscript metrics); the benchmark harness lives in
+  [`../pipeline/bench`](../pipeline/bench).
 
 ## Agent role descriptions
 

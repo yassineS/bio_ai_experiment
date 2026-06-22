@@ -180,7 +180,8 @@ matches the declared version (currently 1.24.9) — there is no separate 1.21 pi
 - Every new behavior gets a test. Prefer table-driven tests. Aim for >80% coverage.
 - Tests live next to the code as `*_test.go` in `tools/<tool>/pkg/<tool>/`.
 - Add benchmarks for performance-sensitive paths; this project cares about being
-  faster than the originals (see `PERFORMANCE_BENCHMARKS.md`).
+  faster than the originals (see `docs/METRICS.md` for the scope/speed summary
+  and `pipeline/bench` for the benchmark harness).
 
 ### Commits & PRs
 
