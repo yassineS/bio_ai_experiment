@@ -1,0 +1,316 @@
+# Curated upstream CLI-flag inventory for the flag-compatibility metric.
+#
+# Format (whitespace-separated):
+#   <tool>[/<subcommand>]  flag flag flag ...
+# where each flag token is the BARE name (no leading dashes). Single-character
+# tokens are upstream short flags; multi-character tokens are upstream long
+# flags. Both forms count as one slot in the denominator.
+#
+# Provenance (how each upstream flag set was derived — all from primary
+# sources under reference_code/, which are read-only upstream submodules):
+#   seqtk      getopt() optstrings in reference_code/seqtk/seqtk.c (per stk_* fn)
+#   sickle     getopt_long optstring + longopts in reference_code/sickle/src/*.c
+#   skewer     argv switch cases + usage "-x, --long" pairs in
+#              reference_code/skewer/src/parameter.cpp
+#   fastp      cmd.add("long", 'short', ...) calls in reference_code/fastp/src/main.cpp
+#   prinseq    GetOptions(...) list in reference_code/prinseq/prinseq-lite.pl
+#   vcftools   "--opt" tokens in reference_code/vcftools/src/cpp/parameters.cpp
+#   mosdepth   documented docopt usage (mosdepth v0.3.x); cross-checked against
+#              tools/mosdepth/README.md which marks port-only aliases
+#   bgzip/tabix/htsfile  getopt_long optstring + longopts in reference_code/htslib/*.c
+#   samtools   getopt_long optstrings + longopts arrays in reference_code/samtools/*.c
+#              (+ SAM_OPT_GLOBAL_OPTIONS from sam_opts.h where the macro is used)
+#   bcftools   getopt_long optstrings + longopts arrays in reference_code/bcftools/*.c
+#   bed*       documented per-subcommand help flags (PARAMETER_CHECK / usage text)
+#              in reference_code/bedtools/src/<sub>/*.cpp. For Context-framework
+#              subcommands the DOCUMENTED per-tool flag set is used (not the full
+#              inherited ContextBase parser union), matching the tool's own help.
+#
+# This measures flag-surface acceptance (does our port accept the same flag
+# spelling), NOT semantic equivalence — see flag_compat.md.
+
+# ---------------- seqtk (per subcommand; getopt optstrings) ----------------
+seqtk/seq        N 1 2 q l Q a A C r n s f M L c V U X S F x R
+seqtk/comp       u r
+seqtk/sample     2 s
+seqtk/subseq     t l s
+seqtk/trimfq     l q b e L
+seqtk/mergefa    h i m r q
+seqtk/cutN       n p g
+seqtk/gap        l
+seqtk/hety       w t m
+seqtk/gc         w x f l
+seqtk/split      n l
+seqtk/fqchk      q
+seqtk/telo       m p d s P
+
+# ---------------- sickle (getopt_long: pe + se) ----------------
+sickle  d f r c t o p m M s q l x n g z \
+        pe-combo fastq-file output-combo output-combo-all output-single \
+        gzip-output qual-type qual-threshold length-threshold no-fiveprime \
+        discard-n truncate-n output-file output-combo quiet
+
+# ---------------- skewer (argv switch + usage long names) ----------------
+skewer  x f l m M b N c e q Q L n o z A X i t y k r u d 1 \
+        compress format min mode matrix barcode fillNs cut cut3 end-quality \
+        mean-quality max masked-output excluded-output intelligent threads \
+        quiet output stdout mean help len max-len
+
+# ---------------- fastp (cmd.add) ----------------
+fastp  i o I O 6 V D c U m 5 r 3 M W A L Q G y Y z e a u q n l p P S d s w b B f F t T g x R h j \
+       in1 out1 in2 out2 unpaired1 unpaired2 failed_out merged_out overlapped_out \
+       phred64 stdin stdout verbose dedup dup_calc_accuracy dont_eval_duplication \
+       correction umi umi_loc umi_len umi_prefix umi_skip umi_delim merge merged_out \
+       include_unmerged discard_unmerged cut_front cut_tail cut_right cut_window_size \
+       cut_mean_quality cut_front_window_size cut_front_mean_quality cut_tail_window_size \
+       cut_tail_mean_quality cut_right_window_size cut_right_mean_quality cut_by_quality5 \
+       cut_by_quality3 cut_by_quality_aggressive disable_adapter_trimming adapter_sequence \
+       adapter_sequence_r2 adapter_fasta detect_adapter_for_pe allow_gap_overlap_trimming \
+       overlap_len_require overlap_diff_limit overlap_diff_percent_limit disable_quality_filtering \
+       qualified_quality_phred unqualified_percent_limit n_base_limit average_qual \
+       disable_length_filtering length_required length_limit low_complexity_filter \
+       complexity_threshold filter_by_index1 filter_by_index2 filter_by_index_threshold \
+       disable_trim_poly_g trim_poly_g poly_g_min_len trim_poly_x poly_x_min_len \
+       compression thread split split_by_lines split_prefix_digits trim_front1 trim_tail1 \
+       max_len1 trim_front2 trim_tail2 max_len2 overrepresentation_analysis \
+       overrepresentation_sampling reads_to_process dont_overwrite fix_mgi_id \
+       interleaved_in report_title json html
+
+# ---------------- prinseq (GetOptions, prinseq-lite.pl) ----------------
+prinseq  h help man verbose version i o fastq fasta fastq2 fasta2 qual filename1 filename2 \
+         min_len max_len range_len min_gc max_gc range_gc min_qual_score max_qual_score \
+         min_qual_mean max_qual_mean ns_max_p ns_max_n seq_num derep derep_min lc_method \
+         lc_threshold trim_to_len trim_left trim_right trim_left_p trim_right_p trim_tail_left \
+         trim_tail_right trim_ns_left trim_ns_right trim_qual_left trim_qual_right trim_qual_type \
+         trim_qual_rule trim_qual_window trim_qual_step seq_case dna_rna line_width seq_id \
+         out_format out_good out_bad rm_header no_qual_header seq_id_mappings phred64 stats_info \
+         stats_len stats_dinuc stats_tag stats_dupl stats_ns stats_assembly stats_all \
+         aa graph_data graph_stats qual_noscale noniupac exact_only custom_params params
+
+# ---------------- vcftools (parameters.cpp) ----------------
+vcftools  012 BEAGLE-GL BEAGLE-PL FILTER-summary IMPUTE LROH SNPdensity TajimaD TsTv \
+          TsTv-by-count TsTv-by-qual TsTv-summary bcf bed chr chrom-map contigs counts counts2 \
+          depth derived diff diff-bcf diff-discordance-matrix diff-indv diff-indv-discordance \
+          diff-indv-map diff-site diff-site-discordance diff-switch-error exclude exclude-bed \
+          exclude-positions exclude-positions-overlap extract-FORMAT-info freq freq2 from-bp \
+          fst-window-size fst-window-step geno-chisq geno-depth geno-r2 geno-r2-positions \
+          get-INFO gzdiff gzvcf h hap-r2 hap-r2-positions hapcount hardy help het hist-indel-len \
+          hwe indv indv-burden indv-freq-burden indv-freq-burden2 interchrom-geno-r2 \
+          interchrom-hap-r2 invert-mask keep keep-INFO keep-INFO-all keep-filtered \
+          keep-only-indels kept-sites ld-window ld-window-bp ld-window-bp-min ld-window-min \
+          ldhat ldhat-geno ldhelmet mac maf mask mask-min max-alleles max-indv max-mac \
+          max-maf max-meanDP max-missing max-missing-count max-non-ref-ac \
+          max-non-ref-ac-any max-non-ref-af max-non-ref-af-any maxDP mendel min-alleles \
+          min-meanDP min-r2 minDP minGQ minQ missing-indv missing-site \
+          non-ref-ac non-ref-ac-any non-ref-af non-ref-af-any not-chr out pca pca-no-norm \
+          pca-snp-loadings phased plink plink-tped \
+          positions positions-overlap recode recode-INFO recode-INFO-all recode-bcf relatedness \
+          relatedness2 remove remove-INFO remove-filtered remove-filtered-all remove-filtered-geno \
+          remove-filtered-geno-all remove-indels remove-indv removed-sites singletons site-depth \
+          site-mean-depth site-pi site-quality snp snps stdout temp \
+          thin to-bp vcf version weir-fst-pop window-pi window-pi-step
+
+# ---------------- mosdepth (docopt usage) ----------------
+mosdepth  t b Q F i x n T c R l u f a q m h threads chrom by no-per-base fasta reference \
+          include-flag fast-mode quantize mapq thresholds use-median read-groups flag d4 \
+          fragment-mode min-frag-len max-frag-len help version
+
+# ---------------- htslib utilities (getopt_long) ----------------
+bgzip    c d h f b s i I l g r t k o @ binary compress-level decompress force index \
+         index-name keep offset output rebgzip reindex size stdout test threads version
+tabix    h H 0 b c e f m p s S l r C R T D @ begin cache comment csi end force help \
+         list-chroms min-shift only-header preset print-header regions reheader \
+         separate-regions sequence skip-lines targets threads verbosity version zero-based
+htsfile  c C h H v
+
+# ---------------- samtools (per subcommand; getopt_long + SAM_OPT_GLOBAL_OPTIONS) ----------------
+# SAM_OPT_GLOBAL_OPTIONS = input-fmt input-fmt-option output-fmt output-fmt-option
+#                          reference threads write-index verbosity
+samtools/view  S b B c C t h 1 H o O q f F G u l r T R N d D L s @ m x U M X e p P z n \
+               add-flags bam count cram customised-index customized-index excl-flags \
+               exclude-flags excl-no-read-group excl-no-readgroup exclude-no-read-group \
+               exclude-no-readgroup expr expression fai-reference fast fetch-pairs \
+               header-only help incl-flags include-flags rf keep-tag library min-mapq \
+               min-MQ min-mq min-qlen no-header no-PG output output-unselected QNAME-file \
+               qname-file read-group read-group-file readgroup readgroup-file region-file \
+               regions-file remove-B remove-flags remove-tag require-flags save-counts \
+               subsample subsample-seed tag tag-file target-file targets-file uncompressed \
+               unmap unoutput use-index with-header sanitize \
+               input-fmt input-fmt-option output-fmt output-fmt-option reference threads \
+               write-index verbosity
+samtools/sort  l m n N o O T @ t M I K u R w H threads no-PG template-coordinate \
+               input-fmt input-fmt-option output-fmt output-fmt-option reference write-index verbosity
+samtools/index b c m M o @ output bai csi min-shift \
+               input-fmt input-fmt-option output-fmt output-fmt-option reference threads write-index verbosity
+samtools/flagstat @ O threads output-fmt input-fmt input-fmt-option reference write-index verbosity
+samtools/depth @ q Q J H d m l g G o a r X f b s min-MQ min-mq min-BQ min-bq excl-flags \
+               incl-flags require-flags threads input-fmt input-fmt-option reference write-index verbosity
+samtools/fastq 0 1 2 o f F G n i N O s c t T v @ d D require-flags excl-flags exclude-flags \
+               rf incl-flags include-flags i1 I1 i2 I2 if IF index-format barcode-tag \
+               quality-tag tag tag-file no-sc no-sc-bkp sc-aux \
+               threads input-fmt input-fmt-option output-fmt output-fmt-option reference write-index verbosity
+samtools/mpileup A f r l q Q R C B d b o E G 6 O s x X a M rf ff incl-flags excl-flags output \
+               output-QNAME output-qname count-orphans bam-list no-BAQ no-baq adjust-MQ adjust-mq \
+               max-depth redo-BAQ redo-baq fasta-ref exclude-RG exclude-rg positions region \
+               ignore-RG ignore-rg min-MQ min-mq min-BQ min-bq ignore-overlaps-removal \
+               disable-overlap-removal output-mods output-BP output-bp output-BP-5 output-bp-5 \
+               output-MQ output-mq ext-prob gap-frac tandem-qual skip-indels max-idepth min-ireads \
+               per-sample-mF per-sample-mf platforms customized-index reverse-del output-extra \
+               output-sep output-empty no-output-ins no-output-ins-mods no-output-del no-output-ends \
+               threads input-fmt input-fmt-option output-fmt output-fmt-option reference write-index verbosity
+samtools/idxstats @ X threads input-fmt input-fmt-option reference write-index verbosity
+samtools/quickcheck v q u
+samtools/dict ? A h H a l s u o help no-header alias alt alternative-name assembly species uri output
+samtools/cat h o b r p q f no-PG threads input-fmt input-fmt-option output-fmt output-fmt-option reference write-index verbosity
+samtools/reheader h i P c help in-place no-PG command
+samtools/addreplacerg r R m o O h @ u w no-PG threads input-fmt input-fmt-option output-fmt output-fmt-option reference write-index verbosity
+samtools/fixmate r p c m M O @ u z no-PG threads input-fmt input-fmt-option output-fmt output-fmt-option reference write-index verbosity
+samtools/merge h n N r u 1 R o f @ l c p s b O t X L threads no-PG template-coordinate \
+               input-fmt input-fmt-option output-fmt output-fmt-option reference write-index verbosity
+samtools/coverage A o l q Q h H w r b m d D rf ff incl-flags excl-flags bam-list min-read-len \
+               min-MQ min-mq min-BQ min-bq histogram ascii plot-depth output no-header n-bins \
+               region help depth min-depth threads input-fmt input-fmt-option reference write-index verbosity
+samtools/split v f h u d M p @ no-PG max-split zero-pad threads input-fmt input-fmt-option \
+               output-fmt output-fmt-option reference write-index verbosity
+samtools/markdup r s l S t T O @ f d c m u include-fails no-PG mode no-multi-dup read-coords \
+               coords-order barcode-tag barcode-name barcode-rgx use-read-groups json duplicate-count \
+               threads input-fmt input-fmt-option output-fmt output-fmt-option reference write-index verbosity
+samtools/stats ? h d s X x p r c l i t m q f F g I S P @ help remove-dups sam customized-index-file \
+               ref-seq coverage read-length insert-size most-inserts trim-quality target-regions \
+               required-flag filtering-flag id GC-depth sparse split split-prefix remove-overlaps \
+               cov-threshold ref-stats ref-stats-chunk threads input-fmt input-fmt-option reference \
+               write-index verbosity
+samtools/calmd E q Q r e u N h b S C n A d @ no-PG threads input-fmt input-fmt-option output-fmt \
+               output-fmt-option reference write-index verbosity
+samtools/import 1 2 s 0 b h i T r R o O u @ N no-PG i1 i2 r1 r2 rg rg-line order barcode-tag \
+               quality-tag name2 threads input-fmt input-fmt-option output-fmt output-fmt-option \
+               reference write-index verbosity
+samtools/phase Q e F q k b l D A min-BQ min-bq no-PG threads input-fmt input-fmt-option reference \
+               write-index verbosity
+samtools/targetcut f Q i o 0 1 2 threads input-fmt input-fmt-option reference write-index verbosity
+samtools/consensus @ q d c H r 5 f C a A l o m p t X T Z use-qual no-use-qual adj-qual no-adj-qual \
+               use-MQ no-use-MQ adj-MQ no-adj-MQ NM-halo SC-cost scale-MQ low-MQ high-MQ min-depth \
+               call-fract het-fract region format cutoff ambig line-len default-qual het-only show-del \
+               show-ins mark-ins output incl-flags rf excl-flags ff min-MQ min-BQ P-het P-indel \
+               het-scale mode homopoly-fix homopoly-score homopoly-redux qual-calibration config \
+               ref-qual block-size threads input-fmt input-fmt-option reference write-index verbosity
+samtools/tview s p d X w i threads input-fmt input-fmt-option reference write-index verbosity
+
+# ---------------- bcftools (per subcommand; getopt_long) ----------------
+bcftools/view  l t T r R o O s S G f k n v V m M a A u U h H c C I i e x X p P q Q g W \
+               apply-filters compression-level drop-genotypes exclude exclude-phased \
+               exclude-private exclude-types exclude-uncalled force-samples genotype header-only \
+               include known max-ac max-af max-alleles min-ac min-af min-alleles no-header \
+               no-update no-version novel output output-file output-type phased private regions \
+               regions-file regions-overlap samples samples-file targets targets-file \
+               targets-overlap threads trim-alt-alleles trim-unseen-allele types uncalled \
+               verbosity with-header write-index
+bcftools/call  h o O r R s S t T A N M V v c m p C n P f a i g X Y F G W \
+               annotate chromosome-X chromosome-Y consensus-caller constrain format-fields \
+               group-samples group-samples-tag gvcf help insert-missed keep-alts keep-masked-refs \
+               keep-unseen-allele multiallelic-caller no-version novel-rate output output-type \
+               ploidy ploidy-file prior prior-freqs pval-threshold regions regions-file \
+               regions-overlap samples samples-file skip-Ns skip-variants targets targets-file \
+               threads variants-only verbosity write-index
+bcftools/norm  h r R f w D d o O c m t T s N a g W v S i e atom-overlaps atomize check-ref \
+               do-not-normalize exclude fasta-ref force gff-annot help include keep-sum \
+               multi-overlaps multiallelics no-realign no-version old-rec-tag output output-type \
+               regions regions-file regions-overlap remove-duplicates right-align rm-dup site-win \
+               sort strict-filter targets targets-file targets-overlap threads verbose verbosity write-index
+bcftools/filter e i t T r R h s m M o O g G S W v IndelGap SnpGap exclude include mask mask-file \
+               mask-overlap mode no-version output output-type regions regions-file regions-overlap \
+               set-GTs soft-filter targets targets-file targets-overlap threads verbosity write-index
+bcftools/query h l r R F f a s S H t T c v i e o u N disable-automatic-newline regions-overlap \
+               targets-overlap verbosity
+bcftools/concat h o O f a l q D d G r R c n v W allow-overlaps compact-PS drop-genotypes file-list \
+               ligate ligate-force ligate-warn min-PQ naive naive-force no-version output output-type \
+               regions regions-file regions-overlap remove-duplicates rm-dups threads verbose \
+               verbosity write-index
+bcftools/merge h m f r R o O i M l g F 0 L W v apply-filters file-list filter-logic force-no-index \
+               force-samples force-single gvcf help info-rules local-alleles merge missing-rules \
+               missing-to-ref no-index no-version output output-type print-header regions regions-file \
+               regions-overlap threads use-header verbosity write-index
+bcftools/stats h c r R e s S d i t T F f 1 u v I E regions-overlap targets-overlap verbose verbosity
+bcftools/isec  h c r R p n w t T C f o O i e l W v apply-filters collapse complement exclude file-list \
+               help include nfiles no-version output output-type prefix regions regions-file \
+               regions-overlap targets targets-file targets-overlap threads verbosity write write-index
+bcftools/annotate h H o O r R a x c C i e S s I m k l f W v annotations collapse columns columns-file \
+               exclude force header-line header-lines include keep-sites mark-sites merge-logic \
+               min-overlap no-version output output-type pair-logic regions regions-file \
+               regions-overlap remove rename-annots rename-chrs samples samples-file set-id \
+               single-overlaps threads verbosity write-index
+bcftools/roh   h r R t T H a s S m M G I e V b O o i v regions-overlap targets-overlap verbosity
+bcftools/convert ? h r R s S t T i e g G o O c f H W v 3N6 chrom columns exclude fasta-ref gensample \
+               gensample2vcf gvcf2vcf haplegendsample haplegendsample2vcf haploid2diploid hapsample \
+               hapsample2vcf include keep-duplicates no-version output output-type regions regions-file \
+               regions-overlap samples samples-file sex tag targets targets-file targets-overlap \
+               threads tsv2vcf vcf-ids verbosity write-index
+bcftools/sort  m T O o W h ? v help max-mem output output-file output-type temp-dir verbosity write-index
+bcftools/head  h n s v headers records samples verbosity
+bcftools/gtcheck h g p s S P H r R a t T G c u e E i o O v exclude include output output-type \
+               regions-overlap targets-overlap verbosity
+bcftools/consensus h ? s S 1 I i e H f o m c M p a v exclude include mark-del mark-ins mark-snv \
+               prefix regions-overlap verbosity
+bcftools/csq   ? h r R t T i e f o O g s S p q c C l n b B v W dump-gff genetic-code no-version \
+               regions-overlap targets-overlap threads trim-protein-seq unify-chr-names \
+               brief-predictions write-index
+bcftools/cnv   h ? r R t T s o p l c b P x e O W f a L d k v regions-overlap targets-overlap verbosity
+bcftools/polysomy h ? o v t T r R s f p c i m b n S regions-overlap targets-overlap verbose verbosity
+bcftools/reheader s h o f T v N n verbosity
+bcftools/index c t f m s n a o v all csi force min-shift nrecords output output-file stats tbi \
+               threads verbosity
+bcftools/mpileup A g f r R q Q C B D d L b P p o e h I m F E G 6 O x a s S t T M X U W v \
+               rf ff incl-flags excl-flags output output-type illumina1.3+ count-orphans bam-list \
+               no-BAQ no-baq adjust-MQ adjust-mq max-depth redo-BAQ redo-baq fasta-ref ignore-RG \
+               ignore-rg min-MQ min-mq min-BQ min-bq region regions regions-file targets targets-file \
+               samples samples-file skip-any-unset nu skip-all-unset lu skip-any-set ns skip-all-set ls \
+               full-BAQ full-baq platforms per-sample-mF per-sample-mf config seed ambig-reads ar \
+               skip-indels max-idepth min-ireads tandem-qual ext-prob gap-frac max-read-len indel-bias \
+               indel-size indels-cns indels-2.0 no-indels-cns open-prob del-bias poly-mqual \
+               no-poly-mqual score-vs-ref seqq-offset annotate gvcf no-reference read-groups \
+               max-BQ max-bq delta-BQ threads verbosity write-index
+bcftools/som   h t c p n r b l s f d m e help prefix ntrain-sites random-seed bmu-threshold \
+               exclude-bad learning-rate size som-dimension nfold merge train classify
+
+# ---------------- bed* (documented per-subcommand help flags) ----------------
+bed12tobed6   h i n
+bedannotate   h i files names counts both s S
+bedbamtobed   h i bedpe bed12 split splitD ed cigar as novo bwa mate1 color tag
+bedclosest    d D io iu id fu fd N t mdb k a abam b names filenames s S header h split
+bedcluster    h i d s
+bedcomplement L i g h
+bedcoverage   d counts hist mean a abam b s S f F r e split i g h sorted
+bedexpand     h i c
+bedfisher     exclude m s S a abam b f F r e i g h split
+bedflank      h i g l r b s pct header
+bedgenomecov  h i ibam g d dz bg bga max scale split ignoreD strand 3 5 pc fs du trackline trackopts
+bedgetfasta   h fi bed fo name nameOnly split tab bedOut s fullHeader rna
+bedgroupby    g grp inheader outheader header full ignorecase i h c o ops prec
+bedigv        h i path sort sess clps name slop img
+bedintersect  a abam b names filenames u f F wa wao wb wo c C r e v s S loj i g h split sorted header
+bedjaccard    s S a abam b f F r e i g h split
+bedlinks      h i base org db
+bedmakewindows h g b w s n i reverse
+bedmap        c a abam b f F wa wao wb wo C r e v s S loj i g h split null delim o ops prec header
+bedmerge      n nms scores delim d s S i g h c o ops prec header
+bedmulticov   h bed bams split f r q p D F s S
+bedmultiinter h i names g filler header empty cluster examples
+bednuc        h fi bed seq s C pattern fullHeader
+bedoverlap    h i cols
+bedpairtobed  h a abam b bedpe ed type f s S ubam
+bedpairtopair h a b type f slop ss rdn is
+bedrandom     h g seed l n
+bedreldist    h a b detail
+bedsample     h n seed s i ubam header
+bedshift      h i g p m s pct header
+bedshuffle    h i g excl incl seed chrom chromFirst f maxTries bedpe noOverlapping allowBeyondChromEnd
+bedslop       h i g l r b s pct header
+bedsort       h i sizeA sizeD chrThenSizeA chrThenSizeD chrThenScoreA chrThenScoreD faidx g header
+bedspacing    i g h
+bedsplit      h v p i bed n a prefix input number algorithm
+bedsubtract   f A N a abam b F r e s i g h split
+bedsummary    i g h
+bedtag        h i files labels names scores intervals s S f tag
+bedtobam      h i g mapq bed12 ubam
+bedunionbedg  h i files labels names g filler header empty examples
+bedwindow     h a abam b bed u c v sw sm Sm w l r ubam header

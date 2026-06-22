@@ -1,0 +1,209 @@
+{
+  "seed": 1,
+  "iterations": 40,
+  "targets": [
+    {
+      "name": "bcftools-view",
+      "tool": "bcftools",
+      "skipped": false,
+      "inputs": 40,
+      "by_class": {
+        "exitcode-differs": 17,
+        "stderr-differs": 2,
+        "stdout-differs": 1
+      },
+      "reproducers": [
+        {
+          "class": "exitcode-differs",
+          "origin": "raw",
+          "detail": "exit code differs: ours=1 upstream=255\n  ours stderr: bcftools view: unexpected line before VCF header: rY\ufffd\ufffd\ufffd\ufffd`\ufffd\ufffd\ufffd8u\u0010\u0007\ufffd\ufffd\ufffdW\u0015\ufffdy\ufffdcڙOb\ufffd\u0018*\u001a,\ufffd\u0010\ufffd\u0000\u003e\\\ufffdB\u0016*X[\ufffdm{\ufffd\u000bB7=j\ufffd*/gGķ۲-\ufffdFm\ufffdu\ufffd\ufffd^j\ufffde腫\u0006\ufffdt\ufffd\u003e\ufffdQ|4JC\ufffdd-\ufffd\ufffd3\ufffd@\ufffd\ufffd\ufffd\u0000\ufffdc\u0026\u0006\u0013\ufffd\ufffdO\n\n  upstream stderr: [E::hts_hopen] Failed to open file \u003cINPUT\u003e\n[E::hts_open_format] Failed to open file \"\u003cINPUT\u003e\" : Exec format error\nFailed to read from \u003cINPUT\u003e: Exec format error...",
+          "input_len": 1,
+          "original_len": 126,
+          "input_b64": "iQ=="
+        },
+        {
+          "class": "exitcode-differs",
+          "origin": "raw",
+          "detail": "exit code differs: ours=1 upstream=255\n  ours stderr: bcftools view: unexpected line before VCF header: \ufffdUӿÏ\u0001\u001aw\\\ufffd\ufffdz\n\n  upstream stderr: [E::hts_hopen] Failed to open file \u003cINPUT\u003e\n[E::hts_open_format] Failed to open file \"\u003cINPUT\u003e\" : Exec format error\nFailed to read from \u003cINPUT\u003e: Exec format error...",
+          "input_len": 1,
+          "original_len": 156,
+          "input_b64": "8g=="
+        },
+        {
+          "class": "exitcode-differs",
+          "origin": "mutation",
+          "detail": "exit code differs: ours=0 upstream=255\n  ours stderr: \n  upstream stderr: [E::vcf_parse_format_empty1] FORMAT column with no sample columns starting at chr1:178141\n[E::bcf_write] Broken VCF record, the number of columns at chr1:178141...",
+          "input_len": 0,
+          "original_len": 459455
+        },
+        {
+          "class": "exitcode-differs",
+          "origin": "raw",
+          "detail": "exit code differs: ours=1 upstream=255\n  ours stderr: bcftools view: unexpected line before VCF header: \ufffdF9\ufffd\ufffdz\ufffdY\u0015\ufffd\ufffd+2Cm\ufffd\u0018\ufffd\ufffdhWA\ufffd\u0005\u0026vA(5P\ufffd܇Ȣ\ufffd\ufffdg\ufffd\ufffd\ufffd\u0017I\ufffd`e2\\\ufffd\ufffdV\ufffd\ufffd\"\ufffd\u0004\ufffd$8\ufffdCf\ufffd`\ufffd\u000e\ufffd\ufffd\ufffd;C\u003c\ufffd\u000b+^\ufffdR჉5\u0005\ufffd\ufffd!\ufffdB\ufffd\u0016U\u0013*\u001a\ufffd-\ufffdZ\ufffd\ufffdvQ(]\ufffd\u0019\ufffdvW...\n  upstream stderr: [E::hts_hopen] Failed to open file \u003cINPUT\u003e\n[E::hts_open_format] Failed to open file \"\u003cINPUT\u003e\" : Exec format error\nFailed to read from \u003cINPUT\u003e: Exec format error...",
+          "input_len": 1,
+          "original_len": 128,
+          "input_b64": "uw=="
+        },
+        {
+          "class": "exitcode-differs",
+          "origin": "raw",
+          "detail": "exit code differs: ours=1 upstream=255\n  ours stderr: bcftools view: unexpected line before VCF header: \ufffd\ufffd\ufffdG\u001f!\ufffdՌt\u0000\ufffdu\ufffd.\ufffd\u003c\u0012\ufffds\r\ufffd\ufffd\ufffd\ufffd\ufffd\u001d\ufffdDZ\ufffd[=d\ufffd\u0014\ufffd\ufffda#\ufffdƻ\u0005l\ufffda\ufffd\ufffdM\ufffd\ufffd\u0011\ufffd9A\ufffd\ufffd\ufffd\ufffd4\ufffdi\u0004\ufffd\ufffd޶\ufffd#1\ufffd}\ufffd\ufffd\ufffd\ufffd\ufffdRk\ufffd.\ufffd3\u0006\ufffd\u0006R\ufffd\ufffd,\ufffd\ufffd\ufffd=\u0001\ufffd\ufffd\ufffdh\ufffd\u0013\ufffd\ufffd\ufffd!\u0013\ufffd\ufffd\u0000...\n  upstream stderr: [E::hts_hopen] Failed to open file \u003cINPUT\u003e\n[E::hts_open_format] Failed to open file \"\u003cINPUT\u003e\" : Exec format error\nFailed to read from \u003cINPUT\u003e: Exec format error...",
+          "input_len": 1,
+          "original_len": 110,
+          "input_b64": "AA=="
+        },
+        {
+          "class": "stderr-differs",
+          "origin": "mutation",
+          "detail": "stderr differs (normalized): first diff at line 1:\n    ours:     \n    upstream: [W::vcf_parse] Contig ':IR\ufffd' is not defined in the header. (Quick workaround: index the file with tabix.)",
+          "input_len": 105,
+          "original_len": 459455,
+          "input_b64": "IyNmaWxlZm9ybWF0PVZDRnY0LjIKI0NIUk9NCVBPUwlJRAlSRUYJQUxUCVFVQUwJRklMVEVSCUlORk8JRk9STUFUCXNhZTEKMQkxMTUJNDQyCUcJR0cJNzAJUwlEUD00NAlHVDpEUAkw",
+          "input_text": "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tsae1\n1\t115\t442\tG\tGG\t70\tS\tDP=44\tGT:DP\t0"
+        },
+        {
+          "class": "stderr-differs",
+          "origin": "mutation",
+          "detail": "stderr differs (normalized): first diff at line 1:\n    ours:     \n    upstream: [W::vcf_parse_format_dict2] FORMAT 'G\ufffd\ufffd\\T' at chr1:152919 is not defined in the header, assuming Type=String",
+          "input_len": 99,
+          "original_len": 459458,
+          "input_b64": "IyNmaWxlZm9ybWF0PVZDRnY0LjIKI0NIUk9NCVBPUwlJRAlSRUYJQUxUCVFVQUwJRklMVEVSCUlORk8JRk9STUFUCXNhZTEKMQk5MDkJcnMzCVQJQwkyMglQCURQOQlHUAkw",
+          "input_text": "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tsae1\n1\t909\trs3\tT\tC\t22\tP\tDP9\tGP\t0"
+        },
+        {
+          "class": "stdout-differs",
+          "origin": "mutation",
+          "detail": "stdout differs (normalized): first diff at line 7277:\n    ours:     chr4\t155864\trs7266\tT\tTC\t61\tPASS\tDP=48;AF=0.57܌j0%\r\ufffd\ufffd\tGT:DP\t1/1:48\n    upstream: chr4\t155864\trs7266\tT\tTC\t61\tPASS\tDP=48;AF=0.57\tGT:DP\t1/1:48",
+          "input_len": 59,
+          "original_len": 459463,
+          "input_b64": "IyNmaWxlZm9ybWF0PVZDRgojIz4KI0NIUk9NCVBPUwlJRAlSRUYJQUxUCVFVQUwJRklMVEVSCUlORk8=",
+          "input_text": "##fileformat=VCF\n##\u003e\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO"
+        }
+      ],
+      "coverage": {
+        "enabled": true,
+        "tool": "bcftools",
+        "percent": 7.023809523809524,
+        "detail": "github.com/yassineS/bio_ai_experiment/pkg/cliflag\t\tcoverage: 59.1% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/alnio\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/baq\t\tcoverage: 2.4% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/bcf\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/cram\t\tcoverage: 0.4% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/cram/codec\t\tcoverage: 0.2% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/edlib\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/errmod\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/gff\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/hfile\t\tcoverage: 0.9% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper\t\tcoverage: 17.3% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/mdnm\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/region\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/sam\t\tcoverage: 0.8% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/strfinder\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf\t\tcoverage: 60.7% of statements\n\tgithub.com/yassineS/bio_ai_experiment/tools/bcftools/cmd/bcftools\t\tcoverage: 4.7% of statements\n\tgithub.com/yassineS/bio_ai_experiment/tools/bcftools/pkg/bcftools\t\tcoverage: 1.0% of statements"
+      }
+    },
+    {
+      "name": "samtools-flagstat",
+      "tool": "samtools",
+      "skipped": false,
+      "inputs": 40,
+      "by_class": {
+        "stderr-differs": 30
+      },
+      "reproducers": [
+        {
+          "class": "stderr-differs",
+          "origin": "mutation",
+          "detail": "stderr differs (normalized): first diff at line 1:\n    ours:     samtools flagstat: sam: no SAM header or leading alignment record (empty or non-SAM input)\n    upstream: [E::hts_hopen] Failed to open file \u003cINPUT\u003e",
+          "input_len": 1,
+          "original_len": 7,
+          "input_b64": "GQ=="
+        },
+        {
+          "class": "stderr-differs",
+          "origin": "mutation",
+          "detail": "stderr differs (normalized): first diff at line 1:\n    ours:     samtools flagstat: sam: no SAM header or leading alignment record (empty or non-SAM input)\n    upstream: [E::hts_hopen] Failed to open file \u003cINPUT\u003e",
+          "input_len": 1,
+          "original_len": 194,
+          "input_b64": "Zw==",
+          "input_text": "g"
+        },
+        {
+          "class": "stderr-differs",
+          "origin": "raw",
+          "detail": "stderr differs (normalized): first diff at line 1:\n    ours:     samtools flagstat: sam: no SAM header or leading alignment record (empty or non-SAM input)\n    upstream: [E::hts_hopen] Failed to open file \u003cINPUT\u003e",
+          "input_len": 1,
+          "original_len": 58,
+          "input_b64": "MQ==",
+          "input_text": "1"
+        },
+        {
+          "class": "stderr-differs",
+          "origin": "mutation",
+          "detail": "stderr differs (normalized): first diff at line 1:\n    ours:     samtools flagstat: sam: no SAM header or leading alignment record (empty or non-SAM input)\n    upstream: [E::hts_hopen] Failed to open file \u003cINPUT\u003e",
+          "input_len": 1,
+          "original_len": 195,
+          "input_b64": "0Q=="
+        },
+        {
+          "class": "stderr-differs",
+          "origin": "mutation",
+          "detail": "stderr differs (normalized): first diff at line 1:\n    ours:     samtools flagstat: sam: no SAM header or leading alignment record (empty or non-SAM input)\n    upstream: [E::hts_hopen] Failed to open file \u003cINPUT\u003e",
+          "input_len": 1,
+          "original_len": 243,
+          "input_b64": "sQ=="
+        }
+      ],
+      "coverage": {
+        "enabled": true,
+        "tool": "samtools",
+        "percent": 4.737500000000001,
+        "detail": "github.com/yassineS/bio_ai_experiment/pkg/cliflag\t\tcoverage: 30.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/alnio\t\tcoverage: 20.7% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/bam\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/baq\t\tcoverage: 2.4% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/bcf\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/bed\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/cram\t\tcoverage: 0.4% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/cram/codec\t\tcoverage: 0.2% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/edlib\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/errmod\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/gff\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/hfile\t\tcoverage: 0.9% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper\t\tcoverage: 27.6% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/mdnm\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/region\t\tcoverage: 2.9% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/sam\t\tcoverage: 21.3% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/strfinder\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/tools/bcftools/pkg/bcftools\t\tcoverage: 0.2% of statements\n\tgithub.com/yassineS/bio_ai_experiment/tools/samtools/cmd/samtools\t\tcoverage: 5.7% of statements\n\tgithub.com/yassineS/bio_ai_experiment/tools/samtools/pkg/samtools\t\tcoverage: 1.4% of statements"
+      }
+    },
+    {
+      "name": "bedtools-merge",
+      "tool": "bedmerge",
+      "skipped": false,
+      "inputs": 40,
+      "by_class": {
+        "stderr-differs": 13
+      },
+      "reproducers": [
+        {
+          "class": "stderr-differs",
+          "origin": "raw",
+          "detail": "stderr differs (normalized): first diff at line 1:\n    ours:     Error merging intervals: unexpected file format: please use tab-delimited BED, GFF, or VCF (line: \"\\xaa:\\r\\ue5f7Uu\\x0fE\\x84Ə\\x94\\a\\x86\\x00R2\")\n    upstream: Error: Unable to determine type for file \u003cINPUT\u003e",
+          "input_len": 1,
+          "original_len": 117,
+          "input_b64": "Vg==",
+          "input_text": "V"
+        },
+        {
+          "class": "stderr-differs",
+          "origin": "mutation",
+          "detail": "stderr differs (normalized): first diff at line 1:\n    ours:     Error merging intervals: invalid chromEnd \"1O\\xe7\\x115\": illegal number \"1O\\xe7\\x115\"\n    upstream: ***** ERROR: illegal number \"1O\ufffd\u00115\". Exiting...",
+          "input_len": 1,
+          "original_len": 196855,
+          "input_b64": "Kw==",
+          "input_text": "+"
+        },
+        {
+          "class": "stderr-differs",
+          "origin": "raw",
+          "detail": "stderr differs (normalized): first diff at line 1:\n    ours:     Error merging intervals: unexpected file format: please use tab-delimited BED, GFF, or VCF (line: \"(\\xdf=r,\\b\\xfe\\xae\\x97\\xe9\\x93r\\x88\\xce\\\"\\xae\\x1a\\xbf\\xc6\\xe1...\n    upstream: Error: Unable to determine type for file \u003cINPUT\u003e",
+          "input_len": 1,
+          "original_len": 66,
+          "input_b64": "qw=="
+        },
+        {
+          "class": "stderr-differs",
+          "origin": "raw",
+          "detail": "stderr differs (normalized): first diff at line 1:\n    ours:     Error merging intervals: unexpected file format: please use tab-delimited BED, GFF, or VCF (line: \"E\\\\\\xf4j\\xac\\xbbP\\x15\\x01\\x97QRl\\xacJ\\xfc\\xdaZ@\\xf36 \\xae\\xcd...\n    upstream: Error: Unable to determine type for file \u003cINPUT\u003e",
+          "input_len": 1,
+          "original_len": 119,
+          "input_b64": "qg=="
+        },
+        {
+          "class": "stderr-differs",
+          "origin": "raw",
+          "detail": "stderr differs (normalized): first diff at line 1:\n    ours:     Error merging intervals: unexpected file format: please use tab-delimited BED, GFF, or VCF (line: \"\\x15\\xf9\\xf5\\xeeS\\x82\\xfcĕ \\x9e\\xda\\xc4i\\xb5\\x06\\xbb\\x8f\\x99...\n    upstream: Error: Unable to determine type for file \u003cINPUT\u003e",
+          "input_len": 1,
+          "original_len": 138,
+          "input_b64": "2g=="
+        }
+      ],
+      "coverage": {
+        "enabled": true,
+        "tool": "bedmerge",
+        "percent": 15.0875,
+        "detail": "github.com/yassineS/bio_ai_experiment/pkg/cliflag\t\tcoverage: 10.9% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/hfile\t\tcoverage: 0.9% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper\t\tcoverage: 21.4% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/sam\t\tcoverage: 0.8% of statements\n\tgithub.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix\t\tcoverage: 0.0% of statements\n\tgithub.com/yassineS/bio_ai_experiment/tools/bedmerge/cmd/bedmerge\t\tcoverage: 50.9% of statements\n\tgithub.com/yassineS/bio_ai_experiment/tools/bedmerge/pkg/bedmerge\t\tcoverage: 35.8% of statements"
+      }
+    }
+  ]
+}

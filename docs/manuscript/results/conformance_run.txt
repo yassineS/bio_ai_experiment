@@ -1,0 +1,183 @@
+# go test -v ./pipeline/conformance/... ./pipeline/edgecases/...
+=== RUN   TestHtscodecs_RANS4x16
+=== RUN   TestHtscodecs_RANS4x16/q4.o0
+=== RUN   TestHtscodecs_RANS4x16/q4.o1
+=== RUN   TestHtscodecs_RANS4x16/q8.o0
+=== RUN   TestHtscodecs_RANS4x16/q8.o1
+=== RUN   TestHtscodecs_RANS4x16/qvar.o0
+=== RUN   TestHtscodecs_RANS4x16/qvar.o1
+=== RUN   TestHtscodecs_RANS4x16/q40+dir.o0
+=== RUN   TestHtscodecs_RANS4x16/q40+dir.o1
+--- PASS: TestHtscodecs_RANS4x16 (1.04s)
+    --- PASS: TestHtscodecs_RANS4x16/q4.o0 (0.00s)
+    --- PASS: TestHtscodecs_RANS4x16/q4.o1 (0.00s)
+    --- PASS: TestHtscodecs_RANS4x16/q8.o0 (0.00s)
+    --- PASS: TestHtscodecs_RANS4x16/q8.o1 (0.01s)
+    --- PASS: TestHtscodecs_RANS4x16/qvar.o0 (0.00s)
+    --- PASS: TestHtscodecs_RANS4x16/qvar.o1 (0.00s)
+    --- PASS: TestHtscodecs_RANS4x16/q40+dir.o0 (0.00s)
+    --- PASS: TestHtscodecs_RANS4x16/q40+dir.o1 (0.00s)
+=== RUN   TestHtscodecs_RANS4x8
+=== RUN   TestHtscodecs_RANS4x8/q4.o0
+=== RUN   TestHtscodecs_RANS4x8/q4.o1
+=== RUN   TestHtscodecs_RANS4x8/q8.o0
+=== RUN   TestHtscodecs_RANS4x8/q8.o1
+=== RUN   TestHtscodecs_RANS4x8/qvar.o0
+=== RUN   TestHtscodecs_RANS4x8/qvar.o1
+=== RUN   TestHtscodecs_RANS4x8/q40+dir.o0
+=== RUN   TestHtscodecs_RANS4x8/q40+dir.o1
+--- PASS: TestHtscodecs_RANS4x8 (0.71s)
+    --- PASS: TestHtscodecs_RANS4x8/q4.o0 (0.00s)
+    --- PASS: TestHtscodecs_RANS4x8/q4.o1 (0.00s)
+    --- PASS: TestHtscodecs_RANS4x8/q8.o0 (0.00s)
+    --- PASS: TestHtscodecs_RANS4x8/q8.o1 (0.00s)
+    --- PASS: TestHtscodecs_RANS4x8/qvar.o0 (0.00s)
+    --- PASS: TestHtscodecs_RANS4x8/qvar.o1 (0.00s)
+    --- PASS: TestHtscodecs_RANS4x8/q40+dir.o0 (0.00s)
+    --- PASS: TestHtscodecs_RANS4x8/q40+dir.o1 (0.01s)
+=== RUN   TestHtscodecs_Arith
+=== RUN   TestHtscodecs_Arith/q4.0
+=== RUN   TestHtscodecs_Arith/q4.1
+=== RUN   TestHtscodecs_Arith/q4.128
+=== RUN   TestHtscodecs_Arith/q4.129
+=== RUN   TestHtscodecs_Arith/q4.192
+=== RUN   TestHtscodecs_Arith/q4.193
+=== RUN   TestHtscodecs_Arith/q4.64
+=== RUN   TestHtscodecs_Arith/q4.65
+=== RUN   TestHtscodecs_Arith/q4.8
+=== RUN   TestHtscodecs_Arith/q4.9
+=== RUN   TestHtscodecs_Arith/q8.0
+=== RUN   TestHtscodecs_Arith/q8.1
+=== RUN   TestHtscodecs_Arith/q8.128
+=== RUN   TestHtscodecs_Arith/q8.129
+=== RUN   TestHtscodecs_Arith/q8.192
+=== RUN   TestHtscodecs_Arith/q8.193
+=== RUN   TestHtscodecs_Arith/q8.64
+=== RUN   TestHtscodecs_Arith/q8.65
+=== RUN   TestHtscodecs_Arith/qvar.0
+=== RUN   TestHtscodecs_Arith/qvar.1
+=== RUN   TestHtscodecs_Arith/qvar.32
+=== RUN   TestHtscodecs_Arith/qvar.64
+=== RUN   TestHtscodecs_Arith/qvar.65
+=== RUN   TestHtscodecs_Arith/q40+dir.0
+=== RUN   TestHtscodecs_Arith/q40+dir.1
+=== RUN   TestHtscodecs_Arith/q40+dir.64
+=== RUN   TestHtscodecs_Arith/q40+dir.65
+=== RUN   TestHtscodecs_Arith/q40+dir.8
+=== RUN   TestHtscodecs_Arith/q40+dir.9
+--- PASS: TestHtscodecs_Arith (2.85s)
+    --- PASS: TestHtscodecs_Arith/q4.0 (0.00s)
+    --- PASS: TestHtscodecs_Arith/q4.1 (0.00s)
+    --- PASS: TestHtscodecs_Arith/q4.128 (0.00s)
+    --- PASS: TestHtscodecs_Arith/q4.129 (0.00s)
+    --- PASS: TestHtscodecs_Arith/q4.192 (0.00s)
+    --- PASS: TestHtscodecs_Arith/q4.193 (0.00s)
+    --- PASS: TestHtscodecs_Arith/q4.64 (0.00s)
+    --- PASS: TestHtscodecs_Arith/q4.65 (0.00s)
+    --- PASS: TestHtscodecs_Arith/q4.8 (0.00s)
+    --- PASS: TestHtscodecs_Arith/q4.9 (0.01s)
+    --- PASS: TestHtscodecs_Arith/q8.0 (0.01s)
+    --- PASS: TestHtscodecs_Arith/q8.1 (0.00s)
+    --- PASS: TestHtscodecs_Arith/q8.128 (0.00s)
+    --- PASS: TestHtscodecs_Arith/q8.129 (0.00s)
+    --- PASS: TestHtscodecs_Arith/q8.192 (0.01s)
+    --- PASS: TestHtscodecs_Arith/q8.193 (0.01s)
+    --- PASS: TestHtscodecs_Arith/q8.64 (0.00s)
+    --- PASS: TestHtscodecs_Arith/q8.65 (0.00s)
+    --- PASS: TestHtscodecs_Arith/qvar.0 (0.00s)
+    --- PASS: TestHtscodecs_Arith/qvar.1 (0.01s)
+    --- PASS: TestHtscodecs_Arith/qvar.32 (0.00s)
+    --- PASS: TestHtscodecs_Arith/qvar.64 (0.00s)
+    --- PASS: TestHtscodecs_Arith/qvar.65 (0.00s)
+    --- PASS: TestHtscodecs_Arith/q40+dir.0 (0.00s)
+    --- PASS: TestHtscodecs_Arith/q40+dir.1 (0.01s)
+    --- PASS: TestHtscodecs_Arith/q40+dir.64 (0.01s)
+    --- PASS: TestHtscodecs_Arith/q40+dir.65 (0.01s)
+    --- PASS: TestHtscodecs_Arith/q40+dir.8 (0.01s)
+    --- PASS: TestHtscodecs_Arith/q40+dir.9 (0.01s)
+=== RUN   TestHtslibBGZFBoundaries
+=== RUN   TestHtslibBGZFBoundaries/bgzf_boundaries1.bam
+=== RUN   TestHtslibBGZFBoundaries/bgzf_boundaries2.bam
+=== RUN   TestHtslibBGZFBoundaries/bgzf_boundaries3.bam
+--- PASS: TestHtslibBGZFBoundaries (16.82s)
+    --- PASS: TestHtslibBGZFBoundaries/bgzf_boundaries1.bam (1.77s)
+    --- PASS: TestHtslibBGZFBoundaries/bgzf_boundaries2.bam (0.01s)
+    --- PASS: TestHtslibBGZFBoundaries/bgzf_boundaries3.bam (0.01s)
+=== RUN   TestHtslibLongRefs
+--- PASS: TestHtslibLongRefs (0.01s)
+=== RUN   TestHtslibEmptyFile
+--- PASS: TestHtslibEmptyFile (0.01s)
+=== RUN   TestHtslibSAM_RoundTripParity
+=== RUN   TestHtslibSAM_RoundTripParity/c1#noseq
+=== RUN   TestHtslibSAM_RoundTripParity/c1#pad1
+=== RUN   TestHtslibSAM_RoundTripParity/c1#pad2
+=== RUN   TestHtslibSAM_RoundTripParity/c1#pad3
+=== RUN   TestHtslibSAM_RoundTripParity/c1#bounds
+=== RUN   TestHtslibSAM_RoundTripParity/c1#clip
+=== RUN   TestHtslibSAM_RoundTripParity/c1#unknown
+=== RUN   TestHtslibSAM_RoundTripParity/c2#pad
+=== RUN   TestHtslibSAM_RoundTripParity/index_dos
+--- PASS: TestHtslibSAM_RoundTripParity (0.23s)
+    --- PASS: TestHtslibSAM_RoundTripParity/c1#noseq (0.03s)
+    --- PASS: TestHtslibSAM_RoundTripParity/c1#pad1 (0.02s)
+    --- PASS: TestHtslibSAM_RoundTripParity/c1#pad2 (0.02s)
+    --- PASS: TestHtslibSAM_RoundTripParity/c1#pad3 (0.02s)
+    --- PASS: TestHtslibSAM_RoundTripParity/c1#bounds (0.02s)
+    --- PASS: TestHtslibSAM_RoundTripParity/c1#clip (0.02s)
+    --- PASS: TestHtslibSAM_RoundTripParity/c1#unknown (0.02s)
+    --- PASS: TestHtslibSAM_RoundTripParity/c2#pad (0.03s)
+    --- PASS: TestHtslibSAM_RoundTripParity/index_dos (0.04s)
+=== RUN   TestHtslibSAM_CRAMRoundTrip
+=== RUN   TestHtslibSAM_CRAMRoundTrip/c1#noseq
+=== RUN   TestHtslibSAM_CRAMRoundTrip/c1#pad1
+=== RUN   TestHtslibSAM_CRAMRoundTrip/c1#pad2
+=== RUN   TestHtslibSAM_CRAMRoundTrip/c1#pad3
+=== RUN   TestHtslibSAM_CRAMRoundTrip/c1#bounds
+=== RUN   TestHtslibSAM_CRAMRoundTrip/c1#clip
+=== RUN   TestHtslibSAM_CRAMRoundTrip/c1#unknown
+=== RUN   TestHtslibSAM_CRAMRoundTrip/c2#pad
+--- PASS: TestHtslibSAM_CRAMRoundTrip (0.47s)
+    --- PASS: TestHtslibSAM_CRAMRoundTrip/c1#noseq (0.04s)
+    --- PASS: TestHtslibSAM_CRAMRoundTrip/c1#pad1 (0.25s)
+    --- PASS: TestHtslibSAM_CRAMRoundTrip/c1#pad2 (0.03s)
+    --- PASS: TestHtslibSAM_CRAMRoundTrip/c1#pad3 (0.03s)
+    --- PASS: TestHtslibSAM_CRAMRoundTrip/c1#bounds (0.03s)
+    --- PASS: TestHtslibSAM_CRAMRoundTrip/c1#clip (0.03s)
+    --- PASS: TestHtslibSAM_CRAMRoundTrip/c1#unknown (0.03s)
+    --- PASS: TestHtslibSAM_CRAMRoundTrip/c2#pad (0.03s)
+PASS
+ok  	github.com/yassineS/bio_ai_experiment/pipeline/conformance	22.149s
+=== RUN   TestBCFToolsNormReindex
+=== RUN   TestBCFToolsNormReindex/split_m-
+=== RUN   TestBCFToolsNormReindex/join_m+
+=== RUN   TestBCFToolsNormReindex/split_then_join_roundtrip
+--- PASS: TestBCFToolsNormReindex (21.43s)
+    --- PASS: TestBCFToolsNormReindex/split_m- (1.33s)
+    --- PASS: TestBCFToolsNormReindex/join_m+ (0.24s)
+    --- PASS: TestBCFToolsNormReindex/split_then_join_roundtrip (0.02s)
+=== RUN   TestCalmdMDNMTags
+--- PASS: TestCalmdMDNMTags (1.11s)
+=== RUN   TestCRAMReferenceHandling
+=== RUN   TestCRAMReferenceHandling/external_reference_single_contig
+=== RUN   TestCRAMReferenceHandling/multi_reference_slice
+--- PASS: TestCRAMReferenceHandling (0.06s)
+    --- PASS: TestCRAMReferenceHandling/external_reference_single_contig (0.03s)
+    --- PASS: TestCRAMReferenceHandling/multi_reference_slice (0.03s)
+=== RUN   TestIndexByteIdentity
+=== RUN   TestIndexByteIdentity/bai
+=== RUN   TestIndexByteIdentity/csi
+=== RUN   TestIndexByteIdentity/tbi
+--- PASS: TestIndexByteIdentity (2.86s)
+    --- PASS: TestIndexByteIdentity/bai (0.69s)
+    --- PASS: TestIndexByteIdentity/csi (0.19s)
+    --- PASS: TestIndexByteIdentity/tbi (1.97s)
+=== RUN   TestQualPLULPNonImpact
+--- PASS: TestQualPLULPNonImpact (25.58s)
+=== RUN   TestSortStabilityStrnumCmp
+=== RUN   TestSortStabilityStrnumCmp/coordinate
+=== RUN   TestSortStabilityStrnumCmp/queryname_strnum
+--- PASS: TestSortStabilityStrnumCmp (0.02s)
+    --- PASS: TestSortStabilityStrnumCmp/coordinate (0.01s)
+    --- PASS: TestSortStabilityStrnumCmp/queryname_strnum (0.01s)
+PASS
+ok  	github.com/yassineS/bio_ai_experiment/pipeline/edgecases	51.338s
