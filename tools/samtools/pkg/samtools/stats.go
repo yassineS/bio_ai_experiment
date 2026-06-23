@@ -543,9 +543,15 @@ type refStatRow struct {
 }
 
 // gcDepth mirrors upstream stats.c's gc_depth_t: one GC-depth segment holding
-// an accumulated GC value and a read-depth count.
+// an accumulated GC value and a read-depth count. The gc field is a 32-bit
+// float exactly as upstream (gc_depth_t.gc is declared `float`); the narrower
+// width is load-bearing — accumulation, the rint finalisation, the gcd_cmp
+// sort and the fabs(...)<0.1 grouping all operate on the truncated 32-bit
+// value, and a segment whose rounded GC sits on a 0.1 grouping boundary lands
+// in a different group (and thus a different unique-sequence percentile) if
+// this is widened to float64.
 type gcDepth struct {
-	gc    float64
+	gc    float32
 	depth uint32
 }
 
@@ -1617,7 +1623,9 @@ func (c *StatsCounters) accumulateGCD(rec *sam.Record, gcCount int) {
 	}
 	c.gcd[c.gcdIdx].depth++
 	if c.gcdRef == nil {
-		c.gcd[c.gcdIdx].gc += float64(gcCount) / float64(seqLen)
+		// Accumulate in float32 to match upstream's `gcd[].gc += (float)gc_count
+		// / seq_len` (stats.c:1415) — the running sum is a 32-bit float field.
+		c.gcd[c.gcdIdx].gc += float32(gcCount) / float32(seqLen)
 	}
 }
 
@@ -1955,7 +1963,7 @@ func (c *StatsCounters) collectRefStats(hdr *sam.Header, opts StatsOptions) {
 // fai_gc_content (stats.c:610): G/C bases are counted over the known
 // (non-N, non-ambiguous) bases of the window and the count is divided by that
 // known-base total. The window is clipped to the contig end.
-func (c *StatsCounters) faiGCContent(name string, pos int32, length int) float64 {
+func (c *StatsCounters) faiGCContent(name string, pos int32, length int) float32 {
 	contigLen, ok := c.gcdRefLens[name]
 	if !ok {
 		return 0
@@ -1987,7 +1995,8 @@ func (c *StatsCounters) faiGCContent(name string, pos int32, length int) float64
 	if count == 0 {
 		return 0
 	}
-	return float64(gc) / float64(count)
+	// Upstream returns `(float)gc/count` (stats.c:631) — a 32-bit float.
+	return float32(gc) / float32(count)
 }
 
 // positionInIntervals reports whether the 1-based reference position p falls
@@ -2246,10 +2255,14 @@ func (c *StatsCounters) writeGCD(bw *bufio.Writer) {
 	// path scales the raw fraction by 100; the no-reference path averages
 	// the accumulated per-read fractions over the segment depth first.
 	for i := 0; i < c.gcdIdx && i < len(c.gcd); i++ {
+		// Upstream computes rint(100. * gc) in double and stores the result
+		// back into the 32-bit gc field, so we round in float64 then narrow to
+		// float32. The narrowing is what makes a boundary segment group the
+		// same way upstream does (see the gcDepth doc comment).
 		if c.gcdRef != nil {
-			c.gcd[i].gc = math.RoundToEven(100.0 * c.gcd[i].gc)
+			c.gcd[i].gc = float32(math.RoundToEven(100.0 * float64(c.gcd[i].gc)))
 		} else if c.gcd[i].depth > 0 {
-			c.gcd[i].gc = math.RoundToEven(100.0 * c.gcd[i].gc / float64(c.gcd[i].depth))
+			c.gcd[i].gc = float32(math.RoundToEven(100.0 * float64(c.gcd[i].gc) / float64(c.gcd[i].depth)))
 		}
 	}
 	// Sort the gcdIdx+1 valid entries by GC then depth (upstream gcd_cmp).
@@ -2269,7 +2282,10 @@ func (c *StatsCounters) writeGCD(bw *bufio.Writer) {
 	for igcd < c.gcdIdx {
 		gc := c.gcd[igcd].gc
 		nbins := 0
-		for itmp := igcd; itmp < c.gcdIdx && math.Abs(c.gcd[itmp].gc-gc) < 0.1; itmp++ {
+		// Upstream's grouping test is `fabs(gcd[itmp].gc - gc) < 0.1`: the
+		// subtraction is in float, then fabs widens to double. We mirror that —
+		// the float32 difference is widened only for math.Abs.
+		for itmp := igcd; itmp < c.gcdIdx && math.Abs(float64(c.gcd[itmp].gc-gc)) < 0.1; itmp++ {
 			nbins++
 		}
 		grp := c.gcd[igcd : igcd+nbins]

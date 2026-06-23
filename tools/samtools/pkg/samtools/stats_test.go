@@ -516,6 +516,76 @@ func TestStatsGCDMultiBin(t *testing.T) {
 	}
 }
 
+// TestStatsGCDFloat32GCWidth guards the 32-bit width of the GC field itself
+// (gcDepth.gc), the root cause of the large-tier GCD divergence where one bin's
+// unique-sequence percentile printed 87.857 instead of upstream's 87.867.
+// Upstream's gc_depth_t.gc is a `float`: the per-read accumulation, the
+// rint(100.*gc) finalisation, the gcd_cmp sort and the fabs(...)<0.1 grouping
+// all operate on the truncated 32-bit value. Storing gc in a float64 lets a
+// segment whose finalised GC sits on a 0.1 grouping boundary land in a
+// different group, shifting the (igcd+nbins+1)*100/(igcd+1) percentile.
+//
+// The fixture is the minimal such boundary: a one-read segment with gcCount=3,
+// seqLen=120. In float32, 3/120 rounds (via rint of 100*0.0250000004) to GC
+// 3.0; the same value in float64 is exactly 2.5 and rint-to-even gives 2.0. A
+// regression back to float64 would therefore print GC 2.0 here, and (in the
+// real multi-segment case) regroup the bins and change the percentile.
+func TestStatsGCDFloat32GCWidth(t *testing.T) {
+	c := newStatsCounters()
+	c.gcdBinSize = 20000
+	c.IsSorted = 1
+	c.Sequences = 1
+	c.TotalLength = 20000 // avg read length / bin size == 1.0
+
+	mk := func(pos int32, gc, depth int) {
+		for i := 0; i < depth; i++ {
+			rec := &sam.Record{RName: "c", Pos: int64(pos), Seq: strings.Repeat("N", 120)}
+			c.accumulateGCD(rec, gc)
+		}
+	}
+	// Three real bins (gcdIdx==3); the output loop finalises bins 1 and 2 and
+	// leaves the last (bin 3) raw, exactly as upstream.
+	//   Bin 1: gcCount 3 over a 120bp read -> finalised GC 3.0 (float32) but
+	//          2.0 (float64): 3/120 in float32 rounds 100*0.0250000004 up to 3,
+	//          whereas the exact 2.5 rounds to-even down to 2 in float64.
+	//   Bin 2: gcCount 12 -> finalised GC 10.0 (sorts last, never reached).
+	//   Bin 3: gcCount 60 -> raw GC 0.5, left un-finalised.
+	mk(1, 3, 1)
+	mk(25001, 12, 1)
+	mk(50001, 60, 1)
+	if c.gcdIdx != 3 {
+		t.Fatalf("expected gcdIdx 3, got %d", c.gcdIdx)
+	}
+
+	var out bytes.Buffer
+	bw := bufio.NewWriter(&out)
+	c.writeGCD(bw)
+	bw.Flush()
+	var gcd []string
+	for _, l := range strings.Split(strings.TrimRight(out.String(), "\n"), "\n") {
+		if strings.HasPrefix(l, "GCD\t") {
+			gcd = append(gcd, l)
+		}
+	}
+	// The finalised bin 1 must report GC 3.0 (float32 width). A float64 gc
+	// field would instead emit a 2.0 row here.
+	var sawGC3 bool
+	for _, row := range gcd {
+		f := strings.Split(row, "\t")
+		if len(f) > 1 && f[1] == "3.0" {
+			sawGC3 = true
+		}
+		if len(f) > 1 && f[1] == "2.0" {
+			t.Errorf("GCD emitted GC 2.0 row %q — gcDepth.gc widened to float64; "+
+				"the 32-bit float width is load-bearing for the GC finalisation/grouping", row)
+		}
+	}
+	if !sawGC3 {
+		t.Errorf("expected a finalised GCD row at GC 3.0 (float32 width), got rows:\n%s",
+			strings.Join(gcd, "\n"))
+	}
+}
+
 // TestStatsCOVStreamingFlush confirms COV depth is accumulated in a bounded
 // per-contig sliding window: positions strictly below an advancing record's
 // start are flushed into the cov bin array, and a contig change flushes the
