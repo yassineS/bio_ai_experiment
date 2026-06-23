@@ -1,0 +1,2110 @@
+{
+  "scale": "medium",
+  "seed": 1,
+  "generated": "2026-06-22T14:40:39.918909427Z",
+  "results": [
+    {
+      "tool": "bedsubtract",
+      "name": "base",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 350,
+      "upstream_ms": 96,
+      "timing_ratio": 3.642229035040057
+    },
+    {
+      "tool": "bedsubtract",
+      "name": "flagA",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-A"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 331,
+      "upstream_ms": 60,
+      "timing_ratio": 5.470480520191213
+    },
+    {
+      "tool": "bedsubtract",
+      "name": "flagN",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-N"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 4,
+      "upstream_ms": 2,
+      "timing_ratio": 1.6844412901373358
+    },
+    {
+      "tool": "bedsubtract",
+      "name": "flags",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-s"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1341,
+      "upstream_ms": 84,
+      "timing_ratio": 15.887275224645844
+    },
+    {
+      "tool": "bedsubtract",
+      "name": "flagS",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-S"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1460,
+      "upstream_ms": 103,
+      "timing_ratio": 14.074243776927473
+    },
+    {
+      "tool": "bedsubtract",
+      "name": "flagf_0_5",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-f",
+        "0.5"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 318,
+      "upstream_ms": 82,
+      "timing_ratio": 3.8632896653698383
+    },
+    {
+      "tool": "bedsubtract",
+      "name": "combo_A_s",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-A",
+        "-s"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1375,
+      "upstream_ms": 53,
+      "timing_ratio": 25.473255487838763
+    },
+    {
+      "tool": "bedsubtract",
+      "name": "combo_N_f",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-N",
+        "-f",
+        "0.5"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 321,
+      "upstream_ms": 78,
+      "timing_ratio": 4.097598132207252
+    },
+    {
+      "tool": "bedsubtract",
+      "name": "bedsubtract_reciprocal_r_unsupported",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-f",
+        "0.5",
+        "-r"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 317,
+      "upstream_ms": 82,
+      "timing_ratio": 3.8570320321549234
+    },
+    {
+      "tool": "bedcoverage",
+      "name": "base",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 118,
+      "upstream_ms": 163,
+      "timing_ratio": 0.7256467910875638
+    },
+    {
+      "tool": "bedcoverage",
+      "name": "flagcounts",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-counts"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 107,
+      "upstream_ms": 135,
+      "timing_ratio": 0.7971102272869357
+    },
+    {
+      "tool": "bedcoverage",
+      "name": "flagd",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-d"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 7248,
+      "upstream_ms": 24957,
+      "timing_ratio": 0.29044999210665756
+    },
+    {
+      "tool": "bedcoverage",
+      "name": "flaghist",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-hist"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 781,
+      "upstream_ms": 841,
+      "timing_ratio": 0.928998599023503
+    },
+    {
+      "tool": "bedcoverage",
+      "name": "flags",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-s"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 171,
+      "upstream_ms": 163,
+      "timing_ratio": 1.0437558429079714
+    },
+    {
+      "tool": "bedcoverage",
+      "name": "flagS",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-S"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 136,
+      "upstream_ms": 166,
+      "timing_ratio": 0.8214452265983976
+    },
+    {
+      "tool": "bedcoverage",
+      "name": "flagmean",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-mean"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 154,
+      "upstream_ms": 183,
+      "timing_ratio": 0.8423615959750271
+    },
+    {
+      "tool": "bedcoverage",
+      "name": "combo_counts_s",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-counts",
+        "-s"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 103,
+      "upstream_ms": 159,
+      "timing_ratio": 0.647850459018586
+    },
+    {
+      "tool": "bedmap",
+      "name": "base",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 70,
+      "upstream_ms": 71,
+      "timing_ratio": 0.9807397267336216
+    },
+    {
+      "tool": "bedmap",
+      "name": "flago_mean",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-o",
+        "mean",
+        "-c",
+        "5"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 110,
+      "upstream_ms": 97,
+      "timing_ratio": 1.1404749506147651
+    },
+    {
+      "tool": "bedmap",
+      "name": "flago_sum",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-o",
+        "sum",
+        "-c",
+        "5"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 97,
+      "upstream_ms": 80,
+      "timing_ratio": 1.2040709003198375
+    },
+    {
+      "tool": "bedmap",
+      "name": "flago_min",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-o",
+        "min",
+        "-c",
+        "5"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 126,
+      "upstream_ms": 102,
+      "timing_ratio": 1.240668532086897
+    },
+    {
+      "tool": "bedmap",
+      "name": "flago_max",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-o",
+        "max",
+        "-c",
+        "5"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 129,
+      "upstream_ms": 74,
+      "timing_ratio": 1.7501006186525052
+    },
+    {
+      "tool": "bedmap",
+      "name": "flago_count",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-o",
+        "count",
+        "-c",
+        "5"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 66,
+      "upstream_ms": 46,
+      "timing_ratio": 1.4212696308937094
+    },
+    {
+      "tool": "bedmap",
+      "name": "flago_median",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-o",
+        "median",
+        "-c",
+        "5"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 92,
+      "upstream_ms": 82,
+      "timing_ratio": 1.1270663443350015
+    },
+    {
+      "tool": "bedmap",
+      "name": "flago_stdev",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-o",
+        "stdev",
+        "-c",
+        "5"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 75,
+      "upstream_ms": 96,
+      "timing_ratio": 0.7817888755094239
+    },
+    {
+      "tool": "bedmap",
+      "name": "combo_c5_mean",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-c",
+        "5",
+        "-o",
+        "mean",
+        "-c",
+        "5"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 92,
+      "upstream_ms": 84,
+      "timing_ratio": 1.086571007030679
+    },
+    {
+      "tool": "bedmap",
+      "name": "combo_c5_sum_s",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-c",
+        "5",
+        "-o",
+        "sum",
+        "-s"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 62,
+      "upstream_ms": 67,
+      "timing_ratio": 0.9218378845648052
+    },
+    {
+      "tool": "bedmap",
+      "name": "bedmap_collapse_tiebreak",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-c",
+        "4",
+        "-o",
+        "collapse"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 72,
+      "upstream_ms": 54,
+      "timing_ratio": 1.3481396243503725
+    },
+    {
+      "tool": "bedclosest",
+      "name": "base",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 3072,
+      "upstream_ms": 161,
+      "timing_ratio": 19.027808283873405
+    },
+    {
+      "tool": "bedclosest",
+      "name": "flagd",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-d"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 3069,
+      "upstream_ms": 170,
+      "timing_ratio": 18.016732507726555
+    },
+    {
+      "tool": "bedclosest",
+      "name": "flagio",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-io"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 2981,
+      "upstream_ms": 64,
+      "timing_ratio": 46.208465493233454
+    },
+    {
+      "tool": "bedclosest",
+      "name": "flagiu",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-iu"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 6,
+      "upstream_ms": 3,
+      "timing_ratio": 2.131893641394275
+    },
+    {
+      "tool": "bedclosest",
+      "name": "flagt_first",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-t",
+        "first"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 2994,
+      "upstream_ms": 49,
+      "timing_ratio": 60.49501441267164
+    },
+    {
+      "tool": "bedclosest",
+      "name": "flagt_last",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-t",
+        "last"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 2961,
+      "upstream_ms": 46,
+      "timing_ratio": 63.06545631133371
+    },
+    {
+      "tool": "bedclosest",
+      "name": "flagt_all",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-t",
+        "all"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 3045,
+      "upstream_ms": 121,
+      "timing_ratio": 24.993132167853787
+    },
+    {
+      "tool": "bedclosest",
+      "name": "flags",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-s"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 3005,
+      "upstream_ms": 84,
+      "timing_ratio": 35.743695235716594
+    },
+    {
+      "tool": "bedclosest",
+      "name": "flagN",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-N"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 3336,
+      "upstream_ms": 95,
+      "timing_ratio": 34.86064071986304
+    },
+    {
+      "tool": "bedclosest",
+      "name": "combo_d_t_first",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed}",
+        "-d",
+        "-t",
+        "first"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 2963,
+      "upstream_ms": 54,
+      "timing_ratio": 53.92050824197594
+    },
+    {
+      "tool": "bedmerge",
+      "name": "base",
+      "args": [
+        "-i",
+        "{bed}"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 27,
+      "upstream_ms": 16,
+      "timing_ratio": 1.729847400990099
+    },
+    {
+      "tool": "bedmerge",
+      "name": "flagd_50",
+      "args": [
+        "-i",
+        "{bed}",
+        "-d",
+        "50"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 37,
+      "upstream_ms": 12,
+      "timing_ratio": 3.0040501450950954
+    },
+    {
+      "tool": "bedmerge",
+      "name": "flagd_0",
+      "args": [
+        "-i",
+        "{bed}",
+        "-d",
+        "0"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 24,
+      "upstream_ms": 11,
+      "timing_ratio": 2.1885413111661878
+    },
+    {
+      "tool": "bedmerge",
+      "name": "flags",
+      "args": [
+        "-i",
+        "{bed}",
+        "-s"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 34,
+      "upstream_ms": 14,
+      "timing_ratio": 2.471611543968127
+    },
+    {
+      "tool": "bedmerge",
+      "name": "flagS_+",
+      "args": [
+        "-i",
+        "{bed}",
+        "-S",
+        "+"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 27,
+      "upstream_ms": 13,
+      "timing_ratio": 2.134738799403145
+    },
+    {
+      "tool": "bedmerge",
+      "name": "combo_c5_mean",
+      "args": [
+        "-i",
+        "{bed}",
+        "-c",
+        "5",
+        "-o",
+        "mean"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 28,
+      "upstream_ms": 15,
+      "timing_ratio": 1.8262371155451165
+    },
+    {
+      "tool": "bedmerge",
+      "name": "combo_c5_count",
+      "args": [
+        "-i",
+        "{bed}",
+        "-c",
+        "5",
+        "-o",
+        "count"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 29,
+      "upstream_ms": 12,
+      "timing_ratio": 2.330099479887439
+    },
+    {
+      "tool": "bedmerge",
+      "name": "combo_d50_c5_sum",
+      "args": [
+        "-i",
+        "{bed}",
+        "-d",
+        "50",
+        "-c",
+        "5",
+        "-o",
+        "sum"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 31,
+      "upstream_ms": 16,
+      "timing_ratio": 1.9074307641739476
+    },
+    {
+      "tool": "bedmerge",
+      "name": "combo_s_c5_mean",
+      "args": [
+        "-i",
+        "{bed}",
+        "-s",
+        "-c",
+        "5",
+        "-o",
+        "mean"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 40,
+      "upstream_ms": 21,
+      "timing_ratio": 1.83261365226248
+    },
+    {
+      "tool": "bedmerge",
+      "name": "bedmerge_collapse_tiebreak",
+      "args": [
+        "-i",
+        "{bed}",
+        "-c",
+        "4",
+        "-o",
+        "collapse"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 32,
+      "upstream_ms": 13,
+      "timing_ratio": 2.347522561383264
+    },
+    {
+      "tool": "bedcluster",
+      "name": "base",
+      "args": [
+        "-i",
+        "{bed}"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 25,
+      "upstream_ms": 34,
+      "timing_ratio": 0.7363937495414863
+    },
+    {
+      "tool": "bedcluster",
+      "name": "flagd_50",
+      "args": [
+        "-i",
+        "{bed}",
+        "-d",
+        "50"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 26,
+      "upstream_ms": 32,
+      "timing_ratio": 0.8090136590714302
+    },
+    {
+      "tool": "bedcluster",
+      "name": "flagd_0",
+      "args": [
+        "-i",
+        "{bed}",
+        "-d",
+        "0"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 23,
+      "upstream_ms": 30,
+      "timing_ratio": 0.7869035046696566
+    },
+    {
+      "tool": "bedcluster",
+      "name": "bedcluster_s",
+      "args": [
+        "-i",
+        "{bed}",
+        "-s"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 37,
+      "upstream_ms": 42,
+      "timing_ratio": 0.8847536915875382
+    },
+    {
+      "tool": "bedcluster",
+      "name": "bedcluster_d50_s",
+      "args": [
+        "-i",
+        "{bed}",
+        "-d",
+        "50",
+        "-s"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 38,
+      "upstream_ms": 41,
+      "timing_ratio": 0.9205072197439175
+    },
+    {
+      "tool": "bedslop",
+      "name": "base",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 3,
+      "upstream_ms": 1,
+      "timing_ratio": 1.9089318865808023
+    },
+    {
+      "tool": "bedslop",
+      "name": "flagb_50",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}",
+        "-b",
+        "50"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 19,
+      "upstream_ms": 28,
+      "timing_ratio": 0.695503967864316
+    },
+    {
+      "tool": "bedslop",
+      "name": "flagb_100",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}",
+        "-b",
+        "100"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 19,
+      "upstream_ms": 27,
+      "timing_ratio": 0.703445600894075
+    },
+    {
+      "tool": "bedslop",
+      "name": "flagpct",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}",
+        "-pct"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 3,
+      "upstream_ms": 1,
+      "timing_ratio": 2.1547828638497655
+    },
+    {
+      "tool": "bedslop",
+      "name": "flags",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}",
+        "-s"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 3,
+      "upstream_ms": 1,
+      "timing_ratio": 2.1916985748637026
+    },
+    {
+      "tool": "bedslop",
+      "name": "combo_l_r",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}",
+        "-l",
+        "30",
+        "-r",
+        "70"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 18,
+      "upstream_ms": 28,
+      "timing_ratio": 0.6576606629392039
+    },
+    {
+      "tool": "bedslop",
+      "name": "combo_b_pct",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}",
+        "-b",
+        "1",
+        "-pct"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 20,
+      "upstream_ms": 27,
+      "timing_ratio": 0.7355740512053234
+    },
+    {
+      "tool": "bedslop",
+      "name": "combo_b_s",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}",
+        "-b",
+        "50",
+        "-s"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 21,
+      "upstream_ms": 27,
+      "timing_ratio": 0.7773590492469616
+    },
+    {
+      "tool": "bedflank",
+      "name": "base",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 3,
+      "upstream_ms": 1,
+      "timing_ratio": 2.070592433975732
+    },
+    {
+      "tool": "bedflank",
+      "name": "flagb_50",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}",
+        "-b",
+        "50"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 29,
+      "upstream_ms": 40,
+      "timing_ratio": 0.7272358054492875
+    },
+    {
+      "tool": "bedflank",
+      "name": "flags",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}",
+        "-s"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 4,
+      "upstream_ms": 1,
+      "timing_ratio": 2.3141428091777736
+    },
+    {
+      "tool": "bedflank",
+      "name": "combo_l_r",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}",
+        "-l",
+        "30",
+        "-r",
+        "70"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 29,
+      "upstream_ms": 40,
+      "timing_ratio": 0.7345391574234644
+    },
+    {
+      "tool": "bedflank",
+      "name": "combo_b_pct",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}",
+        "-b",
+        "1",
+        "-pct"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 29,
+      "upstream_ms": 40,
+      "timing_ratio": 0.7182070345078259
+    },
+    {
+      "tool": "bedflank",
+      "name": "combo_b_s",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}",
+        "-b",
+        "50",
+        "-s"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 28,
+      "upstream_ms": 41,
+      "timing_ratio": 0.7024360567221327
+    },
+    {
+      "tool": "bedshift",
+      "name": "base",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 3,
+      "upstream_ms": 1,
+      "timing_ratio": 1.7109398763053838
+    },
+    {
+      "tool": "bedshift",
+      "name": "flags_50",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}",
+        "-s",
+        "50"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 21,
+      "upstream_ms": 28,
+      "timing_ratio": 0.7489835604734824
+    },
+    {
+      "tool": "bedshift",
+      "name": "flags_50",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}",
+        "-s",
+        "-50"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 20,
+      "upstream_ms": 28,
+      "timing_ratio": 0.7235936844956645
+    },
+    {
+      "tool": "bedshift",
+      "name": "combo_p_m",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}",
+        "-p",
+        "30",
+        "-m",
+        "-30"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 19,
+      "upstream_ms": 28,
+      "timing_ratio": 0.6992056000771021
+    },
+    {
+      "tool": "bedshift",
+      "name": "combo_s_pct",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}",
+        "-s",
+        "0.1",
+        "-pct"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 19,
+      "upstream_ms": 28,
+      "timing_ratio": 0.7003411508699712
+    },
+    {
+      "tool": "bedgenomecov",
+      "name": "base",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}"
+      ],
+      "input": "bed",
+      "compare": "Similarity",
+      "heavy": false,
+      "status": "SIMILAR",
+      "max_deviation": 0.000006789649857763626,
+      "ours_ms": 365,
+      "upstream_ms": 274,
+      "timing_ratio": 1.3298585478365346
+    },
+    {
+      "tool": "bedgenomecov",
+      "name": "flagbg",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}",
+        "-bg"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 91,
+      "upstream_ms": 91,
+      "timing_ratio": 1.0066679717069489
+    },
+    {
+      "tool": "bedgenomecov",
+      "name": "flagbga",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}",
+        "-bga"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 68,
+      "upstream_ms": 84,
+      "timing_ratio": 0.8104444221910675
+    },
+    {
+      "tool": "bedgenomecov",
+      "name": "flagd",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}",
+        "-d"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1043,
+      "upstream_ms": 10506,
+      "timing_ratio": 0.09936217530310988
+    },
+    {
+      "tool": "bedgenomecov",
+      "name": "flagdz",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}",
+        "-dz"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 2062,
+      "upstream_ms": 8089,
+      "timing_ratio": 0.25499329407798255
+    },
+    {
+      "tool": "bedgenomecov",
+      "name": "flagmax_5",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}",
+        "-max",
+        "5"
+      ],
+      "input": "bed",
+      "compare": "Similarity",
+      "heavy": false,
+      "status": "SIMILAR",
+      "max_deviation": 0.000006923673424178852,
+      "ours_ms": 374,
+      "upstream_ms": 252,
+      "timing_ratio": 1.4840484209495415
+    },
+    {
+      "tool": "bedgenomecov",
+      "name": "flagstrand_+",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}",
+        "-strand",
+        "+"
+      ],
+      "input": "bed",
+      "compare": "Similarity",
+      "heavy": false,
+      "status": "SIMILAR",
+      "max_deviation": 0.000009661742398633831,
+      "ours_ms": 249,
+      "upstream_ms": 240,
+      "timing_ratio": 1.0409945496528765
+    },
+    {
+      "tool": "bedgenomecov",
+      "name": "combo_bg_strand",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "{genome}",
+        "-bg",
+        "-strand",
+        "+"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 52,
+      "upstream_ms": 61,
+      "timing_ratio": 0.8574000785701085
+    },
+    {
+      "tool": "bedbamtobed",
+      "name": "base",
+      "args": [
+        "-i",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 794,
+      "upstream_ms": 664,
+      "timing_ratio": 1.1943726376648534
+    },
+    {
+      "tool": "bedbamtobed",
+      "name": "flagsplit",
+      "args": [
+        "-i",
+        "{bam}",
+        "-split"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 719,
+      "upstream_ms": 797,
+      "timing_ratio": 0.9019525811617922
+    },
+    {
+      "tool": "bedbamtobed",
+      "name": "flaged",
+      "args": [
+        "-i",
+        "{bam}",
+        "-ed"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 7,
+      "upstream_ms": 2,
+      "timing_ratio": 3.231170017059516
+    },
+    {
+      "tool": "bedbamtobed",
+      "name": "flagcigar",
+      "args": [
+        "-i",
+        "{bam}",
+        "-cigar"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 668,
+      "upstream_ms": 652,
+      "timing_ratio": 1.02378790571956
+    },
+    {
+      "tool": "bedbamtobed",
+      "name": "combo_split_cigar",
+      "args": [
+        "-i",
+        "{bam}",
+        "-split",
+        "-cigar"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 642,
+      "upstream_ms": 650,
+      "timing_ratio": 0.9876868374119774
+    },
+    {
+      "tool": "bedgetfasta",
+      "name": "base",
+      "args": [
+        "-fi",
+        "{fasta}",
+        "-bed",
+        "{bed}"
+      ],
+      "input": "fasta",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 253,
+      "upstream_ms": 632,
+      "timing_ratio": 0.40155833592946527
+    },
+    {
+      "tool": "bedgetfasta",
+      "name": "flags",
+      "args": [
+        "-fi",
+        "{fasta}",
+        "-bed",
+        "{bed}",
+        "-s"
+      ],
+      "input": "fasta",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 295,
+      "upstream_ms": 554,
+      "timing_ratio": 0.532155571493718
+    },
+    {
+      "tool": "bedgetfasta",
+      "name": "flagname",
+      "args": [
+        "-fi",
+        "{fasta}",
+        "-bed",
+        "{bed}",
+        "-name"
+      ],
+      "input": "fasta",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 136,
+      "upstream_ms": 468,
+      "timing_ratio": 0.29164104579587913
+    },
+    {
+      "tool": "bedgetfasta",
+      "name": "flagtab",
+      "args": [
+        "-fi",
+        "{fasta}",
+        "-bed",
+        "{bed}",
+        "-tab"
+      ],
+      "input": "fasta",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 144,
+      "upstream_ms": 433,
+      "timing_ratio": 0.3332314133867055
+    },
+    {
+      "tool": "bedgetfasta",
+      "name": "combo_s_name",
+      "args": [
+        "-fi",
+        "{fasta}",
+        "-bed",
+        "{bed}",
+        "-s",
+        "-name"
+      ],
+      "input": "fasta",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 315,
+      "upstream_ms": 580,
+      "timing_ratio": 0.5432086467150571
+    },
+    {
+      "tool": "bedgetfasta",
+      "name": "combo_s_tab",
+      "args": [
+        "-fi",
+        "{fasta}",
+        "-bed",
+        "{bed}",
+        "-s",
+        "-tab"
+      ],
+      "input": "fasta",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 319,
+      "upstream_ms": 575,
+      "timing_ratio": 0.5555624126920141
+    },
+    {
+      "tool": "bedgroupby",
+      "name": "base",
+      "args": [
+        "-i",
+        "{bed}"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 2,
+      "upstream_ms": 3,
+      "timing_ratio": 0.8014632421238497
+    },
+    {
+      "tool": "bedgroupby",
+      "name": "flago_mean",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "1",
+        "-c",
+        "5",
+        "-o",
+        "mean"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 15,
+      "upstream_ms": 11,
+      "timing_ratio": 1.3808110500842896
+    },
+    {
+      "tool": "bedgroupby",
+      "name": "flago_sum",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "1",
+        "-c",
+        "5",
+        "-o",
+        "sum"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 14,
+      "upstream_ms": 11,
+      "timing_ratio": 1.2245113916323282
+    },
+    {
+      "tool": "bedgroupby",
+      "name": "flago_min",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "1",
+        "-c",
+        "5",
+        "-o",
+        "min"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 17,
+      "upstream_ms": 11,
+      "timing_ratio": 1.442109167991521
+    },
+    {
+      "tool": "bedgroupby",
+      "name": "flago_max",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "1",
+        "-c",
+        "5",
+        "-o",
+        "max"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 12,
+      "upstream_ms": 11,
+      "timing_ratio": 1.0754755734259562
+    },
+    {
+      "tool": "bedgroupby",
+      "name": "flago_count",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "1",
+        "-c",
+        "5",
+        "-o",
+        "count"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 11,
+      "upstream_ms": 10,
+      "timing_ratio": 1.1033686258163125
+    },
+    {
+      "tool": "bedgroupby",
+      "name": "combo_g1_c5_mean",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "1",
+        "-c",
+        "5",
+        "-o",
+        "mean"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 13,
+      "upstream_ms": 12,
+      "timing_ratio": 1.0913615441913178
+    },
+    {
+      "tool": "bedgroupby",
+      "name": "combo_g1_c5_count",
+      "args": [
+        "-i",
+        "{bed}",
+        "-g",
+        "1",
+        "-c",
+        "5",
+        "-o",
+        "count"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 11,
+      "upstream_ms": 10,
+      "timing_ratio": 1.089715453431731
+    },
+    {
+      "tool": "bedtag",
+      "name": "bedtag_tag",
+      "args": [
+        "-i",
+        "{bam}",
+        "-files",
+        "{bed}",
+        "-labels",
+        "iv"
+      ],
+      "input": "bam",
+      "compare": "BAMDecoded",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1953,
+      "upstream_ms": 2859,
+      "timing_ratio": 0.6832444603846971
+    },
+    {
+      "tool": "bedsplit",
+      "name": "bedsplit_simple_n3",
+      "args": [
+        "-i",
+        "{bed}",
+        "-p",
+        "{out}",
+        "-n",
+        "3",
+        "-a",
+        "simple"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 28,
+      "upstream_ms": 44,
+      "timing_ratio": 0.6485601002347695
+    },
+    {
+      "tool": "bedsplit",
+      "name": "bedsplit_size_n3",
+      "args": [
+        "-i",
+        "{bed}",
+        "-p",
+        "{out}",
+        "-n",
+        "3",
+        "-a",
+        "size"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 35,
+      "upstream_ms": 66,
+      "timing_ratio": 0.5416075237006021
+    },
+    {
+      "tool": "bedintersect",
+      "name": "intersect_base",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed12}"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 75,
+      "upstream_ms": 107,
+      "timing_ratio": 0.7041503393268136
+    },
+    {
+      "tool": "bedintersect",
+      "name": "intersect_flagc",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed12}",
+        "-c"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 50,
+      "upstream_ms": 70,
+      "timing_ratio": 0.7074650832931394
+    },
+    {
+      "tool": "bedintersect",
+      "name": "intersect_flagv",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed12}",
+        "-v"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 43,
+      "upstream_ms": 63,
+      "timing_ratio": 0.6840945406777833
+    },
+    {
+      "tool": "bedintersect",
+      "name": "intersect_flagu",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed12}",
+        "-u"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 49,
+      "upstream_ms": 69,
+      "timing_ratio": 0.7055368077371097
+    },
+    {
+      "tool": "bedintersect",
+      "name": "intersect_flagwa",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed12}",
+        "-wa"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 87,
+      "upstream_ms": 112,
+      "timing_ratio": 0.777038910393244
+    },
+    {
+      "tool": "bedintersect",
+      "name": "intersect_flagwb",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed12}",
+        "-wb"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 182,
+      "upstream_ms": 223,
+      "timing_ratio": 0.8150177888094963
+    },
+    {
+      "tool": "bedintersect",
+      "name": "intersect_flags",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed12}",
+        "-s"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 66,
+      "upstream_ms": 89,
+      "timing_ratio": 0.7440179496456347
+    },
+    {
+      "tool": "bedintersect",
+      "name": "intersect_combo_wa_wb",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed12}",
+        "-wa",
+        "-wb"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": true,
+      "status": "PASS",
+      "ours_ms": 98,
+      "upstream_ms": 207,
+      "timing_ratio": 0.47339295076175875
+    },
+    {
+      "tool": "bedintersect",
+      "name": "intersect_combo_u_s",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed12}",
+        "-u",
+        "-s"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 49,
+      "upstream_ms": 70,
+      "timing_ratio": 0.7087974603986237
+    },
+    {
+      "tool": "bedintersect",
+      "name": "intersect_combo_c_s",
+      "args": [
+        "-a",
+        "{bed}",
+        "-b",
+        "{bed12}",
+        "-c",
+        "-s"
+      ],
+      "input": "bed",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 47,
+      "upstream_ms": 70,
+      "timing_ratio": 0.6773517946963166
+    }
+  ],
+  "summary": {
+    "total": 112,
+    "pass": 109,
+    "similar": 3,
+    "diverge": 0,
+    "skip": 0,
+    "error": 0
+  }
+}

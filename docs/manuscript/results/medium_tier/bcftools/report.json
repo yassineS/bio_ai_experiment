@@ -1,0 +1,1149 @@
+{
+  "scale": "medium",
+  "seed": 1,
+  "generated": "2026-06-23T02:44:59.296752094Z",
+  "results": [
+    {
+      "tool": "bcftools",
+      "name": "view_base",
+      "args": [
+        "-H",
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 64,
+      "upstream_ms": 42,
+      "timing_ratio": 1.5022569460760635
+    },
+    {
+      "tool": "bcftools",
+      "name": "view_flagv_snps",
+      "args": [
+        "-H",
+        "{vcf_plain}",
+        "-v",
+        "snps"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 47,
+      "upstream_ms": 37,
+      "timing_ratio": 1.2764749230836188
+    },
+    {
+      "tool": "bcftools",
+      "name": "view_flagv_indels",
+      "args": [
+        "-H",
+        "{vcf_plain}",
+        "-v",
+        "indels"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 28,
+      "upstream_ms": 28,
+      "timing_ratio": 0.9958513696073861
+    },
+    {
+      "tool": "bcftools",
+      "name": "view_flagV_indels",
+      "args": [
+        "-H",
+        "{vcf_plain}",
+        "-V",
+        "indels"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 49,
+      "upstream_ms": 40,
+      "timing_ratio": 1.22353302097278
+    },
+    {
+      "tool": "bcftools",
+      "name": "view_flagi_QUAL\u003e30",
+      "args": [
+        "-H",
+        "{vcf_plain}",
+        "-i",
+        "QUAL\u003e30"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 51,
+      "upstream_ms": 36,
+      "timing_ratio": 1.4099051990478009
+    },
+    {
+      "tool": "bcftools",
+      "name": "view_flagi_DP\u003e40",
+      "args": [
+        "-H",
+        "{vcf_plain}",
+        "-i",
+        "DP\u003e40"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 6,
+      "upstream_ms": 3,
+      "timing_ratio": 1.6395459203783997
+    },
+    {
+      "tool": "bcftools",
+      "name": "view_flage_QUAL\u003c30",
+      "args": [
+        "-H",
+        "{vcf_plain}",
+        "-e",
+        "QUAL\u003c30"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 47,
+      "upstream_ms": 37,
+      "timing_ratio": 1.2515614119428085
+    },
+    {
+      "tool": "bcftools",
+      "name": "view_flagO_v",
+      "args": [
+        "-H",
+        "{vcf_plain}",
+        "-O",
+        "v"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 47,
+      "upstream_ms": 38,
+      "timing_ratio": 1.2378137201513866
+    },
+    {
+      "tool": "bcftools",
+      "name": "view_combo_snps_qual",
+      "args": [
+        "-H",
+        "{vcf_plain}",
+        "-v",
+        "snps",
+        "-i",
+        "QUAL\u003e30"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 51,
+      "upstream_ms": 38,
+      "timing_ratio": 1.3528017600818987
+    },
+    {
+      "tool": "bcftools",
+      "name": "view_combo_indels_dp",
+      "args": [
+        "-H",
+        "{vcf_plain}",
+        "-v",
+        "indels",
+        "-i",
+        "DP\u003e20"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 6,
+      "upstream_ms": 3,
+      "timing_ratio": 1.5504129858035565
+    },
+    {
+      "tool": "bcftools",
+      "name": "view_combo_excl_snps_qual",
+      "args": [
+        "-H",
+        "{vcf_plain}",
+        "-V",
+        "snps",
+        "-e",
+        "QUAL\u003c20"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 28,
+      "upstream_ms": 29,
+      "timing_ratio": 0.9730393488708767
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_view_r_region",
+      "args": [
+        "-H",
+        "-r",
+        "chr1:1-3000",
+        "{vcf}"
+      ],
+      "input": "vcf",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 8,
+      "upstream_ms": 5,
+      "timing_ratio": 1.7484571665587607
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_view_t_targets",
+      "args": [
+        "-H",
+        "-t",
+        "chr1",
+        "{vcf}"
+      ],
+      "input": "vcf",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 36,
+      "upstream_ms": 41,
+      "timing_ratio": 0.8675709275742656
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_view_r_multi",
+      "args": [
+        "-H",
+        "-r",
+        "chr2",
+        "{vcf}"
+      ],
+      "input": "vcf",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 244,
+      "upstream_ms": 12,
+      "timing_ratio": 19.02572925546211
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_view_s_sample",
+      "args": [
+        "-H",
+        "-s",
+        "sample1",
+        "{vcf_multi}"
+      ],
+      "input": "vcf_multi_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 317,
+      "upstream_ms": 101,
+      "timing_ratio": 3.1386264224402494
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_view_G_drop_gt",
+      "args": [
+        "-H",
+        "-G",
+        "{vcf_multi}"
+      ],
+      "input": "vcf_multi_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 250,
+      "upstream_ms": 84,
+      "timing_ratio": 2.9572479433356698
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_view_c_minac",
+      "args": [
+        "-H",
+        "-I",
+        "-c",
+        "1",
+        "{vcf_multi}"
+      ],
+      "input": "vcf_multi_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 226,
+      "upstream_ms": 103,
+      "timing_ratio": 2.183022306313455
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_view_C_maxac",
+      "args": [
+        "-H",
+        "-I",
+        "-C",
+        "10",
+        "{vcf_multi}"
+      ],
+      "input": "vcf_multi_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 170,
+      "upstream_ms": 72,
+      "timing_ratio": 2.359935911845356
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_view_q_minaf",
+      "args": [
+        "-H",
+        "-I",
+        "-q",
+        "0.2",
+        "{vcf_multi}"
+      ],
+      "input": "vcf_multi_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 230,
+      "upstream_ms": 103,
+      "timing_ratio": 2.2239520648493944
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_view_Q_maxaf",
+      "args": [
+        "-H",
+        "-I",
+        "-Q",
+        "0.8",
+        "{vcf_multi}"
+      ],
+      "input": "vcf_multi_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 219,
+      "upstream_ms": 109,
+      "timing_ratio": 2.0042364620237696
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_query_chrom_pos_ref_alt",
+      "args": [
+        "-f",
+        "%CHROM\\t%POS\\t%REF\\t%ALT\\n",
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 31,
+      "upstream_ms": 22,
+      "timing_ratio": 1.4122746264589672
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_query_info_dp",
+      "args": [
+        "-f",
+        "%CHROM\\t%POS\\t%INFO/DP\\n",
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 30,
+      "upstream_ms": 27,
+      "timing_ratio": 1.0950419809993435
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_query_qual_filter",
+      "args": [
+        "-f",
+        "%CHROM\\t%POS\\t%QUAL\\t%FILTER\\n",
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 35,
+      "upstream_ms": 24,
+      "timing_ratio": 1.425570510125989
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_query_info_dp_filtered",
+      "args": [
+        "-f",
+        "%CHROM\\t%POS\\t%INFO/DP\\n",
+        "-i",
+        "DP\u003e30",
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 5,
+      "upstream_ms": 3,
+      "timing_ratio": 1.5982093116981022
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_query_info_dp_excluded",
+      "args": [
+        "-f",
+        "%CHROM\\t%POS\\t%INFO/DP\\n",
+        "-e",
+        "DP\u003c30",
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 5,
+      "upstream_ms": 3,
+      "timing_ratio": 1.3378580713141115
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_query_gt_multi",
+      "args": [
+        "-f",
+        "%CHROM:%POS[\\t%GT]\\n",
+        "{vcf_multi}"
+      ],
+      "input": "vcf_multi_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 142,
+      "upstream_ms": 105,
+      "timing_ratio": 1.3607864956534876
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_query_list_samples",
+      "args": [
+        "-l",
+        "{vcf_multi}"
+      ],
+      "input": "vcf_multi_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 5,
+      "upstream_ms": 3,
+      "timing_ratio": 1.439038267174051
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_query_heavy_full",
+      "args": [
+        "-f",
+        "%CHROM\\t%POS\\t%REF\\t%ALT\\t%QUAL\\t%INFO/DP\\n",
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": true,
+      "status": "PASS",
+      "ours_ms": 37,
+      "upstream_ms": 32,
+      "timing_ratio": 1.146291914834745
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_norm_split",
+      "args": [
+        "-m-",
+        "-f",
+        "{fasta}",
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 105,
+      "upstream_ms": 66,
+      "timing_ratio": 1.5752223208030538
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_norm_dedup",
+      "args": [
+        "-d",
+        "all",
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 91,
+      "upstream_ms": 54,
+      "timing_ratio": 1.6683694771937487
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_norm_check_ref",
+      "args": [
+        "-c",
+        "w",
+        "-f",
+        "{fasta}",
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 105,
+      "upstream_ms": 64,
+      "timing_ratio": 1.628432960527102
+    },
+    {
+      "tool": "bcftools",
+      "name": "filter_base",
+      "args": [
+        "-H",
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 5,
+      "upstream_ms": 3,
+      "timing_ratio": 1.6409915534013575
+    },
+    {
+      "tool": "bcftools",
+      "name": "filter_flage_QUAL\u003c30",
+      "args": [
+        "-H",
+        "{vcf_plain}",
+        "-e",
+        "QUAL\u003c30"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 4,
+      "upstream_ms": 3,
+      "timing_ratio": 1.5698423181705605
+    },
+    {
+      "tool": "bcftools",
+      "name": "filter_flagi_QUAL\u003e=30",
+      "args": [
+        "-H",
+        "{vcf_plain}",
+        "-i",
+        "QUAL\u003e=30"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 4,
+      "upstream_ms": 2,
+      "timing_ratio": 1.594581650607457
+    },
+    {
+      "tool": "bcftools",
+      "name": "filter_combo_soft_lowqual",
+      "args": [
+        "-H",
+        "{vcf_plain}",
+        "-s",
+        "LowQual",
+        "-e",
+        "QUAL\u003c30"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 4,
+      "upstream_ms": 2,
+      "timing_ratio": 1.646913369713506
+    },
+    {
+      "tool": "bcftools",
+      "name": "filter_combo_snpgap",
+      "args": [
+        "-H",
+        "{vcf_plain}",
+        "-g",
+        "3"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 4,
+      "upstream_ms": 3,
+      "timing_ratio": 1.4900816255153029
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_sort",
+      "args": [
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 79,
+      "upstream_ms": 79,
+      "timing_ratio": 1.0083963640588818
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_stats",
+      "args": [
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 29,
+      "upstream_ms": 24,
+      "timing_ratio": 1.193560289303984
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_stats_multi",
+      "args": [
+        "{vcf_multi}"
+      ],
+      "input": "vcf_multi_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 101,
+      "upstream_ms": 40,
+      "timing_ratio": 2.512085427273837
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_head",
+      "args": [
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 6,
+      "upstream_ms": 3,
+      "timing_ratio": 1.704407991290022
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_annotate_drop_af",
+      "args": [
+        "-x",
+        "INFO/AF",
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 76,
+      "upstream_ms": 38,
+      "timing_ratio": 2.001586692746429
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_annotate_drop_dp",
+      "args": [
+        "-x",
+        "INFO/DP",
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 74,
+      "upstream_ms": 41,
+      "timing_ratio": 1.8081534811808366
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_gtcheck",
+      "args": [
+        "{vcf_multi}"
+      ],
+      "input": "vcf_multi_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 1454,
+      "upstream_ms": 123,
+      "timing_ratio": 11.780534340293482
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_mpileup",
+      "args": [
+        "-f",
+        "{fasta}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 83201,
+      "upstream_ms": 27361,
+      "timing_ratio": 3.040849505141772
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_mpileup_heavy",
+      "args": [
+        "-f",
+        "{fasta}",
+        "{bam}"
+      ],
+      "input": "bam",
+      "compare": "ByteExact",
+      "heavy": true,
+      "status": "PASS",
+      "ours_ms": 91736,
+      "upstream_ms": 27922,
+      "timing_ratio": 3.28538005047854
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_plugin_fill_tags",
+      "args": [
+        "{vcf_multi}",
+        "--",
+        "-t",
+        "AF"
+      ],
+      "input": "vcf_multi_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 811,
+      "upstream_ms": 172,
+      "timing_ratio": 4.702422097945275
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_plugin_fill_tags_an_ac",
+      "args": [
+        "{vcf_multi}",
+        "--",
+        "-t",
+        "AN,AC"
+      ],
+      "input": "vcf_multi_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 622,
+      "upstream_ms": 290,
+      "timing_ratio": 2.139511200316602
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_view_c_update_acan",
+      "args": [
+        "-H",
+        "-c",
+        "1",
+        "{vcf_multi}"
+      ],
+      "input": "vcf_multi_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 380,
+      "upstream_ms": 275,
+      "timing_ratio": 1.3797456000083967
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_annotate_drop_filter",
+      "args": [
+        "-x",
+        "FILTER",
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 160,
+      "upstream_ms": 68,
+      "timing_ratio": 2.345910552491899
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_roh",
+      "args": [
+        "-G30",
+        "--AF-dflt",
+        "0.4",
+        "{vcf_multi}"
+      ],
+      "input": "vcf_multi_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 2494,
+      "upstream_ms": 469,
+      "timing_ratio": 5.310167827677274
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_consensus",
+      "args": [
+        "-f",
+        "{fasta}",
+        "{vcf}"
+      ],
+      "input": "vcf",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 7482,
+      "upstream_ms": 95,
+      "timing_ratio": 78.11417389297674
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_concat",
+      "args": [
+        "-a",
+        "{vcf}",
+        "{vcf}"
+      ],
+      "input": "vcf",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 187,
+      "upstream_ms": 122,
+      "timing_ratio": 1.525890086728663
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_norm_join",
+      "args": [
+        "-m+",
+        "-f",
+        "{fasta}",
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 98,
+      "upstream_ms": 69,
+      "timing_ratio": 1.4103053387604358
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_call",
+      "args": [
+        "-m",
+        "{vcf_pl}"
+      ],
+      "input": "vcf_plain",
+      "compare": "Similarity",
+      "heavy": false,
+      "status": "SIMILAR",
+      "max_deviation": 0.000008707843154308809,
+      "ours_ms": 43540,
+      "upstream_ms": 28295,
+      "timing_ratio": 1.5387894665585031
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_csq",
+      "args": [
+        "--force",
+        "-f",
+        "{fasta}",
+        "-g",
+        "{gff}",
+        "-p",
+        "a",
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "SKIP",
+      "detail": "bcftools csq --force over the multi-gene fixture is byte-identical to upstream EXCEPT for 3 records, and that residual is an upstream bug we deliberately do not reproduce (fix-on-port). The haplotype-aware engine now matches upstream on the INFO/BCSQ consequence set and order, the FORMAT/BCSQ sample bitmask, intron gene selection for overlapping genes (regidx start-asc/end-desc order; csq_push keeps the first-staged intron), and splice-region ordering (test_splice walks idx_exon, not per-transcript). The only divergence: the '@\u003cpos\u003e' compound-linkage marker on variants 30690/30722/31112 (shared by gene00024's and gene00025's frameshift haplotypes) prints @33495 upstream vs @30420 for us. @30420 is CORRECT — the gene00024 anchor; @33495 is a recycled bcf1_t pointer (vbuf_push SWAPs record slots, so the flushed anchor's slot is reused by a later record before the silent member flushes). See docs/UPSTREAM_BUGS.md#bcftools-csq-prnup-recycled-pos. Reproducing it would mean modelling upstream's record-ring recycling to emit a knowingly-wrong position, against the fix-on-port mandate; this entry stays a documented terminal skip.",
+      "ours_ms": 0,
+      "upstream_ms": 0
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_isec",
+      "args": [
+        "-p",
+        "{out}",
+        "{vcf}",
+        "{vcf_multi}"
+      ],
+      "input": "vcf",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 5098,
+      "upstream_ms": 294,
+      "timing_ratio": 17.319281028561516
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_merge",
+      "args": [
+        "--force-samples",
+        "{vcf}",
+        "{vcf}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 320,
+      "upstream_ms": 149,
+      "timing_ratio": 2.148797296643936
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_convert",
+      "args": [
+        "--gvcf2vcf",
+        "-f",
+        "{fasta}",
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 83,
+      "upstream_ms": 57,
+      "timing_ratio": 1.4514646417408215
+    },
+    {
+      "tool": "bcftools",
+      "name": "bcftools_reheader",
+      "args": [
+        "-s",
+        "{vcf_samples}",
+        "{vcf_multi}"
+      ],
+      "input": "vcf_multi_plain",
+      "compare": "BGZFDecoded",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 439,
+      "upstream_ms": 14,
+      "timing_ratio": 30.22949311924634
+    },
+    {
+      "tool": "bcftools",
+      "name": "view_base",
+      "args": [
+        "-H",
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 46,
+      "upstream_ms": 40,
+      "timing_ratio": 1.1454073605878883
+    },
+    {
+      "tool": "bcftools",
+      "name": "view_flagv_snps",
+      "args": [
+        "-H",
+        "{vcf_plain}",
+        "-v",
+        "snps"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 45,
+      "upstream_ms": 46,
+      "timing_ratio": 0.9702312394008674
+    },
+    {
+      "tool": "bcftools",
+      "name": "view_flagv_indels",
+      "args": [
+        "-H",
+        "{vcf_plain}",
+        "-v",
+        "indels"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 32,
+      "upstream_ms": 32,
+      "timing_ratio": 1.0051969867708124
+    },
+    {
+      "tool": "bcftools",
+      "name": "view_flagi_QUAL\u003e30",
+      "args": [
+        "-H",
+        "{vcf_plain}",
+        "-i",
+        "QUAL\u003e30"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 49,
+      "upstream_ms": 39,
+      "timing_ratio": 1.239080818805935
+    },
+    {
+      "tool": "bcftools",
+      "name": "view_flage_QUAL\u003c30",
+      "args": [
+        "-H",
+        "{vcf_plain}",
+        "-e",
+        "QUAL\u003c30"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 47,
+      "upstream_ms": 40,
+      "timing_ratio": 1.186801741450894
+    },
+    {
+      "tool": "bcftools",
+      "name": "view_combo_snps_qual",
+      "args": [
+        "-H",
+        "{vcf_plain}",
+        "-v",
+        "snps",
+        "-i",
+        "QUAL\u003e30"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 48,
+      "upstream_ms": 42,
+      "timing_ratio": 1.1566931048333111
+    },
+    {
+      "tool": "bcftools",
+      "name": "query_chrom_pos_ref_alt",
+      "args": [
+        "-f",
+        "%CHROM\\t%POS\\t%REF\\t%ALT\\n",
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 35,
+      "upstream_ms": 23,
+      "timing_ratio": 1.516080551317927
+    },
+    {
+      "tool": "bcftools",
+      "name": "query_gt",
+      "args": [
+        "-f",
+        "%CHROM:%POS[\\t%GT]\\n",
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 33,
+      "upstream_ms": 37,
+      "timing_ratio": 0.8905054656169106
+    },
+    {
+      "tool": "bcftools",
+      "name": "query_info_dp",
+      "args": [
+        "-f",
+        "%CHROM\\t%POS\\t%INFO/DP\\n",
+        "{vcf_plain}"
+      ],
+      "input": "vcf_plain",
+      "compare": "ByteExact",
+      "heavy": false,
+      "status": "PASS",
+      "ours_ms": 32,
+      "upstream_ms": 27,
+      "timing_ratio": 1.1680243073788334
+    }
+  ],
+  "summary": {
+    "total": 68,
+    "pass": 66,
+    "similar": 1,
+    "diverge": 0,
+    "skip": 1,
+    "error": 0
+  }
+}
