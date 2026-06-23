@@ -750,6 +750,30 @@ func processPairOnce(record1, record2 *fastq.Record, writer1, writer2, mergeWrit
 		}
 	}
 
+	// Overlap-based paired-end adapter trimming (upstream
+	// AdapterTrimmer::trimByOverlapAnalysis). When the PE overlap shows the insert
+	// is shorter than the reads (read-through), trim BOTH mates to the insert
+	// length. This is the primary PE adapter-removal path and works regardless of
+	// the adapter sequence, so it removes the read-2 read-through adapter that the
+	// shared 3' sequence trim (opts.Adapter3 == read-1 adapter) misses — e.g. for
+	// Nextera, where the R1 and R2 adapters differ.
+	if !opts.DisableAdapterTrimming {
+		rcSeq2 := reverseComplement(string(record2.Sequence))
+		ov := analyzeOverlapPair(string(record1.Sequence), rcSeq2,
+			opts.OverlapDiffLimit, opts.OverlapRequire,
+			float64(opts.OverlapDiffPercentLimit)/100.0)
+		if a1, a2, did := trimByOverlapAnalysis(record1, record2, ov, 0, 0); did {
+			if len(a1) > 0 {
+				stats.AdapterTrimmedReads++
+				stats.AdapterTrimmedBases += int64(len(a1))
+			}
+			if len(a2) > 0 {
+				stats.AdapterTrimmedReads++
+				stats.AdapterTrimmedBases += int64(len(a2))
+			}
+		}
+	}
+
 	processed1, pass1 := processRecord(record1, opts, stats, encoding)
 	processed2, pass2 := processRecord(record2, opts, stats, encoding)
 

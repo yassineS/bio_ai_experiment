@@ -104,6 +104,36 @@ func analyzeOverlapPair(seq1, rcSeq2 string, diffLimit, overlapRequire int, diff
 	return OverlapAnalysisResult{Overlapped: false}
 }
 
+// trimByOverlapAnalysis ports AdapterTrimmer::trimByOverlapAnalysis
+// (adaptertrimmer.cpp:16). When the PE overlap shows the insert is shorter than
+// the reads (Offset < 0, i.e. read-through), it trims both mates down to the
+// insert length, removing the read-through adapter from BOTH reads regardless of
+// the adapter sequence. This is the primary paired-end adapter-removal mechanism
+// and works even when R1 and R2 adapters differ (e.g. Nextera), which a single
+// shared 3' adapter sequence cannot. It mutates record1/record2 in place and
+// returns the trimmed adapter tails plus whether a trim occurred.
+func trimByOverlapAnalysis(record1, record2 *fastq.Record, ov OverlapAnalysisResult, frontTrimmed1, frontTrimmed2 int) (adapter1, adapter2 string, trimmed bool) {
+	if !ov.Overlapped || ov.Offset >= 0 {
+		return "", "", false
+	}
+	ol := ov.OverlapLen
+	len1 := len(record1.Sequence)
+	if v := ol + frontTrimmed2; v < len1 {
+		len1 = v
+	}
+	len2 := len(record2.Sequence)
+	if v := ol + frontTrimmed1; v < len2 {
+		len2 = v
+	}
+	adapter1 = string(record1.Sequence[len1:])
+	adapter2 = string(record2.Sequence[len2:])
+	record1.Sequence = record1.Sequence[:len1]
+	record1.Quality = record1.Quality[:len1]
+	record2.Sequence = record2.Sequence[:len2]
+	record2.Quality = record2.Quality[:len2]
+	return adapter1, adapter2, true
+}
+
 // correctByOverlapAnalysis performs overlap-based base correction on a
 // paired-end read pair. It is a verbatim port of
 // BaseCorrector::correctByOverlapAnalysis (basecorrector.cpp:16-83): for

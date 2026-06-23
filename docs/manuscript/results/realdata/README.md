@@ -124,9 +124,17 @@ Our ported `fastp` vs upstream `fastp` on 1 M real exome read-pairs
   Two defects: (a) upstream's oracle finds **120 804 reads still carry adapter in
   our output** (~12 % of pairs) — trimming is incomplete; and (b) **our fastp
   reports 0 residual in its own output**, i.e. its adapter *detection* is blind
-  to the same R2 read-through it fails to trim. Both detection and trimming of
-  the PE read-2 adapter are broken. (The earlier 971 167-vs-952 903 read-count
-  gap is a symptom.)
+  to the same R2 read-through it fails to trim.
+
+  **FIXED.** Our PE pipeline was missing upstream's overlap-based adapter trim
+  (`AdapterTrimmer::trimByOverlapAnalysis`): it trimmed both mates using only the
+  read-1 adapter sequence. Ported it (`overlap.go: trimByOverlapAnalysis`,
+  wired into `processPairOnce`) so a read-through pair is trimmed to the insert
+  length on **both** reads, removing the read-2 adapter regardless of sequence.
+  After the fix, upstream's QC oracle finds **2 residual reads in our output**
+  (== upstream's own 2); regression tests added; fastp tests green. A smaller
+  read-count gap remains (ours retains ~2 % more pairs — a min-length /
+  read-2-sequence-trim nuance), tracked separately.
 - **CLI incompatibility (drop-in gap).** Our fastp's short flags differ from
   upstream's: ours uses `-I`=in1, `-O`=out1, `--in2`/`--out2` for read 2 and
   `--json`/`--html` (no `-i`/`-o`=out2 / `-j`/`-h`), whereas upstream uses
@@ -167,14 +175,14 @@ noted), all actionable:
 - **`bcftools norm`** multi-contig output ordering (see `../large_tier/`).
 - **`samtools merge`** aux-tag reposition (Finding A) — records now byte-identical
   to upstream. Minor `@RG`/`@PG` header line-grouping gap remains.
+- **fastp PE R2 adapter** (Finding C) — overlap-based PE adapter trim ported;
+  residual 120 804 → 2 reads (== upstream). Minor ~2 % read-count gap remains.
 
 **Open bugs (root-caused, not yet fixed):**
 
 1. **CRAM rANS4x16 O1 decoder** (Finding B) — order-1 rANS literal decode emits a
    wrong stream on real data; decode fails. Deep codec fix.
-2. **fastp PE R2 adapter** (Finding C) — both trimming and detection of the read-2
-   read-through adapter are broken (120 804 residual reads vs upstream 0).
-3. **fastp / skewer / prinseq CLI** (Finding D) — not drop-in compatible with
+2. **fastp / skewer / prinseq CLI** (Finding D) — not drop-in compatible with
    upstream (subcommands / renamed flags). A design-level compatibility gap.
 4. **skewer** keeps 2 read-pairs upstream drops (min-length-after-trim nuance).
 5. **`samtools merge -R`** ignores the region (merges the whole file); merge is
