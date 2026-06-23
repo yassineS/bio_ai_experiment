@@ -37,8 +37,14 @@ merged reads). Two candidate causes — only the first is a real bug:
    updates `RG` in place and never repositions `PG`. So ours emits `…MD PG RG XG…`
    while upstream emits `…MD XG…XT RG PG`. Our plain `view -b` round-trip
    preserves tag order byte-for-byte (verified), so this is specific to merge.
-   **Fix:** replicate `bam_translate` — for each record, del+re-append `RG` (with
-   `rgTrans`) then `PG` (needs a per-read `pgTrans` table) at the aux-list end.
+   **FIXED.** `merge.go` now mirrors `bam_translate` — `bamTranslateAux`
+   del+re-appends `RG` (via `rgTrans`) then `PG` (via a new `pgTrans`, with
+   `PP`-chain translation) at each record's aux-list end. On the chr20 region
+   (same seed) the merged **records are now byte-identical to upstream**
+   (143 594 → 0 differing record-lines); regression tests added, merge + broader
+   samtools tests green. A separate minor gap remains: the merged header groups
+   `@RG`/`@PG` lines differently (content identical, line order differs) — does
+   not affect record bytes.
 
 Also observed (separate gaps): our `merge -R <region>` ignores the region (merges
 the whole file), and our merge is markedly slower than upstream on large inputs.
@@ -104,9 +110,23 @@ Our ported `fastp` vs upstream `fastp` on 1 M real exome read-pairs
   Our fastp clears R1 read-through adapter (4.98 → 0.02 %) but **barely trims R2**
   (4.91 → 4.29 %, only ~15 % removed); upstream clears both to ~0 %. So in PE
   overlap mode our adapter trimming is **one-sided** — it leaves adapters in
-  read 2. The earlier "comparable" read-count gap (971 167 vs 952 903) is a
-  *symptom* of this: R2 adapters aren't being cut. This is a genuine functional
-  defect, found only by checking residual adapter content.
+  read 2.
+
+  **Fuzzy-detection cross-check (fastp 2×2).** Re-running fastp (which uses
+  fuzzy k-mer overlap detection, not exact match) as the QC oracle over each
+  trimmed set — residual reads it still detects+trims:
+
+  | QC engine | on upstream-trimmed | on ours-trimmed |
+  |---|---|---|
+  | upstream fastp | 0 | **120 804** (1.68 M bases) |
+  | our fastp | 0 | **0** |
+
+  Two defects: (a) upstream's oracle finds **120 804 reads still carry adapter in
+  our output** (~12 % of pairs) — trimming is incomplete; and (b) **our fastp
+  reports 0 residual in its own output**, i.e. its adapter *detection* is blind
+  to the same R2 read-through it fails to trim. Both detection and trimming of
+  the PE read-2 adapter are broken. (The earlier 971 167-vs-952 903 read-count
+  gap is a symptom.)
 - **CLI incompatibility (drop-in gap).** Our fastp's short flags differ from
   upstream's: ours uses `-I`=in1, `-O`=out1, `--in2`/`--out2` for read 2 and
   `--json`/`--html` (no `-i`/`-o`=out2 / `-j`/`-h`), whereas upstream uses
@@ -128,9 +148,10 @@ noted), all actionable:
 
 1. **CRAM rANS4x16 O1 decoder** (Finding B) — our order-1 rANS literal decode
    emits a wrong stream on real data; decode fails. Needs a focused codec session.
-2. **`samtools merge` aux-tag reposition** (Finding A) — replicate `bam_translate`
-   (del + re-append `RG`/`PG` at the aux-list end); the RG suffix is *not* a bug
-   (time-seeded in both; our `lrand48` is byte-exact to htslib's).
+2. **`samtools merge` aux-tag reposition** (Finding A) — **FIXED**: records now
+   byte-identical to upstream (same seed). The RG suffix is *not* a bug
+   (time-seeded in both; our `lrand48` is byte-exact to htslib's). Minor header
+   `@RG`/`@PG` line-grouping gap remains.
 3. **fastp PE adapter trimming is one-sided** (Finding C) — trims R1 read-through
    adapter (→0.02 %) but leaves it in R2 (4.29 % residual vs upstream ~0 %). Real
    functional bug. Also: CLI short flags incompatible with upstream.

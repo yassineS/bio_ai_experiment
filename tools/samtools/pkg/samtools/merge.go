@@ -103,11 +103,14 @@ func Merge(inputs []io.Reader, out io.Writer, opts MergeOptions) error {
 		readers = append(readers, br)
 	}
 
-	// rgTrans[i] maps input i's original @RG IDs to the (possibly renamed) ID
-	// in the merged header, so records from that input can be retagged.
+	// rgTrans[i] / pgTrans[i] map input i's original @RG / @PG IDs to the
+	// (possibly renamed) ID in the merged header, so records from that input can
+	// have their RG/PG aux tags translated — mirroring upstream bam_translate.
 	rgTrans := make([]map[string]string, len(readers))
+	pgTrans := make([]map[string]string, len(readers))
 	for i := range rgTrans {
 		rgTrans[i] = map[string]string{}
+		pgTrans[i] = map[string]string{}
 	}
 
 	// Header construction.
@@ -172,9 +175,10 @@ func Merge(inputs []io.Reader, out io.Writer, opts MergeOptions) error {
 			}
 		}
 		// Union @PG entries. With -p (CombinePG) colliding IDs are combined;
-		// otherwise duplicates are kept distinct. @PG provenance is dropped by
-		// downstream decoded comparisons, so the exact renumbering is not
-		// reproduced here.
+		// otherwise a colliding @PG ID is renamed to a distinct "<id>-<8 hex>"
+		// form (upstream's gen_unique_id) and records carrying it (plus PP chain
+		// references) are translated. These PRNG draws follow the @RG draws above,
+		// matching upstream's per-input (RG, then PG) ordering.
 		seenPG := make(map[string]bool, len(hdr.Programs))
 		for _, pg := range hdr.Programs {
 			seenPG[pg.ID] = true
@@ -184,14 +188,17 @@ func Merge(inputs []io.Reader, out io.Writer, opts MergeOptions) error {
 				if seenPG[pg.ID] && opts.CombinePG {
 					continue
 				}
+				newID := pg.ID
 				if seenPG[pg.ID] {
-					continue
+					newID = genUniqueID(pg.ID, seenPG, rng)
+					pgTrans[i][pg.ID] = newID
 				}
-				seenPG[pg.ID] = true
-				hdr.Programs = append(hdr.Programs, pg)
+				seenPG[newID] = true
+				extra := translatePGChain(pg.Extra, pgTrans[i])
+				hdr.Programs = append(hdr.Programs, sam.Program{ID: newID, Extra: extra})
 				hdr.Lines = append(hdr.Lines, sam.HeaderLine{
 					Tag:    "PG",
-					Fields: append([]sam.HeaderField{{Tag: "ID", Value: pg.ID}}, pg.Extra...),
+					Fields: append([]sam.HeaderField{{Tag: "ID", Value: newID}}, extra...),
 				})
 			}
 		}
@@ -233,15 +240,6 @@ func Merge(inputs []io.Reader, out io.Writer, opts MergeOptions) error {
 	if err := bw.WriteHeader(hdr); err != nil {
 		return err
 	}
-	// Whether any input had an @RG collision that forced a rename.
-	anyRGTrans := false
-	for _, m := range rgTrans {
-		if len(m) > 0 {
-			anyRGTrans = true
-			break
-		}
-	}
-
 	it := newMergeIterator(readers, less)
 	mi, _ := it.(*mergeIterator)
 	for {
@@ -259,11 +257,12 @@ func Merge(inputs []io.Reader, out io.Writer, opts MergeOptions) error {
 		if err != nil {
 			return err
 		}
-		// Retag records whose input's @RG ID was renamed on collision.
-		if anyRGTrans && src >= 0 {
-			if newID, ok := rgTrans[src][recordRGID(rec)]; ok {
-				setRecordRG(rec, newID, AddReplaceRGOverwriteAll)
-			}
+		// Mirror upstream bam_translate: for every record, move the RG (then
+		// PG) aux tag to the END of the aux list, applying any collision rename.
+		// Upstream does this via bam_aux_del + bam_aux_append even for identity
+		// translations, so the merged tag order matches byte-for-byte.
+		if src >= 0 {
+			bamTranslateAux(rec, rgTrans[src], pgTrans[src])
 		}
 		if forcedRGID != "" {
 			setRecordRG(rec, forcedRGID, AddReplaceRGOverwriteAll)
@@ -285,6 +284,61 @@ func recordRGID(rec *sam.Record) string {
 		}
 	}
 	return ""
+}
+
+// bamTranslateAux mirrors upstream's bam_translate (bam_sort.c): it relocates
+// the RG aux tag, then the PG aux tag, to the END of the record's aux list,
+// translating the value through the per-input rename map when present. Upstream
+// removes and re-appends these tags for every record (even identity
+// translations), so reproducing the move is required for byte-exact merge
+// output. RG is processed before PG, matching upstream's order.
+func bamTranslateAux(rec *sam.Record, rgTrans, pgTrans map[string]string) {
+	repositionAuxTag(rec, "RG", rgTrans)
+	repositionAuxTag(rec, "PG", pgTrans)
+}
+
+// repositionAuxTag finds the first aux field with the given tag, removes it, and
+// re-appends it (with its value translated through trans, if present) at the end
+// of the aux list. It is a no-op when the tag is absent.
+func repositionAuxTag(rec *sam.Record, tag string, trans map[string]string) {
+	idx := -1
+	for i, a := range rec.Aux {
+		if a.Tag == tag {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return
+	}
+	moved := rec.Aux[idx]
+	if s, ok := moved.Value.(string); ok && trans != nil {
+		if nv, ok := trans[s]; ok {
+			moved.Value = nv
+		}
+	}
+	rec.Aux = append(rec.Aux[:idx], rec.Aux[idx+1:]...)
+	rec.Aux = append(rec.Aux, moved)
+}
+
+// translatePGChain returns a copy of a @PG line's extra fields with any PP
+// (previous-program) reference remapped through trans, so a renamed @PG ID is
+// still referenced correctly by its successors in the chain. The input slice is
+// left unmodified.
+func translatePGChain(extra []sam.HeaderField, trans map[string]string) []sam.HeaderField {
+	if len(trans) == 0 {
+		return extra
+	}
+	out := make([]sam.HeaderField, len(extra))
+	copy(out, extra)
+	for i := range out {
+		if out[i].Tag == "PP" {
+			if nv, ok := trans[out[i].Value]; ok {
+				out[i].Value = nv
+			}
+		}
+	}
+	return out
 }
 
 // MergeFiles is the high-level CLI entry: opens each input path, runs
