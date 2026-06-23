@@ -665,6 +665,8 @@ Options:
                     a colliding ID to a distinct "<id>-<8 hex>" form).
   -p                Combine @PG headers with colliding IDs.
   -s SEED           Seed for the @RG-collision rename PRNG (default: wall clock).
+  -R STR            Merge only reads overlapping region STR (e.g. chr20:1-2000000);
+                    inputs are queried through their sibling .bai/.csi index.
   -l N              Output BGZF deflate level (0..9).
   -@, --threads N   Accepted; ignored.
   -h, --help        Show this help.
@@ -712,7 +714,6 @@ func runMerge(args []string) int {
 	//   -u        uncompressed BAM output (accepted no-op)
 	//   -1        fastest compression (level 1) (accepted no-op)
 	//   -f        force overwrite of the output (accepted; we always write it)
-	//   -R REG    merge only a region (accepted no-op; v1 merges whole files)
 	//   -o FILE   output file (accepted; v1 takes the output as the first
 	//             positional, matching the historical merge CLI)
 	//   -s SEED   subsample seed (accepted no-op)
@@ -754,7 +755,6 @@ func runMerge(args []string) int {
 	_ = mgUncomp
 	_ = mgLevel1
 	_ = mgForce
-	_ = mgRegion
 	_ = mgOutFmt
 	_ = mgTag
 	_ = mgCustom
@@ -822,6 +822,7 @@ func runMerge(args []string) int {
 		CombinePG:      combinePG,
 		RandomSeed:     int64(mgSeed),
 		SeedSet:        seedSet,
+		Region:         mgRegion,
 		Threads:        threads,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools merge: %v\n", err)

@@ -2,6 +2,7 @@ package samtools
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bam"
+	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/hfile"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/region"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -44,6 +49,13 @@ type MergeOptions struct {
 	RandomSeed int64
 	// SeedSet reports whether RandomSeed was given explicitly (-s).
 	SeedSet bool
+	// Region (-R STR) restricts the merge to reads overlapping the given
+	// region specifier (e.g. "chr20:1-2000000"). When non-empty, every input
+	// is region-queried through its sibling index (.bai/.csi) and only the
+	// overlapping reads are fed into the merge; when empty the whole files are
+	// merged. Honoured only on the file-path entry point (MergeFiles), which
+	// can locate each input's index; the in-memory Merge entry point ignores it.
+	Region string
 	// Threads is accepted for upstream-CLI compatibility; ignored.
 	Threads int
 }
@@ -343,7 +355,15 @@ func translatePGChain(extra []sam.HeaderField, trans map[string]string) []sam.He
 
 // MergeFiles is the high-level CLI entry: opens each input path, runs
 // Merge, and closes every file. The output writer is owned by caller.
+//
+// When opts.Region is set (samtools merge -R STR), each input is first
+// restricted to the reads overlapping that region via its sibling index
+// (.bai/.csi) — see mergeRegionFiles — so only the region's records are
+// merged. The whole-file path below is taken when no region is requested.
 func MergeFiles(paths []string, out io.Writer, opts MergeOptions) error {
+	if strings.TrimSpace(opts.Region) != "" {
+		return mergeRegionFiles(paths, out, opts)
+	}
 	readers := make([]io.Reader, 0, len(paths))
 	closers := make([]io.Closer, 0, len(paths))
 	for _, p := range paths {
@@ -363,6 +383,150 @@ func MergeFiles(paths []string, out io.Writer, opts MergeOptions) error {
 		}
 	}()
 	return Merge(readers, out, opts)
+}
+
+// mergeRegionFiles implements `samtools merge -R STR`: it region-queries each
+// input through its sibling index, re-encodes just the overlapping reads (with
+// the input's full original header preserved) into an in-memory BAM, then runs
+// the ordinary Merge over those region-restricted streams. Re-encoding with the
+// untouched header lets the existing Merge perform its @SQ cross-check, @RG/@PG
+// union and collision rename, aux-tag reposition and -s seeded PRNG exactly as
+// it does for whole-file merges — only the set of input records is narrowed to
+// the region. The region is cleared on the recursive Merge call so the indexed
+// query happens only once, here, at the file layer.
+func mergeRegionFiles(paths []string, out io.Writer, opts MergeOptions) error {
+	if len(paths) == 0 {
+		return errors.New("samtools merge: no input files")
+	}
+	buffers := make([]io.Reader, 0, len(paths))
+	for i, p := range paths {
+		buf, err := bamRegionToBuffer(p, opts.Region)
+		if err != nil {
+			return fmt.Errorf("samtools merge: input %d (%s): %w", i, p, err)
+		}
+		buffers = append(buffers, buf)
+	}
+	// Clear Region so the recursive Merge does the plain k-way merge over the
+	// already region-restricted streams (the indexed query happened above).
+	opts.Region = ""
+	return Merge(buffers, out, opts)
+}
+
+// bamRegionToBuffer opens the BAM at path together with its sibling index,
+// performs an indexed seek-and-scan over region, and returns an in-memory BAM
+// (header + only the region's overlapping records) as a reader ready to feed
+// into Merge. The index kind is auto-detected: a `.csi` is preferred when
+// present (it addresses references beyond the BAI 2^29 bp ceiling), otherwise
+// the `.bai` is used. This reuses the same UnionChunks chunk model and
+// per-record overlap test as the samtools view indexed path; it does not
+// re-implement the index reader.
+func bamRegionToBuffer(path, regionSpec string) (io.Reader, error) {
+	// Resolve the index chunks for this input. Prefer .csi over .bai, matching
+	// the samtools view preference order.
+	f, err := openSeekable(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	hdrReader, err := sam.NewBAMReader(f)
+	if err != nil {
+		return nil, err
+	}
+	hdr := hdrReader.Header()
+
+	resolved, _, perr := region.ResolveRegions([]string{regionSpec}, func(name string) int { return hdr.RefIndex(name) })
+	if perr != nil {
+		return nil, perr
+	}
+
+	var chunks []bam.BAIChunk
+	csiPath := path + ".csi"
+	if csiBytes, csiErr := hfile.ReadFile(csiPath); csiErr == nil {
+		idx, ierr := bam.ReadCSI(bytes.NewReader(csiBytes))
+		if ierr != nil {
+			return nil, fmt.Errorf("read %s: %w", csiPath, ierr)
+		}
+		chunks = bam.UnionChunksCSI(idx, resolved)
+	} else {
+		baiPath := path + ".bai"
+		baiBytes, baiErr := hfile.ReadFile(baiPath)
+		if baiErr != nil {
+			return nil, fmt.Errorf("no index at %s: %w", baiPath, baiErr)
+		}
+		idx, ierr := bam.ReadBAI(bytes.NewReader(baiBytes))
+		if ierr != nil {
+			return nil, fmt.Errorf("read %s: %w", baiPath, ierr)
+		}
+		chunks = bam.UnionChunks(idx, resolved)
+	}
+
+	// Build the per-record overlap filter (keeps only reads overlapping the
+	// region on the matching reference — the BAI chunk set is a superset).
+	regionFilter := buildRegionFilter(resolved, hdr)
+	if regionFilter == nil {
+		// An unresolved region (chrom absent from this input) yields no chunks
+		// and no records; emit a header-only BAM so the merge still sees a
+		// well-formed, empty input.
+		regionFilter = func(*sam.Record) bool { return false }
+	}
+
+	// Re-encode header + region records into an in-memory BAM. The header is
+	// preserved verbatim so Merge's @RG/@PG union and @SQ cross-check behave
+	// exactly as in the whole-file path.
+	var buf bytes.Buffer
+	bw := sam.NewBAMWriter(&buf)
+	if err := bw.WriteHeader(hdr); err != nil {
+		return nil, err
+	}
+	for _, c := range chunks {
+		if c.Beg >= c.End {
+			continue
+		}
+		startBlock := int64(c.Beg >> 16)
+		if _, err := f.Seek(startBlock, io.SeekStart); err != nil {
+			return nil, err
+		}
+		bgz, err := bgzip.NewReader(f)
+		if err != nil {
+			return nil, err
+		}
+		// Skip in-block bytes preceding the chunk's first record.
+		uoff := int(c.Beg & 0xFFFF)
+		if uoff > 0 {
+			if _, err := io.CopyN(io.Discard, bgz, int64(uoff)); err != nil {
+				_ = bgz.Close()
+				return nil, err
+			}
+		}
+		boundedSrc := &chunkBoundedReader{r: bgz, end: uint64(c.End)}
+		br := sam.NewBAMBodyReader(boundedSrc, hdr)
+		for {
+			rec, rerr := br.Read()
+			if rerr == io.EOF {
+				break
+			}
+			if rerr != nil {
+				_ = bgz.Close()
+				return nil, rerr
+			}
+			if !regionFilter(rec) {
+				continue
+			}
+			if err := bw.Write(rec); err != nil {
+				_ = bgz.Close()
+				return nil, err
+			}
+		}
+		_ = bgz.Close()
+	}
+	if err := bw.Close(); err != nil {
+		return nil, err
+	}
+	return &buf, nil
 }
 
 // LoadFOFN reads a "file of file names" — one BAM path per line, with
