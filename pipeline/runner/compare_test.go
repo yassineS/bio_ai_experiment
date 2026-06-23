@@ -1,7 +1,10 @@
 package runner
 
 import (
+	"bytes"
 	"compress/gzip"
+	"crypto/md5"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -61,6 +64,148 @@ func TestStripProvenanceFilterPass(t *testing.T) {
 	if got := string(stripProvenance([]byte(in))); got != want {
 		t.Errorf("stripProvenance FILTER=PASS:\n got=%q\nwant=%q", got, want)
 	}
+}
+
+// provenanceTestInputs is the shared corpus exercising every provenance pattern
+// plus the trailing-newline / chunk-boundary edge cases. It is the table the
+// streaming-equivalence test iterates.
+func provenanceTestInputs() map[string][]byte {
+	return map[string][]byte{
+		"empty":                  []byte(""),
+		"single_newline":         []byte("\n"),
+		"only_data_no_trailing":  []byte("chr1\t1\tA"),
+		"only_data_trailing":     []byte("chr1\t1\tA\n"),
+		"only_provenance_pg":     []byte("@PG\tID:x\n"),
+		"only_provenance_no_nl":  []byte("@PG\tID:x"),
+		"two_provenance":         []byte("@PG\tID:x\n@CO\tcomment\n"),
+		"prov_then_data":         []byte("@PG\tID:x\nchr1\t1\tA\n"),
+		"data_then_prov":         []byte("chr1\t1\tA\n@PG\tID:x\n"),
+		"interleaved":            []byte("@HD\tVN:1.6\n@PG\tID:x\n@SQ\tSN:chr1\nr1\t0\tchr1\n@CO\tc\nr2\t0\tchr1\n"),
+		"vcf_command":            []byte("##fileformat=VCFv4.2\n##bcftools_viewCommand=view a.vcf; Date=x\n##contig=<ID=chr1>\nchr1\t1\t.\tA\tG\n"),
+		"vcf_source_filedate":    []byte("##source=myTool\n##fileDate=20200101\n##reference=hs37\n##contig=<ID=1>\n1\t1\t.\tA\tG\n"),
+		"filter_pass":            []byte("##fileformat=VCFv4.2\n##FILTER=<ID=PASS,Description=\"All filters passed\">\n##FILTER=<ID=q10,Description=\"q\">\nchr1\t1\n"),
+		"stats_banner":           []byte("# This file was produced by bcftools stats (1.23)\n# The command line was:\tbcftools stats a.vcf\n# \t/work\n#\n# ID\t[2]id\nSN\t0\t400\n"),
+		"stats_bare_hash":        []byte("#\n# CHK, Checksum\ndata\n"),
+		"stats_tab_echo":         []byte("# \tbcftools stats a.vcf\n# \t/some/dir\nSN\t0\t1\n"),
+		"gtcheck_timing":         []byte("INFO\tTime required to process one record .. 0.000003 seconds\nDC\tsample\t0.1\n"),
+		"working_dir_banner":     []byte("# and the working directory was:\t/work\nSN\t0\t1\n"),
+		"contains_stats_banner2": []byte("# This file contains statistics for all reads.\nSN\t0\t1\n"),
+		"trailing_blank_lines":   []byte("chr1\t1\n\n\n@PG\tID:x\n\n"),
+		"prov_only_then_nl":      []byte("@PG\ta\n@CO\tb\n\n"),
+		"crlf_like":              []byte("chr1\t1\r\n@PG\tx\r\nchr2\t2\r\n"),
+		"long_line":              append(append([]byte("@PG\t"), bytes.Repeat([]byte("X"), 200000)...), '\n'),
+	}
+}
+
+// TestStreamDigestEquivalence is the GATE: for every input in the corpus, the
+// streaming provenance filter (StreamDigest) must produce the SAME md5 as
+// md5(stripProvenance(b)) — i.e. the streaming normalization is byte-for-byte
+// identical to what CompareByteExact compares. It also asserts that feeding the
+// bytes at arbitrary chunk boundaries (1-byte, 3-byte, and whole) yields the
+// same digest, proving the partial-line buffering is correct.
+func TestStreamDigestEquivalence(t *testing.T) {
+	for name, b := range provenanceTestInputs() {
+		want := md5.Sum(stripProvenance(b))
+
+		// Whole-slice path.
+		gotSum, _, err := StreamDigest(bytes.NewReader(b))
+		if err != nil {
+			t.Fatalf("%s: StreamDigest error: %v", name, err)
+		}
+		if gotSum != want {
+			t.Errorf("%s: whole StreamDigest md5=%x want md5(stripProvenance)=%x\n  stripped=%q",
+				name, gotSum, want, stripProvenance(b))
+		}
+
+		// Arbitrary chunk boundaries: 1-byte, 3-byte, and whole reader.
+		for _, chunk := range []int{1, 3, 7, len(b) + 1} {
+			if chunk < 1 {
+				chunk = 1
+			}
+			sum, _, err := StreamDigest(&chunkReader{b: b, chunk: chunk})
+			if err != nil {
+				t.Fatalf("%s chunk=%d: StreamDigest error: %v", name, chunk, err)
+			}
+			if sum != want {
+				t.Errorf("%s chunk=%d: md5=%x want %x", name, chunk, sum, want)
+			}
+		}
+
+		// Also feed via repeated direct Write calls at byte-by-byte boundaries
+		// straight into the filter, mirroring how a pipe delivers bytes.
+		for _, chunk := range []int{1, 2, 5} {
+			h := md5.New()
+			pf := newProvenanceFilter(h)
+			for off := 0; off < len(b); off += chunk {
+				end := off + chunk
+				if end > len(b) {
+					end = len(b)
+				}
+				if _, err := pf.Write(b[off:end]); err != nil {
+					t.Fatalf("%s write chunk=%d: %v", name, chunk, err)
+				}
+			}
+			if err := pf.Close(); err != nil {
+				t.Fatalf("%s close chunk=%d: %v", name, chunk, err)
+			}
+			var got [md5.Size]byte
+			copy(got[:], h.Sum(nil))
+			if got != want {
+				t.Errorf("%s direct-write chunk=%d: md5=%x want %x", name, chunk, got, want)
+			}
+		}
+	}
+}
+
+// TestStreamDigestHead checks the captured head equals the first 64 KiB of the
+// provenance-stripped output and is itself capped.
+func TestStreamDigestHead(t *testing.T) {
+	// Data that exceeds the head window after stripping.
+	var sb bytes.Buffer
+	sb.WriteString("@PG\tID:x\n") // dropped
+	for i := 0; i < 5000; i++ {
+		sb.WriteString("chr1\t1\tA\tdata\n")
+	}
+	b := sb.Bytes()
+	_, head, err := StreamDigest(bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stripped := stripProvenance(b)
+	wantHeadLen := streamHeadCap
+	if len(stripped) < wantHeadLen {
+		wantHeadLen = len(stripped)
+	}
+	if len(head) != wantHeadLen {
+		t.Fatalf("head len=%d want %d (cap %d, stripped %d)", len(head), wantHeadLen, streamHeadCap, len(stripped))
+	}
+	if !bytes.Equal(head, stripped[:wantHeadLen]) {
+		t.Errorf("head does not match prefix of stripProvenance output")
+	}
+}
+
+// chunkReader yields b in fixed-size chunks to exercise partial-line buffering
+// across Read boundaries.
+type chunkReader struct {
+	b     []byte
+	chunk int
+	off   int
+}
+
+func (c *chunkReader) Read(p []byte) (int, error) {
+	if c.off >= len(c.b) {
+		return 0, io.EOF
+	}
+	n := c.chunk
+	if n > len(p) {
+		n = len(p)
+	}
+	if c.off+n > len(c.b) {
+		n = len(c.b) - c.off
+	}
+	copy(p, c.b[c.off:c.off+n])
+	c.off += n
+	return n, nil
 }
 
 // TestCompareByteExact covers match and mismatch.

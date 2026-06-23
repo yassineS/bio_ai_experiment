@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -86,8 +87,8 @@ func runCell(cfg config, spec cellSpec) cellResult {
 		return res
 	}
 
-	ourOut, ourMeas, ourErr := runSide(cfg, spec, ourBin)
-	upOut, upMeas, upErr := runSide(cfg, spec, upBin)
+	ourSum, ourHead, ourMeas, ourErr := runSide(cfg, spec, ourBin)
+	upSum, upHead, upMeas, upErr := runSide(cfg, spec, upBin)
 
 	if ourErr != nil || upErr != nil {
 		// A quickcheck-style postNone cell encodes pass/fail as exit status, so a
@@ -127,27 +128,32 @@ func runCell(cfg config, spec cellSpec) cellResult {
 		return res
 	}
 
-	cmp := runner.CompareByteExact(ourOut, upOut)
-	if cmp.Equal {
+	// Parity is exactly the provenance-stripped byte equality of CompareByteExact,
+	// computed streaming: equal iff the two md5 digests of the provenance-stripped
+	// streams match. The heads (first 64 KiB of stripped output) drive the diff
+	// snippet on mismatch.
+	if ourSum == upSum {
 		res.Status = "PASS"
 		return res
 	}
 	res.Status = "DIVERGE"
-	res.Detail = cmp.Detail
-	res.DiffSnippet = diffSnippet(ourOut, upOut)
+	res.Detail, res.DiffSnippet = headDiff(ourHead, upHead, ourSum, upSum)
 	return res
 }
 
-// runSide builds the argv for one binary, runs it reps times, and returns the
-// comparable text stream (stdout, or the re-decoded SAM for file-producing
-// cells), the reduced measurement, and any execution error.
-func runSide(cfg config, spec cellSpec, bin string) ([]byte, *Measurement, error) {
-	args, outPath, cleanup, err := buildArgs(cfg, spec)
+// runSide builds the argv for one binary, runs it reps times streaming stdout
+// through a provenance-filtering digester, and returns the digest of the
+// comparable stream (stdout, or the re-decoded SAM for file-producing cells),
+// the first 64 KiB of that stripped stream (head, for diff snippets), the
+// reduced measurement, and any execution error. No rep ever holds the full
+// output in memory.
+func runSide(cfg config, spec cellSpec, bin string) (sum [16]byte, head []byte, meas *Measurement, err error) {
+	args, outPath, cleanup, berr := buildArgs(cfg, spec)
 	if cleanup != nil {
 		defer cleanup()
 	}
-	if err != nil {
-		return nil, nil, err
+	if berr != nil {
+		return sum, nil, nil, berr
 	}
 
 	var env []string
@@ -155,31 +161,42 @@ func runSide(cfg config, spec cellSpec, bin string) ([]byte, *Measurement, error
 		env = cramEnv(os.Environ())
 	}
 
-	r, err := repeatRun(cfg.reps, bin, args, "", env)
-	if err != nil {
-		return r.Stdout, &r.Meas, err
-	}
-
 	switch spec.Post {
-	case postStdout, postNone:
-		return r.Stdout, &r.Meas, nil
 	case postViewSAM:
-		// Re-decode the written BAM/CRAM through the SAME binary's `view -h` so
-		// the two outputs are compared by decoded records, not BGZF/CRAM framing
-		// (the repo-documented caveat). The decode itself is not timed.
-		decoded, derr := decodeAlignment(cfg, bin, outPath, spec)
-		if derr != nil {
-			return nil, &r.Meas, fmt.Errorf("re-decoding %s output: %w", spec.Name, derr)
+		// The command itself writes a file; its stdout is not the comparison
+		// stream, so the timed reps discard stdout. The comparison stream is the
+		// re-decoded SAM produced afterward (not timed).
+		m, rerr := repeatRun(cfg.reps, bin, args, "", env, nil)
+		if rerr != nil {
+			return sum, nil, &m, rerr
 		}
-		return decoded, &r.Meas, nil
-	default:
-		return r.Stdout, &r.Meas, nil
+		// Re-decode the written BAM/CRAM through the SAME binary's `view -h` so the
+		// two outputs are compared by decoded records, not BGZF/CRAM framing (the
+		// repo-documented caveat), STREAMING the SAM through the digester so the
+		// multi-GB decode never buffers. The decode itself is not timed.
+		s, h, derr := decodeAlignment(cfg, bin, outPath, spec)
+		if derr != nil {
+			return sum, nil, &m, fmt.Errorf("re-decoding %s output: %w", spec.Name, derr)
+		}
+		return s, h, &m, nil
+	default: // postStdout, postNone
+		dig := runner.NewStreamDigester()
+		m, rerr := repeatRun(cfg.reps, bin, args, "", env, dig)
+		if rerr != nil {
+			return sum, nil, &m, rerr
+		}
+		if cerr := dig.Close(); cerr != nil {
+			return sum, nil, &m, cerr
+		}
+		return dig.Sum(), dig.Head(), &m, nil
 	}
 }
 
-// decodeAlignment runs `bin view -h <file>` (with -T ref for CRAM) and returns
-// stdout, so two alignment files are compared by their decoded SAM records.
-func decodeAlignment(cfg config, bin, file string, spec cellSpec) ([]byte, error) {
+// decodeAlignment runs `bin view -h <file>` (with -T ref for CRAM), streaming
+// its stdout through a provenance-filtering digester so two alignment files are
+// compared by their decoded SAM records WITHOUT buffering the (potentially
+// multi-GB) decoded SAM. It returns the digest and the 64 KiB head.
+func decodeAlignment(cfg config, bin, file string, spec cellSpec) ([16]byte, []byte, error) {
 	args := []string{"view", "-h"}
 	if spec.WriteOut == ".cram" {
 		args = append(args, "-T", cfg.in.ref)
@@ -189,8 +206,15 @@ func decodeAlignment(cfg config, bin, file string, spec cellSpec) ([]byte, error
 	if spec.WriteOut == ".cram" {
 		env = cramEnv(os.Environ())
 	}
-	r, err := runOnce(bin, args, "", env)
-	return r.Stdout, err
+	dig := runner.NewStreamDigester()
+	_, err := runOnce(bin, args, "", env, dig)
+	if err != nil {
+		return [16]byte{}, dig.Head(), err
+	}
+	if cerr := dig.Close(); cerr != nil {
+		return [16]byte{}, dig.Head(), cerr
+	}
+	return dig.Sum(), dig.Head(), nil
 }
 
 // buildArgs substitutes placeholders into the cell's argv, allocating a temp
@@ -276,12 +300,27 @@ func verdictWord(ok bool) string {
 	return "FAIL"
 }
 
-// diffSnippet returns a short provenance-stripped first-diff excerpt for the
-// report. It reuses runner.StripProvenance so the embedded snippet shows the
-// SAME normalized bytes the parity comparison saw.
-func diffSnippet(ours, upstream []byte) string {
-	a := strings.Split(string(runner.StripProvenance(ours)), "\n")
-	b := strings.Split(string(runner.StripProvenance(upstream)), "\n")
+// headDiff builds the DIVERGE Detail + DiffSnippet from the two 64 KiB heads of
+// provenance-stripped output. When the first difference lies WITHIN the head
+// window, it reuses snippetFromStripped to render the labelled first-diff
+// excerpt. When the heads are byte-identical but the full-stream digests differ,
+// the divergence is beyond the captured window, so it reports that fact and the
+// two digests (the heads are already provenance-stripped, so an in-window diff
+// would have been found).
+func headDiff(ourHead, upHead []byte, ourSum, upSum [16]byte) (detail, snippet string) {
+	if !bytes.Equal(ourHead, upHead) {
+		snippet = snippetFromStripped(ourHead, upHead)
+		return "outputs differ (first diff within first 64KiB)", snippet
+	}
+	return fmt.Sprintf("differ beyond first 64KiB; digests %x vs %x", ourSum, upSum), ""
+}
+
+// snippetFromStripped renders a short first-diff excerpt from two ALREADY
+// provenance-stripped byte windows (the digester heads). It does NOT re-strip;
+// the bytes it receives are exactly the normalized stream parity compared.
+func snippetFromStripped(ours, upstream []byte) string {
+	a := strings.Split(string(ours), "\n")
+	b := strings.Split(string(upstream), "\n")
 	n := len(a)
 	if len(b) < n {
 		n = len(b)
@@ -301,9 +340,18 @@ func diffSnippet(ours, upstream []byte) string {
 		}
 	}
 	if len(a) != len(b) {
-		return fmt.Sprintf("line count differs: ours=%d upstream=%d", len(a), len(b))
+		return fmt.Sprintf("line count differs (within head): ours=%d upstream=%d", len(a), len(b))
 	}
-	return "streams differ (no line-level diff located)"
+	return "streams differ (no line-level diff located within head)"
+}
+
+// diffSnippet returns a short provenance-stripped first-diff excerpt for the
+// report from two RAW (un-stripped) outputs. It reuses runner.StripProvenance so
+// the embedded snippet shows the SAME normalized bytes the parity comparison
+// saw. It is retained for tests and any caller holding full outputs; the live
+// streaming path uses snippetFromStripped on the already-stripped heads.
+func diffSnippet(ours, upstream []byte) string {
+	return snippetFromStripped(runner.StripProvenance(ours), runner.StripProvenance(upstream))
 }
 
 func trunc(s string) string {

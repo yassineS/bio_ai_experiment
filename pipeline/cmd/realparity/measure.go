@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bytes"
+	"io"
 	"os"
 	"os/exec"
 	"syscall"
@@ -34,22 +34,20 @@ func timevalDuration(tv syscall.Timeval) time.Duration {
 	return time.Duration(int64(tv.Sec))*time.Second + time.Duration(int64(tv.Usec))*time.Microsecond
 }
 
-// runResult bundles a process's resource usage with its captured stdout. The
-// stdout payload is what parity compares; the Measurement is the perf signal.
-type runResult struct {
-	Meas   Measurement
-	Stdout []byte
-}
-
-// runOnce executes bin with args, captures stdout into memory, and returns the
-// resource usage. stderr is discarded (symmetric for both sides). When
-// stdinPath is non-empty it is opened and fed as the child's stdin; when env is
-// non-nil it replaces the child environment (used to pass REF_PATH=/dev/null so
-// CRAM never reaches the network).
+// runOnce executes bin with args, STREAMING the child's stdout into sink rather
+// than buffering it, and returns the resource usage. This keeps memory bounded
+// to whatever sink retains (e.g. an md5 hash + a 64 KiB head window, or
+// io.Discard for timed-only reps) so a command whose stdout is many GB — like
+// `samtools view` decoding a multi-GB BAM to SAM — never materialises in RAM.
+//
+// stderr is discarded (symmetric for both sides). When stdinPath is non-empty it
+// is opened and fed as the child's stdin; when env is non-nil it replaces the
+// child environment (used to pass REF_PATH=/dev/null so CRAM never reaches the
+// network). When sink is nil, stdout is discarded.
 //
 // A non-nil error means the process failed (non-zero exit or spawn error); the
 // caller treats that as a hard cell failure, never as a perf signal.
-func runOnce(bin string, args []string, stdinPath string, env []string) (runResult, error) {
+func runOnce(bin string, args []string, stdinPath string, env []string, sink io.Writer) (Measurement, error) {
 	cmd := exec.Command(bin, args...)
 	if env != nil {
 		cmd.Env = env
@@ -57,13 +55,15 @@ func runOnce(bin string, args []string, stdinPath string, env []string) (runResu
 	if stdinPath != "" {
 		f, err := os.Open(stdinPath)
 		if err != nil {
-			return runResult{}, err
+			return Measurement{}, err
 		}
 		defer f.Close()
 		cmd.Stdin = f
 	}
-	var out bytes.Buffer
-	cmd.Stdout = &out
+	if sink == nil {
+		sink = io.Discard
+	}
+	cmd.Stdout = sink
 	cmd.Stderr = nil
 
 	start := time.Now()
@@ -78,39 +78,50 @@ func runOnce(bin string, args []string, stdinPath string, env []string) (runResu
 			m.MaxRSSKB = int64(ru.Maxrss)
 		}
 	}
-	return runResult{Meas: m, Stdout: out.Bytes()}, err
+	return m, err
 }
 
-// repeatRun runs runOnce reps times and reduces the samples: wall and CPU take
-// the MINIMUM (the run least perturbed by scheduler/IO noise — the standard
-// "how fast can it go" choice), RSS takes the MAXIMUM (the true peak), while the
-// captured stdout is taken from the LAST successful run (every run produces the
-// same bytes for a deterministic command, so any one is representative; the last
-// keeps the code simple). reps is clamped to >= 1. The first error aborts.
-func repeatRun(reps int, bin string, args []string, stdinPath string, env []string) (runResult, error) {
+// repeatRun runs the command reps times and reduces the samples: wall and CPU
+// take the MINIMUM (the run least perturbed by scheduler/IO noise — the standard
+// "how fast can it go" choice), RSS takes the MAXIMUM (the true peak). reps is
+// clamped to >= 1. The first error aborts.
+//
+// Output is streamed, never buffered: exactly ONE rep (the last) writes its
+// stdout into cmpSink — the provenance-filtering digester whose digest parity
+// compares — while every other rep discards its stdout. Because a deterministic
+// command emits identical bytes on every rep, comparing the last rep's digest is
+// representative; running the digester on only one rep keeps memory bounded and
+// avoids hashing the same multi-GB stream repeatedly. cmpSink may be nil (e.g.
+// quickcheck cells that compare exit status, not output), in which case every
+// rep discards.
+func repeatRun(reps int, bin string, args []string, stdinPath string, env []string, cmpSink io.Writer) (Measurement, error) {
 	if reps < 1 {
 		reps = 1
 	}
-	var best runResult
+	var best Measurement
 	for i := 0; i < reps; i++ {
-		r, err := runOnce(bin, args, stdinPath, env)
+		// Only the final rep feeds the comparison digester; earlier reps discard.
+		var sink io.Writer = io.Discard
+		if i == reps-1 {
+			sink = cmpSink
+		}
+		m, err := runOnce(bin, args, stdinPath, env, sink)
 		if err != nil {
-			return runResult{}, err
+			return Measurement{}, err
 		}
 		if i == 0 {
-			best = r
+			best = m
 			continue
 		}
-		if r.Meas.Wall < best.Meas.Wall {
-			best.Meas.Wall = r.Meas.Wall
+		if m.Wall < best.Wall {
+			best.Wall = m.Wall
 		}
-		if r.Meas.CPUTotal() < best.Meas.CPUTotal() {
-			best.Meas.CPUUser, best.Meas.CPUSys = r.Meas.CPUUser, r.Meas.CPUSys
+		if m.CPUTotal() < best.CPUTotal() {
+			best.CPUUser, best.CPUSys = m.CPUUser, m.CPUSys
 		}
-		if r.Meas.MaxRSSKB > best.Meas.MaxRSSKB {
-			best.Meas.MaxRSSKB = r.Meas.MaxRSSKB
+		if m.MaxRSSKB > best.MaxRSSKB {
+			best.MaxRSSKB = m.MaxRSSKB
 		}
-		best.Stdout = r.Stdout
 	}
 	return best, nil
 }

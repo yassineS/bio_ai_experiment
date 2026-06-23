@@ -135,6 +135,38 @@ func TestParityUsesStripProvenance(t *testing.T) {
 	}
 }
 
+// TestHeadDiff covers the streaming DIVERGE reporter: an in-window difference
+// yields a labelled snippet from the already-stripped heads, while a digests-
+// differ-but-heads-equal case (divergence beyond the 64 KiB window) reports that
+// fact plus the two digests.
+func TestHeadDiff(t *testing.T) {
+	// In-window difference: heads differ, snippet must point at it.
+	ourHead := []byte("@HD\tVN:1.6\nr1\t0\tchr1\t10\n")
+	upHead := []byte("@HD\tVN:1.6\nr1\t0\tchr1\t11\n")
+	detail, snip := headDiff(ourHead, upHead, [16]byte{1}, [16]byte{2})
+	if !strings.Contains(detail, "within first 64KiB") {
+		t.Errorf("in-window detail=%q", detail)
+	}
+	if !strings.Contains(snip, "ours[") || !strings.Contains(snip, "upst[") {
+		t.Errorf("in-window snippet missing labelled rows: %q", snip)
+	}
+
+	// Beyond-window: identical heads but different digests.
+	same := []byte("@HD\tVN:1.6\nr1\t0\tchr1\t10\n")
+	a := [16]byte{0xaa}
+	b := [16]byte{0xbb}
+	detail2, snip2 := headDiff(same, append([]byte{}, same...), a, b)
+	if !strings.Contains(detail2, "beyond first 64KiB") {
+		t.Errorf("beyond-window detail=%q", detail2)
+	}
+	if !strings.Contains(detail2, "aa") || !strings.Contains(detail2, "bb") {
+		t.Errorf("beyond-window detail must include both digests: %q", detail2)
+	}
+	if snip2 != "" {
+		t.Errorf("beyond-window snippet should be empty, got %q", snip2)
+	}
+}
+
 // TestQuickcheckParityVerdict verifies the postNone (quickcheck) cell compares
 // exit verdicts: matching verdicts PASS, mismatched DIVERGE.
 func TestQuickcheckParityVerdict(t *testing.T) {

@@ -58,11 +58,14 @@ func bamContigs(cfg config) int {
 	if bin == "" {
 		return 0
 	}
-	r, err := runOnce(bin, []string{"view", "-H", cfg.in.bam}, "", nil)
+	// The header is small, so buffering it here is fine (unlike the body-producing
+	// battery cells, which stream).
+	var hdr bytes.Buffer
+	_, err := runOnce(bin, []string{"view", "-H", cfg.in.bam}, "", nil, &hdr)
 	if err != nil {
 		return 0
 	}
-	return countPrefixLines(r.Stdout, "@SQ\t")
+	return countPrefixLines(hdr.Bytes(), "@SQ\t")
 }
 
 // vcfContigs counts ##contig header lines in a VCF, transparently decompressing

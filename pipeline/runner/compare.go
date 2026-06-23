@@ -3,7 +3,9 @@ package runner
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/md5"
 	"fmt"
+	"hash"
 	"io"
 	"math"
 	"os"
@@ -39,28 +41,41 @@ func stripProvenance(b []byte) []byte {
 	lines := bytes.Split(b, []byte("\n"))
 	out := lines[:0]
 	for _, ln := range lines {
-		switch {
-		case bytes.HasPrefix(ln, []byte("@PG")), bytes.HasPrefix(ln, []byte("@CO")):
-			continue
-		case bytes.HasPrefix(ln, []byte("##source=")),
-			bytes.HasPrefix(ln, []byte("##fileDate=")),
-			bytes.HasPrefix(ln, []byte("##reference=")):
-			continue
-		case bytes.HasPrefix(ln, []byte("##FILTER=<ID=PASS,Description=\"All filters passed\">")):
-			continue
-		case bytes.HasPrefix(ln, []byte("##")) && isCommandHeader(ln):
-			continue
-		case isStatsProvenance(ln):
-			continue
-		case bytes.HasPrefix(ln, []byte("INFO\tTime required")):
-			// bcftools gtcheck prints a non-reproducible wall-clock timing line
-			// ("INFO\tTime required to process one record .. <seconds>"); our port
-			// omits it. It is timing provenance, not data.
+		if isProvenanceLine(ln) {
 			continue
 		}
 		out = append(out, ln)
 	}
 	return bytes.Join(out, []byte("\n"))
+}
+
+// isProvenanceLine reports whether a single line is a non-reproducible
+// provenance line that stripProvenance drops. It is the SINGLE source of truth
+// for the per-line keep/drop decision, shared by the batch stripProvenance and
+// the streaming provenanceFilter so the two paths can never drift: any line for
+// which this returns true is removed identically by both. The patterns it
+// matches are documented on stripProvenance.
+func isProvenanceLine(ln []byte) bool {
+	switch {
+	case bytes.HasPrefix(ln, []byte("@PG")), bytes.HasPrefix(ln, []byte("@CO")):
+		return true
+	case bytes.HasPrefix(ln, []byte("##source=")),
+		bytes.HasPrefix(ln, []byte("##fileDate=")),
+		bytes.HasPrefix(ln, []byte("##reference=")):
+		return true
+	case bytes.HasPrefix(ln, []byte("##FILTER=<ID=PASS,Description=\"All filters passed\">")):
+		return true
+	case bytes.HasPrefix(ln, []byte("##")) && isCommandHeader(ln):
+		return true
+	case isStatsProvenance(ln):
+		return true
+	case bytes.HasPrefix(ln, []byte("INFO\tTime required")):
+		// bcftools gtcheck prints a non-reproducible wall-clock timing line
+		// ("INFO\tTime required to process one record .. <seconds>"); our port
+		// omits it. It is timing provenance, not data.
+		return true
+	}
+	return false
 }
 
 // isStatsProvenance matches the comment-block provenance lines that the
@@ -129,6 +144,200 @@ func isCommandHeader(ln []byte) bool {
 // difference" rather than re-deriving it. A divergence on StripProvenance'd
 // bytes is therefore a genuine behavioral difference, not a known-benign stamp.
 func StripProvenance(b []byte) []byte { return stripProvenance(b) }
+
+// provenanceFilter is the STREAMING equivalent of stripProvenance: it forwards
+// provenance-stripped bytes to an inner io.Writer while buffering at most one
+// partial (not-yet-terminated) line, so its memory is O(longest line) rather
+// than O(total output). The bytes it emits are byte-for-byte identical to
+// bytes.Join(keptLines, "\n") where keptLines are the kept tokens of
+// bytes.Split(input, "\n") — the exact normalization CompareByteExact applies.
+//
+// The trailing-newline / final-empty-token semantics of bytes.Split are
+// reproduced precisely: a separator '\n' between two kept tokens is emitted, the
+// final token (the bytes after the last '\n', possibly empty) is emitted with no
+// trailing '\n', and a dropped token consumes its trailing '\n' too. To match
+// bytes.Join, the '\n' separator is written BEFORE a kept token rather than
+// after it (a "pending separator" model), which also yields the empty result
+// for empty input and for input that is only provenance.
+type provenanceFilter struct {
+	inner   io.Writer
+	line    []byte // bytes of the current (not-yet-terminated) line
+	emitted bool   // whether any kept token has already been written
+	needSep bool   // a '\n' separator is owed before the next kept token
+	err     error
+}
+
+// newProvenanceFilter returns a provenanceFilter forwarding kept bytes to inner.
+func newProvenanceFilter(inner io.Writer) *provenanceFilter {
+	return &provenanceFilter{inner: inner}
+}
+
+// Write consumes p, splitting it on '\n'. Each complete line (terminated by a
+// '\n' within the stream) is run through isProvenanceLine and, if kept, written
+// to the inner writer preceded by any owed separator. Bytes after the final
+// '\n' are retained as the partial current line for the next Write/Close. It
+// always reports len(p) consumed unless the inner writer errors.
+func (f *provenanceFilter) Write(p []byte) (int, error) {
+	if f.err != nil {
+		return 0, f.err
+	}
+	total := len(p)
+	for {
+		i := bytes.IndexByte(p, '\n')
+		if i < 0 {
+			f.line = append(f.line, p...)
+			return total, nil
+		}
+		f.line = append(f.line, p[:i]...)
+		if err := f.flushLine(true); err != nil {
+			return total - len(p), err
+		}
+		p = p[i+1:]
+	}
+}
+
+// flushLine emits the buffered current line as one completed token. terminated
+// indicates the token was followed by a '\n' in the input (so a separator is
+// owed before the NEXT kept token). A kept token is written preceded by any
+// pending separator; a dropped token writes nothing but still owes a separator
+// when it was terminated, exactly mirroring bytes.Join over the kept subset.
+func (f *provenanceFilter) flushLine(terminated bool) error {
+	keep := !isProvenanceLine(f.line)
+	if keep {
+		if f.needSep {
+			if err := f.writeInner([]byte("\n")); err != nil {
+				return err
+			}
+		}
+		if err := f.writeInner(f.line); err != nil {
+			return err
+		}
+		f.emitted = true
+		f.needSep = false
+	}
+	if terminated {
+		// Every '\n' in the original input is a separator between two tokens.
+		// The next kept token (if any) must be preceded by exactly one '\n' per
+		// original separator that followed a kept token; a separator that
+		// followed a dropped token still owes a '\n' only if a kept token was
+		// already emitted (bytes.Join puts separators BETWEEN kept tokens).
+		if f.emitted {
+			f.needSep = true
+		}
+	}
+	f.line = f.line[:0]
+	return nil
+}
+
+// writeInner forwards b to the inner writer, recording the first error.
+func (f *provenanceFilter) writeInner(b []byte) error {
+	if f.err != nil {
+		return f.err
+	}
+	if _, err := f.inner.Write(b); err != nil {
+		f.err = err
+		return err
+	}
+	return nil
+}
+
+// Close flushes the final (unterminated) line — the token after the last '\n',
+// which bytes.Split keeps as the final element. It must be called exactly once
+// after the last Write to reproduce bytes.Join's trailing-token semantics.
+func (f *provenanceFilter) Close() error {
+	if f.err != nil {
+		return f.err
+	}
+	if err := f.flushLine(false); err != nil {
+		return err
+	}
+	return f.err
+}
+
+// streamHeadCap is the size of the provenance-stripped "head" window
+// StreamDigest captures for diff snippets: 64 KiB is plenty to locate the first
+// divergence in a header/early data region while keeping memory bounded.
+const streamHeadCap = 64 << 10
+
+// headWriter forwards every byte to an inner writer (an md5 hash) while
+// retaining the first streamHeadCap bytes for diff snippets, so the captured
+// head is itself O(64 KiB).
+type headWriter struct {
+	inner io.Writer
+	head  []byte
+}
+
+func (h *headWriter) Write(p []byte) (int, error) {
+	if len(h.head) < streamHeadCap {
+		room := streamHeadCap - len(h.head)
+		if room > len(p) {
+			room = len(p)
+		}
+		h.head = append(h.head, p[:room]...)
+	}
+	return h.inner.Write(p)
+}
+
+// StreamDigester is the WRITER-side streaming digester: bytes written to it are
+// provenance-stripped, fed into an md5 hash, and the first ~64 KiB of stripped
+// output is retained as the head for diff snippets. A child process can write
+// its stdout straight into a StreamDigester (as an exec.Cmd.Stdout sink) so its
+// entire output is normalized and hashed without ever buffering more than one
+// partial line plus the 64 KiB head — the memory-safe core of the realparity
+// comparison path. After all writes, call Close once, then Sum/Head.
+//
+// It is the writer-facing twin of StreamDigest: for any byte slice b, writing b
+// (in any chunking) to a StreamDigester and Close-ing it yields Sum() ==
+// md5.Sum(stripProvenance(b)), the exact normalization CompareByteExact applies.
+type StreamDigester struct {
+	hash hash.Hash
+	head *headWriter
+	pf   *provenanceFilter
+}
+
+// NewStreamDigester returns a ready StreamDigester. Write the stream into it,
+// Close it once, then read Sum()/Head().
+func NewStreamDigester() *StreamDigester {
+	h := md5.New()
+	hw := &headWriter{inner: h}
+	return &StreamDigester{hash: h, head: hw, pf: newProvenanceFilter(hw)}
+}
+
+// Write feeds bytes through the provenance filter into the hash and head window.
+func (d *StreamDigester) Write(p []byte) (int, error) { return d.pf.Write(p) }
+
+// Close flushes the final partial line. It must be called once after the last
+// Write, before Sum/Head.
+func (d *StreamDigester) Close() error { return d.pf.Close() }
+
+// Sum returns the md5 of the provenance-stripped stream. Call after Close.
+func (d *StreamDigester) Sum() [md5.Size]byte {
+	var sum [md5.Size]byte
+	copy(sum[:], d.hash.Sum(nil))
+	return sum
+}
+
+// Head returns the first ~64 KiB of provenance-stripped output, for diff
+// snippets on divergence. Memory is O(64 KiB).
+func (d *StreamDigester) Head() []byte { return d.head.head }
+
+// StreamDigest reads r to EOF, forwarding it through the provenance filter into
+// an md5 hash, and returns the digest of the provenance-stripped stream along
+// with the first ~64 KiB of that stripped output (the "head") for diff
+// snippets. It is the streaming equivalent of md5(stripProvenance(all-of-r)):
+// for any byte slice b, StreamDigest(bytes.NewReader(b)).sum equals
+// md5.Sum(stripProvenance(b)) regardless of how b is chunked across Reads.
+// Memory is O(64 KiB) plus one partial line, never O(len(r)).
+func StreamDigest(r io.Reader) (sum [md5.Size]byte, head []byte, err error) {
+	d := NewStreamDigester()
+	if _, err = io.Copy(d, r); err != nil {
+		return sum, d.Head(), err
+	}
+	if err = d.Close(); err != nil {
+		return sum, d.Head(), err
+	}
+	return d.Sum(), d.Head(), nil
+}
 
 // CompareResult holds the outcome of comparing two output streams.
 type CompareResult struct {
