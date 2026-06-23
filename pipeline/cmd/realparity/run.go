@@ -241,25 +241,44 @@ func buildArgs(cfg config, spec cellSpec) (args []string, outPath string, cleanu
 		a = strings.ReplaceAll(a, "{out}", outPath)
 		args = append(args, a)
 	}
-	// Append -region where the command accepts a trailing region and one was
-	// requested: samtools view / depth and bcftools view / query / stats take a
-	// trailing region on an indexed input. norm/sort/flagstat/idxstats/stats(sam)
-	// do not, so only the explicitly region-friendly cells get it.
-	if cfg.region != "" && acceptsRegion(spec) {
-		args = append(args, cfg.region)
+	// Apply -region (when requested) using the mechanism each command actually
+	// accepts. samtools/bcftools do NOT take a region uniformly: `samtools view`
+	// and `bcftools view` take a trailing POSITIONAL region, but `samtools depth`,
+	// `bcftools query` and `bcftools stats` take it via `-r REGION` (a bare
+	// trailing "20" is parsed as a second input FILE and fails — and `samtools
+	// view -r` would mean read-group, not region). norm/sort/flagstat/idxstats/
+	// stats(sam)/quickcheck take no region at all.
+	if cfg.region != "" {
+		switch regionStyle(spec) {
+		case regionPositional:
+			args = append(args, cfg.region)
+		case regionRFlag:
+			args = append(args, "-r", cfg.region)
+		}
 	}
 	return args, outPath, cleanup, nil
 }
 
-// acceptsRegion reports whether appending a trailing region to this cell's argv
-// is accepted by both binaries.
-func acceptsRegion(spec cellSpec) bool {
+// regionMode names how a cell accepts an operator-supplied -region.
+type regionMode int
+
+const (
+	regionNone       regionMode = iota // command takes no region
+	regionPositional                   // trailing positional region (samtools/bcftools view)
+	regionRFlag                        // -r REGION (samtools depth, bcftools query/stats)
+)
+
+// regionStyle reports how this cell's argv accepts a region, so buildArgs adds
+// it in the form both binaries actually parse.
+func regionStyle(spec cellSpec) regionMode {
 	switch spec.Name {
-	case "samtools_view_sam", "samtools_view_sam_header", "samtools_depth_a",
-		"bcftools_view", "bcftools_view_body", "bcftools_stats", "bcftools_query":
-		return true
+	case "samtools_view_sam", "samtools_view_sam_header",
+		"bcftools_view", "bcftools_view_body":
+		return regionPositional
+	case "samtools_depth_a", "bcftools_stats", "bcftools_query":
+		return regionRFlag
 	}
-	return false
+	return regionNone
 }
 
 // inputAvailable reports whether the required inputs for a cell are present.
