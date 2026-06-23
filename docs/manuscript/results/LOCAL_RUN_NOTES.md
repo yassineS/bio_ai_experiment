@@ -6,12 +6,11 @@ on a **developer laptop** (Apple M2, 16 GB, macOS) rather than the Linux fat
 node the runbook targets. The honest headline:
 
 - **What this box could validate cleanly:** the **small tier** in full (parity +
-  bidirectional interop + performance), plus the **samtools** and **QC/htslib**
-  groups at the **medium** tier.
-- **What it could not:** the heavy **medium** groups (`bcftools`, `bedtools`) and
-  the entire **large** tier — they exceed the 8 GB Docker-VM memory wall. The
-  GIAB real-data step (H2a) and the K-run study (H3) were out of scope for this
-  session.
+  bidirectional interop + performance), and the **complete medium tier** — all
+  tool groups including `bcftools` — with the VM at 12 GB and the orchestrator run
+  under `GOMEMLIMIT` (see §3). The **large tier** runs the same way (in progress).
+- **Out of scope this session:** the GIAB real-data step (H2a) and the K-run
+  study (H3).
 
 Three platform findings below are worth carrying into the manuscript's
 threats-to-validity, because they show the byte-exact parity bar is
@@ -79,24 +78,34 @@ cell's **entire** ours-and-upstream stdout in memory (`runner.go:167-168`,
 `bytes.Buffer` in `timedRun`) to byte-compare them; `Result` does not retain the
 bytes, so peak RAM ≈ the **single heaviest cell**, not a cumulative sum.
 
-On the medium fixtures that single-cell peak exceeds the 8 GB VM for the heavy
-cells:
+Two levers make the medium tier fit on this 16 GB box:
 
-- `samtools` group (72 cells): peaks ~3.8 GB → **fits**, 72/72 PASS.
-- `bcftools` group: OOM-killed on a heavy cell (`mpileup_heavy`/`call`).
-- `bedtools` family: OOM-killed on a heavy cell (e.g. `genomecov -d` per-base
-  over the medium genome → multi-GB ours+upstream buffers).
-- QC/htslib group: fits (90 PASS / 2 arm64-FP DIVERGE / 10 mosdepth SKIP).
-- `mosdepth` group: SKIP on `arm64` (amd64-only release); subsequently run in an
-  emulated `linux/amd64` container — **10/10 PASS** byte-exact
-  ([`medium_tier/mosdepth/`](medium_tier/mosdepth/)).
+1. The Docker VM was raised from 8 GB to **12 GB** (the safe maximum on a 16 GB
+   host).
+2. The orchestrator is run under **`GOMEMLIMIT=8GiB GODEBUG=madvdontneed=1`**.
+   This was the decisive fix: without it the Go runtime did not promptly return
+   freed per-cell buffers to the OS, so RSS *accumulated* across cells and the
+   heavy `bcftools` group OOM-killed at ~11.5 GB (it looked like a single cell
+   needing >12 GB, but it was lazy memory return). `GOMEMLIMIT` caps the heap and
+   `madvdontneed` returns pages eagerly, so RSS oscillates (e.g. up to ~11.2 GB
+   on the heaviest cell, then back to ~6 GB) instead of climbing to the OOM line.
 
-The large tier (≈19–30 GB fixtures + bigger per-cell buffers) is out of reach
-here entirely. The Docker VM was **not** enlarged because the host was running
-other containers and restarting Docker Desktop would have killed them; the
-harness was **not** modified to stream-compare (a legitimate future improvement,
-but out of scope for "run the validation"). **Medium/large belong on the
-runbook's fat node (32–64 GB).**
+Result — **all medium groups PASS**:
+
+- `samtools` (72 cells): **72/72 PASS**.
+- `bedtools` family (112 cells): **109 PASS / 3 SIMILAR / 0 DIVERGE**.
+- `bcftools` (68 cells): **66 PASS / 1 SIMILAR / 0 DIVERGE / 1 SKIP** — the cell
+  that OOM-killed before `GOMEMLIMIT` (`mpileup`/`call`) now completes; SIMILAR =
+  `call` (FP), SKIP = `csq` (documented residual). Round-trip 14/14 PASS.
+- QC/htslib: **90 PASS / 2 arm64-FP DIVERGE / 10 mosdepth SKIP**.
+- `mosdepth`: **10/10 PASS** (run in an emulated `linux/amd64` container —
+  amd64-only release; [`medium_tier/mosdepth/`](medium_tier/mosdepth/)).
+
+The **large tier** runs the same way (VM 12 GB + `GOMEMLIMIT`); its ≈19–30 GB
+fixtures land on the host-mounted disk, not the VM. Stream-comparing in the
+harness (instead of buffering whole outputs) would lift the per-cell ceiling
+further and is a worthwhile future improvement, but `GOMEMLIMIT` is sufficient to
+run medium (and large) here.
 
 ## What passed — small tier (the canonical complete result)
 
