@@ -282,12 +282,12 @@ func fastpMatrix() []Entry {
 			// independently on read1 and read2 (upstream main.cpp:447-480), so
 			// the detected adapters and the resulting trimmed FASTQ are
 			// deterministic and byte-exact. The two CLIs differ in PE input flag
-			// names (our -I is read1; upstream's -I is read2), handled by the
-			// per-side arg templates.
+			// fastp's CLI is now drop-in compatible with upstream (-i=in1, -I=in2,
+			// -o=out1, -O=out2), so ours and upstream take identical args.
 			Tool: "fastp", UpstreamTool: "fastp", Name: "fastp_detect_adapter_pe_heavy",
 			Input: InputFASTQPaired, Compare: ByteExact, Heavy: true,
 			OutputFiles:  []string{".r1.fastq", ".r2.fastq"},
-			OurArgs:      []string{"-I", r1, "--in2", r2, "-O", "{out}.r1.fastq", "--out2", "{out}.r2.fastq", "--detect_adapter_for_pe", "--json", "{out}.json", "--html", "{out}.html"},
+			OurArgs:      []string{"-i", r1, "-I", r2, "-o", "{out}.r1.fastq", "-O", "{out}.r2.fastq", "--detect_adapter_for_pe", "--json", "{out}.json", "--html", "{out}.html"},
 			UpstreamArgs: []string{"-i", r1, "-I", r2, "-o", "{out}.r1.fastq", "-O", "{out}.r2.fastq", "--detect_adapter_for_pe", "--json", "{out}.json", "--html", "{out}.html"},
 		},
 	}
