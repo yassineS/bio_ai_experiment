@@ -86,16 +86,33 @@ func runMeasured(bin string, args []string, stdinPath, stdoutPath string) (Measu
 // CPU take the MINIMUM (the run least perturbed by scheduler/IO noise — the
 // standard choice for "how fast can it go"), while max RSS takes the MAXIMUM
 // (the true peak across runs). reps must be >= 1. The first error aborts.
+//
+// It is a thin convenience wrapper over repeatMeasuredSamples that discards the
+// raw per-rep samples; callers that need the full distribution (for median/IQR
+// and the ratio CI) call repeatMeasuredSamples directly.
 func repeatMeasured(reps int, bin string, args []string, stdinPath, stdoutPath string) (Measurement, error) {
+	best, _, err := repeatMeasuredSamples(reps, bin, args, stdinPath, stdoutPath)
+	return best, err
+}
+
+// repeatMeasuredSamples runs runMeasured reps times and returns BOTH the reduced
+// Measurement (min wall, min CPU, max RSS — see repeatMeasured) AND the raw
+// per-rep samples in execution order. The raw samples are what the manuscript's
+// distribution-level statistics (median, IQR, bootstrap ratio CI) are computed
+// from; the reduced Measurement is kept for backward compatibility with the
+// existing min/max report fields. reps must be >= 1. The first error aborts.
+func repeatMeasuredSamples(reps int, bin string, args []string, stdinPath, stdoutPath string) (Measurement, []Measurement, error) {
 	if reps < 1 {
 		reps = 1
 	}
 	var best Measurement
+	samples := make([]Measurement, 0, reps)
 	for i := 0; i < reps; i++ {
 		m, err := runMeasured(bin, args, stdinPath, stdoutPath)
 		if err != nil {
-			return Measurement{}, err
+			return Measurement{}, nil, err
 		}
+		samples = append(samples, m)
 		if i == 0 {
 			best = m
 			continue
@@ -110,5 +127,5 @@ func repeatMeasured(reps int, bin string, args []string, stdinPath, stdoutPath s
 			best.MaxRSSKB = m.MaxRSSKB
 		}
 	}
-	return best, nil
+	return best, samples, nil
 }
