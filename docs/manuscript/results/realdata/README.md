@@ -133,6 +133,22 @@ Our ported `fastp` vs upstream `fastp` on 1 M real exome read-pairs
   `-i`/`-I`/`-o`/`-O` and `-j`/`-h`. A standard upstream fastp command scrambles
   I/O on our port. This breaks drop-in CLI compatibility and should be aligned.
 
+## Finding D — QC/format tool sweep on real FASTQ
+
+Ran each ported QC tool vs its upstream on the real NIST7035 exome reads:
+
+| tool | result |
+|---|---|
+| **seqtk** | **7/7 PASS** byte-exact (`seq -A`, `seq`, `comp`, `seq -r`, `trimfq`, `fqchk`, `seq -q20 -n N`); CLI drop-in compatible. |
+| **sickle** | **3/3 PASS** byte-exact (`pe` sanger: out1/out2/singles); CLI drop-in compatible. |
+| **skewer** | adapter trimming **correct** (residual matches upstream exactly, R1+R2), but **CLI incompatible** (ours `skewer pe -i/-j/-o/-p`; upstream `skewer -m pe … -o prefix`), and ours keeps **2 pairs** upstream drops (a min-length-after-trim nuance). |
+| **prinseq** | **CLI incompatible** — ours is subcommand-based (`prinseq filter -i/-o --fastq`); upstream is flat (`prinseq-lite.pl -fastq -out_good -min_len …`). |
+| **fastp** | Finding C: PE R2 adapter trimming/detection broken; CLI incompatible. |
+
+**Systematic gap:** `fastp`, `skewer`, `prinseq` are **not drop-in CLI replacements**
+— they were redesigned with subcommands / different flag names, contrary to the
+project's "drop-in POSIX CLI" goal. `seqtk` and `sickle` are compatible.
+
 ## Caveat — embed_ref / no_ref modes not validly tested
 
 The `embed_ref` and `no_ref` round-trips produced **0-byte CRAMs for both
@@ -146,17 +162,22 @@ Only the reference-based mode above is valid.
 The GIAB exome surfaced several genuine parity gaps (none yet fixed except where
 noted), all actionable:
 
-1. **CRAM rANS4x16 O1 decoder** (Finding B) — our order-1 rANS literal decode
-   emits a wrong stream on real data; decode fails. Needs a focused codec session.
-2. **`samtools merge` aux-tag reposition** (Finding A) — **FIXED**: records now
-   byte-identical to upstream (same seed). The RG suffix is *not* a bug
-   (time-seeded in both; our `lrand48` is byte-exact to htslib's). Minor header
-   `@RG`/`@PG` line-grouping gap remains.
-3. **fastp PE adapter trimming is one-sided** (Finding C) — trims R1 read-through
-   adapter (→0.02 %) but leaves it in R2 (4.29 % residual vs upstream ~0 %). Real
-   functional bug. Also: CLI short flags incompatible with upstream.
-4. **`samtools merge -R`** ignores the region; our merge is slow on large inputs.
-5. The **`bcftools norm`** multi-contig ordering bug found here earlier is
-   **fixed** (see `../large_tier/`).
+**Fixed (byte-exact, committed):**
+
+- **`bcftools norm`** multi-contig output ordering (see `../large_tier/`).
+- **`samtools merge`** aux-tag reposition (Finding A) — records now byte-identical
+  to upstream. Minor `@RG`/`@PG` header line-grouping gap remains.
+
+**Open bugs (root-caused, not yet fixed):**
+
+1. **CRAM rANS4x16 O1 decoder** (Finding B) — order-1 rANS literal decode emits a
+   wrong stream on real data; decode fails. Deep codec fix.
+2. **fastp PE R2 adapter** (Finding C) — both trimming and detection of the read-2
+   read-through adapter are broken (120 804 residual reads vs upstream 0).
+3. **fastp / skewer / prinseq CLI** (Finding D) — not drop-in compatible with
+   upstream (subcommands / renamed flags). A design-level compatibility gap.
+4. **skewer** keeps 2 read-pairs upstream drops (min-length-after-trim nuance).
+5. **`samtools merge -R`** ignores the region (merges the whole file); merge is
+   slow on large inputs.
 
 Downloads used the **AWS S3 GIAB mirror** throughout (fast + reliable byte-range).
