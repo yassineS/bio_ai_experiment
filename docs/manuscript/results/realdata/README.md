@@ -167,25 +167,35 @@ Only the reference-based mode above is valid.
 
 ## Status — real-data bugs found
 
-The GIAB exome surfaced several genuine parity gaps (none yet fixed except where
-noted), all actionable:
+The GIAB exome surfaced several genuine parity gaps. The bulk were then fixed
+(each validated only on real data vs the upstream binary oracle, with an
+independent review agent re-running the comparison).
 
-**Fixed (byte-exact, committed):**
+**Fixed (validated vs upstream oracle on real data, committed):**
 
 - **`bcftools norm`** multi-contig output ordering (see `../large_tier/`).
-- **`samtools merge`** aux-tag reposition (Finding A) — records now byte-identical
-  to upstream. Minor `@RG`/`@PG` header line-grouping gap remains.
-- **fastp PE R2 adapter** (Finding C) — overlap-based PE adapter trim ported;
-  residual 120 804 → 2 reads (== upstream). Minor ~2 % read-count gap remains.
+- **`samtools merge`** aux-tag reposition (Finding A) — records byte-identical to
+  upstream. Minor `@RG`/`@PG` header line-grouping gap remains.
+- **fastp PE read-2 adapter** (Finding C) — overlap-based PE adapter trim ported;
+  residual 120 804 → 2 reads (== upstream).
+- **CRAM rANS4x16 decoder** (Finding B) — the failure was the X_32 (32-way) RLE
+  meta-coder selection, not the literal decode; our samtools now decodes the real
+  GIAB CRAM byte-identical to upstream across all 39.7 M records.
+- **fastp / prinseq / skewer CLI** (Finding D) — now accept upstream's drop-in CLI
+  (`fastp -i/-I/-o/-O/-j/-h`; `prinseq-lite.pl` flat flags; `skewer -m pe -o prefix`).
+  fastp also closed the ~2 % read-retention gap; prinseq + skewer-SE byte-exact.
+- **`samtools merge -R`** region — implemented (indexed region query); a region
+  merge is byte-identical to upstream.
 
-**Open bugs (root-caused, not yet fixed):**
+**Remaining (smaller / separate):**
 
-1. **CRAM rANS4x16 O1 decoder** (Finding B) — order-1 rANS literal decode emits a
-   wrong stream on real data; decode fails. Deep codec fix.
-2. **fastp / skewer / prinseq CLI** (Finding D) — not drop-in compatible with
-   upstream (subcommands / renamed flags). A design-level compatibility gap.
-4. **skewer** keeps 2 read-pairs upstream drops (min-length-after-trim nuance).
-5. **`samtools merge -R`** ignores the region (merges the whole file); merge is
-   slow on large inputs.
+1. **skewer PE trimming** — a *pre-existing* gap distinct from the CLI fix: ours
+   lacks the overlap-based PE error-correction, so PE output is not byte-exact
+   (a handful of 1–2 bp trims + 2 dropped pairs). SE is byte-exact.
+2. **`samtools merge`** `@RG`/`@PG` header line-grouping order; merge is slow on
+   large inputs.
+3. **CRAM MD/NM auto-regeneration** on decode (orthogonal to the entropy codec).
 
 Downloads used the **AWS S3 GIAB mirror** throughout (fast + reliable byte-range).
+Fixes were produced by a bounded multi-agent run (fix + independent review agent
+per bug, ≤3 concurrent), validating only against the upstream binary on real data.
