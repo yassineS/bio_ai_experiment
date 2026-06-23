@@ -359,9 +359,10 @@ func normRun(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts NormO
 	}
 
 	// 9. sort + emit. After left-align the records may need re-sorting
-	// (an indel can move upstream of its neighbours); we sort by chrom +
-	// pos preserving original order on ties to keep tests deterministic.
-	sortVariants(variants)
+	// (an indel can move upstream of its neighbours); we sort by header
+	// contig order + pos, preserving original order on ties to keep tests
+	// deterministic.
+	sortVariants(variants, contigOrder(hdr))
 
 	return emit(hdr, variants, out, opts)
 }
@@ -1837,13 +1838,26 @@ func exactKey(v *vcf.Variant) string {
 	}, "\x00")
 }
 
-// sortVariants stable-sorts by (chrom, pos) so left-alignment doesn't
-// leave the stream out of order. The order between same-(chrom,pos)
-// records is preserved.
-func sortVariants(variants []*vcf.Variant) {
+// sortVariants stable-sorts by (contig, pos) so left-alignment doesn't
+// leave the stream out of order. Contigs are ordered by their position in the
+// VCF header's ##contig declarations (matching upstream's rid order), NOT
+// lexically — so e.g. chr2 precedes chr10. Contigs absent from the header sort
+// after declared ones, in lexical order (mirroring contigOrder's contract).
+// The order between same-(contig,pos) records is preserved.
+func sortVariants(variants []*vcf.Variant, order map[string]int) {
 	sort.SliceStable(variants, func(i, j int) bool {
-		if variants[i].Chrom != variants[j].Chrom {
-			return variants[i].Chrom < variants[j].Chrom
+		ci, cj := variants[i].Chrom, variants[j].Chrom
+		if ci != cj {
+			ri, oki := order[ci]
+			rj, okj := order[cj]
+			switch {
+			case oki && okj:
+				return ri < rj
+			case oki != okj:
+				return oki // declared contigs sort before undeclared ones
+			default:
+				return ci < cj // both undeclared: lexical
+			}
 		}
 		return variants[i].Pos < variants[j].Pos
 	})

@@ -140,6 +140,38 @@ func TestNormPassthroughNoFlags(t *testing.T) {
 	}
 }
 
+// TestNormOrdersByHeaderContigNotLexical is a regression test for the
+// multi-contig ordering bug the 16-contig validation tier surfaced: norm must
+// order output records by the VCF header's ##contig declaration order (rid),
+// not by contig name as a string. With >=10 contigs, "chr10" sorts before
+// "chr2" lexically, so a string sort wrongly emits chr10 before chr2; upstream
+// bcftools preserves header order (chr1, chr2, ..., chr10). The records are fed
+// out of header order to prove the sort actively reorders to header order.
+func TestNormOrdersByHeaderContigNotLexical(t *testing.T) {
+	input := strings.Join([]string{
+		"##fileformat=VCFv4.2",
+		"##contig=<ID=chr1>",
+		"##contig=<ID=chr2>",
+		"##contig=<ID=chr10>",
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO",
+		"chr10\t30\t.\tG\tA\t.\tPASS\t.",
+		"chr2\t20\t.\tC\tT\t.\tPASS\t.",
+		"chr1\t10\t.\tA\tG\t.\tPASS\t.",
+		"",
+	}, "\n")
+	out, _, _ := runNorm(t, input, NormOptions{})
+	var got []string
+	for _, line := range strings.Split(out, "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		got = append(got, strings.SplitN(line, "\t", 2)[0])
+	}
+	if order := strings.Join(got, ","); order != "chr1,chr2,chr10" {
+		t.Fatalf("contig order = %q, want \"chr1,chr2,chr10\" (header order, not lexical)", order)
+	}
+}
+
 func TestNormLeftAlignSingleIndel(t *testing.T) {
 	// Reference ATTTTG (1-based positions 1..6). A T-deletion can be
 	// represented anywhere in the TTTT run; the canonical (left-aligned)
