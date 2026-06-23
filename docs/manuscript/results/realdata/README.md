@@ -187,14 +187,20 @@ independent review agent re-running the comparison).
 - **`samtools merge -R`** region — implemented (indexed region query); a region
   merge is byte-identical to upstream.
 
-**Remaining (smaller / separate):**
+**Also fixed (second multi-agent round, validated vs upstream oracle):**
 
-1. **skewer PE trimming** — a *pre-existing* gap distinct from the CLI fix: ours
-   lacks the overlap-based PE error-correction, so PE output is not byte-exact
-   (a handful of 1–2 bp trims + 2 dropped pairs). SE is byte-exact.
-2. **`samtools merge`** `@RG`/`@PG` header line-grouping order; merge is slow on
-   large inputs.
-3. **CRAM MD/NM auto-regeneration** on decode (orthogonal to the entropy codec).
+- **skewer PE trimming** — ported skewer's PE overlap analysis + base
+  error-correction; `-m pe` trimmed pairs byte-identical to upstream (the ~2
+  dropped pairs are a faithful reproduction of upstream's own final-partial-block
+  data loss).
+- **`samtools merge`** `@RG`/`@PG` header line-grouping now matches upstream
+  (0-diff header), records still byte-identical.
+- **CRAM MD/NM regeneration** on decode was already implemented and correctly
+  gated to external-reference CRAM; confirmed byte-exact vs upstream and pinned
+  with a regression test (the earlier delta was an embed_ref test artifact).
+
+**Remaining:** `samtools merge` is slower than upstream on large inputs
+(performance, not correctness — deferred to the performance pass).
 
 Downloads used the **AWS S3 GIAB mirror** throughout (fast + reliable byte-range).
 Fixes were produced by a bounded multi-agent run (fix + independent review agent
