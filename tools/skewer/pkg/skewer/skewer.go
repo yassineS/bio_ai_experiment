@@ -29,6 +29,8 @@ type TrimOptions struct {
 	UMILength        int     // UMI length to extract (0 = disabled)
 	UMIPosition      string  // UMI position: "5prime" or "3prime"
 	PEMatrixMode     bool    // PE matrix mode: require reverse-complement overlap support before trimming (skewer's default -m pe)
+	Adapter3Pair2    string  // 3' adapter for the second mate in PE matrix mode (skewer's -y; empty => share Adapter3)
+	PEBlockSize      int     // upstream block size (nBlockSize); when >0, drop the final partial block to match upstream byte-for-byte (0 = keep all pairs)
 }
 
 // DefaultTrimOptions returns default trimming options.
@@ -323,6 +325,44 @@ func TrimPairedEnd(input1, input2 io.Reader, output1, output2, outputSingle io.W
 		}
 	}
 
+	// pendingPair captures a fully-trimmed pair awaiting a block-boundary
+	// flush. Upstream reads in fixed-size blocks (nBlockSize) and silently
+	// drops the records of the final, incomplete block (a data-loss bug in its
+	// parallel reader; see pe.go and the package README). When PEBlockSize > 0
+	// the drop-in CLI reproduces that exactly by only committing a block once it
+	// is full; otherwise (library / structured subcommands) all pairs are kept.
+	type pendingPair struct {
+		rec1, rec2 *fastq.Record
+		pos1, pos2 int
+		origLen1   int
+		origLen2   int
+		keep       bool // passes the minLen filter
+	}
+	var block []pendingPair
+	blockSize := opts.PEBlockSize
+
+	commitPair := func(p pendingPair) error {
+		if !p.keep {
+			stats.mu.Lock()
+			stats.DiscardedReads += 2
+			stats.mu.Unlock()
+			return nil
+		}
+		if err := writer1.Write(p.rec1); err != nil {
+			return fmt.Errorf("error writing first output: %w", err)
+		}
+		if err := writer2.Write(p.rec2); err != nil {
+			return fmt.Errorf("error writing second output: %w", err)
+		}
+		if p.pos1 < p.origLen1 || p.pos2 < p.origLen2 {
+			stats.mu.Lock()
+			stats.TrimmedReads++
+			stats.TrimmedBases += int64((p.origLen1 - p.pos1) + (p.origLen2 - p.pos2))
+			stats.mu.Unlock()
+		}
+		return nil
+	}
+
 	readCount := 0
 	for {
 		record1, err1 := reader1.Read()
@@ -361,22 +401,61 @@ func TrimPairedEnd(input1, input2 io.Reader, output1, output2, outputSingle io.W
 			}
 		}
 
-		// Trim both reads. In matrix mode (skewer's default `-m pe`) the
-		// per-mate trimmer is gated by a reverse-complement overlap check
-		// so the mates have to agree on the inferred insert size before any
-		// trimming happens. See detectPairedAdapter for the algorithm.
+		// Trim both reads. In matrix mode (skewer's default `-m pe`) the cut
+		// positions come from the joint reverse-complement overlap + adapter
+		// analysis (findAdapterWithPE) and read1 is error-corrected over the
+		// overlap (combinePairSeqs) before trimming. See pe.go for the port.
 		var trimmed1, trimmed2 *fastq.Record
+		var pos1, pos2 int
 		if opts.PEMatrixMode {
-			trimmed1, trimmed2 = trimPairWithMatrix(record1, record2, opts, stats)
+			trimmed1, trimmed2, pos1, pos2 = trimPairWithPE(record1, record2, opts, stats)
 		} else {
 			trimmed1 = trimRecord(record1, opts, stats)
 			trimmed2 = trimRecord(record2, opts, stats)
+			pos1 = len(trimmed1.Sequence)
+			pos2 = len(trimmed2.Sequence)
 		}
 
 		// Add UMI to descriptions if extracted
 		if umi != "" {
 			trimmed1.Description = trimmed1.Description + " UMI:" + umi
 			trimmed2.Description = trimmed2.Description + " UMI:" + umi
+		}
+
+		if opts.PEMatrixMode {
+			// Upstream's default PE driver (main.cpp:1458-1520) drops a pair
+			// outright when *either* mate falls below minLen — there is no
+			// single-end salvage — and otherwise writes both mates truncated to
+			// their cut positions.
+			p := pendingPair{
+				rec1:     trimmed1,
+				rec2:     trimmed2,
+				pos1:     pos1,
+				pos2:     pos2,
+				origLen1: originalLen1,
+				origLen2: originalLen2,
+				keep:     pos1 >= opts.MinLength && pos2 >= opts.MinLength,
+			}
+			if blockSize > 0 {
+				// Buffer until the current block fills; flush full blocks only,
+				// so the final incomplete block is dropped (upstream parity).
+				block = append(block, p)
+				if len(block) == blockSize {
+					for _, bp := range block {
+						if err := commitPair(bp); err != nil {
+							return stats, err
+						}
+					}
+					block = block[:0]
+				}
+			} else if err := commitPair(p); err != nil {
+				return stats, err
+			}
+			// Progress reporting
+			if opts.ProgressReport && readCount%opts.ProgressInterval == 0 {
+				fmt.Fprintf(io.Discard, "\rProcessed %d reads...", readCount)
+			}
+			continue
 		}
 
 		// Check if both reads pass length threshold

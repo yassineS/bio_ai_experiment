@@ -157,6 +157,13 @@ func runUpstreamCLI(args []string) {
 		overlap = minOverlap
 	}
 
+	// Pair-2 adapter for the PE matrix path. Empty => share the pair-1 adapter,
+	// mirroring upstream's bShareAdapter (parameter.cpp:965-972).
+	adapter3Pair2 := ""
+	if peMatrix {
+		adapter3Pair2 = y
+	}
+
 	opts := skewer.TrimOptions{
 		Adapter3:         threePrime,
 		Adapter5:         adapter5,
@@ -168,13 +175,93 @@ func runUpstreamCLI(args []string) {
 		ProgressReport:   false,
 		ProgressInterval: 100000,
 		PEMatrixMode:     peMatrix,
+		Adapter3Pair2:    adapter3Pair2,
 	}
 
 	if paired {
+		// Reproduce upstream's block-reader quirk: it reads records in fixed
+		// blocks of nBlockSize and silently drops the final, incomplete block
+		// (a data-loss bug in its parallel reader, deterministic even at
+		// -t 1).  Matching it byte-for-byte requires the same block size, which
+		// depends on the input file lengths and thread count
+		// (main.cpp:819-821).  We only enable this when writing to files (not
+		// -1/STDOUT), mirroring upstream's pipeline.
+		if !toStdout {
+			opts.PEBlockSize = upstreamBlockSize(inputs[0], inputs[1], threads)
+		}
 		runUpstreamPaired(inputs, output, toStdout, compress, encoding, opts, quiet)
 	} else {
 		runUpstreamSingle(inputs[0], output, toStdout, compress, encoding, opts, quiet)
 	}
+}
+
+// upstreamBlockSize ports skewer's nBlockSize computation (main.cpp:819-821):
+//
+//	nBasicSize = (total > 8*100MiB) ? 10 : (total/100MiB + 2)
+//	nBlockSize = nBasicSize * nThreads
+//
+// where total is the sum of the two inputs' gzsize() (the on-disk byte length
+// for plain files, or the decompressed-size estimate from the gzip trailer for
+// .gz inputs — parameter side, fastq.cpp:206-241).  nThreads is clamped to
+// upstream's 1..32 range (parameter.cpp:811-813).  A return of 0 disables the
+// final-block drop.
+func upstreamBlockSize(input1, input2 string, threads int) int {
+	total := upstreamGzSize(input1) + upstreamGzSize(input2)
+	if total <= 0 {
+		return 0
+	}
+	const mib100 = 100 * 1024 * 1024
+	var nBasicSize int
+	if total > 8*mib100 {
+		nBasicSize = 10
+	} else {
+		nBasicSize = int(total/mib100) + 2
+	}
+	nThreads := threads
+	if nThreads < 1 {
+		nThreads = 1
+	} else if nThreads > 32 {
+		nThreads = 32
+	}
+	return nBasicSize * nThreads
+}
+
+// upstreamGzSize ports cFQ's gzsize (fastq.cpp:206-241): the plain on-disk size
+// for ordinary files, or for a .gz the decompressed-size estimate read from the
+// gzip ISIZE trailer (corrected upward in 4 GiB steps when the file is clearly
+// larger).  Returns 0 if the file cannot be stat'd.
+func upstreamGzSize(name string) int64 {
+	info, err := os.Stat(name)
+	if err != nil {
+		return 0
+	}
+	compressLength := info.Size()
+	if !strings.HasSuffix(name, ".gz") {
+		return compressLength
+	}
+	f, err := os.Open(name)
+	if err != nil {
+		return compressLength
+	}
+	defer f.Close()
+	var buf [4]byte
+	if _, err := f.Seek(-4, io.SeekEnd); err != nil {
+		return compressLength
+	}
+	if _, err := io.ReadFull(f, buf[:]); err != nil {
+		return compressLength
+	}
+	var x uint32
+	x = uint32(buf[3])
+	x = (x << 8) | uint32(buf[2])
+	x = (x << 8) | uint32(buf[1])
+	x = (x << 8) | uint32(buf[0])
+	fileLength := int64(x)
+	if fileLength < 2*compressLength {
+		step := int64(1) << 32
+		fileLength += ((2*compressLength - fileLength + step - 1) / step) * step
+	}
+	return fileLength
 }
 
 // runUpstreamSingle trims one input and writes <base>-trimmed.fastq (or stdout
