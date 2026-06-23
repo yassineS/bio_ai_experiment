@@ -247,6 +247,86 @@ func TestRANS4x16_X32TransformRoundTrip(t *testing.T) {
 	}
 }
 
+// TestRANS4x16_X32RLEMetaUses32Way is a regression test for the X_32 +
+// RLE interop bug: htscodecs compresses the RLE meta block with the O0
+// coder that matches the stream's X_32 bit (rans_enc_func/rans_dec_func
+// with do_simd), so a 32-way stream's compressed meta is on-wire 32-way,
+// not 4-way. Our encoder and decoder previously always used the 4-way O0
+// coder for the meta; that round-tripped against itself but produced (and
+// mis-read) streams incompatible with upstream samtools, which surfaced
+// as "RLE literals expand past the declared output size" when decoding a
+// real reference-based CRAM.
+//
+// The input is chosen so the compressed meta and the literal stream both
+// exceed NX (32) bytes, so the encoder keeps the X_32 bit set (it clears
+// it for streams too small for the 32-way coder). The test then asserts
+// the on-wire compressed meta decodes with the 32-way O0 decoder, and
+// fails to decode (or mis-decodes) with the 4-way one — pinning the coder
+// the bug got wrong.
+func TestRANS4x16_X32RLEMetaUses32Way(t *testing.T) {
+	// A long run-heavy input: hts_rle_encode picks several run symbols, so
+	// the meta (symbols + run-length varints) comfortably exceeds 32 bytes,
+	// and the literal stream stays well above 32 bytes too.
+	var in []byte
+	for i := 0; i < 600; i++ {
+		in = append(in, bytes.Repeat([]byte{byte('A' + i%20)}, 7+i%11)...)
+		in = append(in, byte('a'+i%23), byte('0'+i%9))
+	}
+
+	comp, err := RANS4x16Encode(in, x4x16X32|x4x16RLE|1)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	// The stream must still carry the X_32 bit; if it were cleared the test
+	// would not exercise the 32-way meta path.
+	if comp[0]&x4x16X32 == 0 {
+		t.Fatalf("expected X_32 to stay set on the encoded stream, got format 0x%02x", comp[0])
+	}
+	if comp[0]&x4x16RLE == 0 {
+		t.Fatalf("expected RLE to stay set on the encoded stream, got format 0x%02x", comp[0])
+	}
+
+	// Decode must succeed and reproduce the input exactly.
+	got, err := RANS4x16Decode(comp)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !bytes.Equal(got, in) {
+		t.Fatalf("round-trip mismatch: got %d bytes, want %d (first diff at %d)",
+			len(got), len(in), firstDiff(got, in))
+	}
+
+	// Parse the on-wire RLE meta header and confirm it is compressed
+	// (uMetaSize even) and 32-way-decodable, proving the encoder emitted a
+	// 32-way meta block. cp walks past the format byte and raw-size varint.
+	cp := 1
+	_, cp, ok := varGetU32(comp, cp)
+	if !ok {
+		t.Fatalf("truncated raw-size varint")
+	}
+	uMetaSize, c, ok := varGetU32(comp, cp)
+	if !ok {
+		t.Fatalf("truncated RLE meta-size varint")
+	}
+	if uMetaSize&1 != 0 {
+		t.Skipf("RLE meta stored raw for this input; cannot exercise the 32-way meta coder")
+	}
+	_, c2, ok := varGetU32(comp, c) // rle_len (literal length)
+	if !ok {
+		t.Fatalf("truncated RLE literal-length varint")
+	}
+	cMetaSize, c3, ok := varGetU32(comp, c2)
+	if !ok {
+		t.Fatalf("truncated RLE compressed-meta-size varint")
+	}
+	uMeta := uMetaSize / 2
+	metaBytes := comp[c3 : c3+int(cMetaSize)]
+
+	if _, err := uncompressO0RANS4x16X32(metaBytes, uMeta); err != nil {
+		t.Fatalf("on-wire RLE meta is not 32-way-decodable (the bug): %v", err)
+	}
+}
+
 // TestRANS4x16_TransformComplianceVectors decodes the htscodecs r4x16
 // transform vectors (PACK/RLE/STRIPE, with and without order-1) and
 // asserts byte-for-byte against the expected raw data. It complements

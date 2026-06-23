@@ -68,6 +68,7 @@ func compressToRANS4x16(in []byte, order int) ([]byte, error) {
 	}
 
 	ransOrder := order & 1
+	is32 := order&x4x16X32 != 0
 	data := in
 
 	// PACK: bit-pack the input and emit the pack meta block plus a
@@ -107,7 +108,24 @@ func compressToRANS4x16(in []byte, order int) ([]byte, error) {
 			out[0] = formatByte
 			doRLE = false
 		} else {
-			cMeta := compressO0RANS4x16(meta)
+			// htscodecs compresses the RLE meta with the O0 coder that
+			// matches the stream's X_32 bit (rans_enc_func(do_simd, 0)).
+			// When X_32 is requested but the meta or literal stream is too
+			// short for the 32-way coder it clears X_32 for the whole
+			// stream — so the literals are then coded 4-way too. We mirror
+			// that here so the meta and literal coders stay consistent with
+			// the format byte, exactly as the decoder reads them back.
+			if is32 && (rmetaLen < ransNX || len(lits) < ransNX) {
+				is32 = false
+				formatByte &^= x4x16X32
+				out[0] = formatByte
+			}
+			var cMeta []byte
+			if is32 {
+				cMeta = compressO0RANS4x16X32(meta)
+			} else {
+				cMeta = compressO0RANS4x16(meta)
+			}
 			if cMeta != nil && len(cMeta) < rmetaLen {
 				out = varPutU32(out, uint32(rmetaLen*2))
 				out = varPutU32(out, uint32(len(lits)))
@@ -125,8 +143,6 @@ func compressToRANS4x16(in []byte, order int) ([]byte, error) {
 		out[0] = formatByte
 		doRLE = false
 	}
-
-	is32 := order&x4x16X32 != 0
 
 	// htscodecs drops order 1 to order 0 when the rANS input is too
 	// small to model: below 8 bytes for the 4-way coder, below NX
@@ -441,7 +457,22 @@ func uncompressTransformRANS4x16(in []byte, expectSize uint32) ([]byte, error) {
 			if c3+int(cMetaSize) > len(in) {
 				return nil, fmt.Errorf("rans4x16: RLE meta block overruns the payload")
 			}
-			decoded, err := uncompressO0RANS4x16(in[c3:c3+int(cMetaSize)], uMeta)
+			// The RLE meta block is O0-rANS-compressed with the coder that
+			// matches the stream's X_32 bit: htscodecs encodes it via
+			// rans_enc_func(do_simd, 0) and decodes it via
+			// rans_dec_func(do_simd, 0), so a 32-way stream stores (and we
+			// must read) the meta with the 32-way O0 coder, whose on-wire
+			// layout differs from the 4-way one. The encoder clears X_32
+			// for the whole stream when the meta or literal stream is too
+			// small for the 32-way coder, so is32 here always reflects the
+			// coder actually used.
+			var decoded []byte
+			var err error
+			if is32 {
+				decoded, err = uncompressO0RANS4x16X32(in[c3:c3+int(cMetaSize)], uMeta)
+			} else {
+				decoded, err = uncompressO0RANS4x16(in[c3:c3+int(cMetaSize)], uMeta)
+			}
 			if err != nil {
 				return nil, fmt.Errorf("rans4x16: RLE meta decompress: %w", err)
 			}
