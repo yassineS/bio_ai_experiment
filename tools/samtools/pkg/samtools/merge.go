@@ -233,6 +233,20 @@ func Merge(inputs []io.Reader, out io.Writer, opts MergeOptions) error {
 		}
 	}
 
+	// Group the merged header lines to match upstream's emission order.
+	// Upstream builds the merged header in finish_merged_header (bam_sort.c)
+	// as @HD, then every @SQ, then every @RG (out_rg), then every @PG
+	// (out_pg), then every @CO (out_co). Our union path instead started from
+	// input 0's full header — whose @RG and @PG lines are already interleaved —
+	// and appended later inputs' renamed @RG then @PG, so a renamed @RG could
+	// land after input 0's @PG. Regroup the lines so @RG lines are contiguous
+	// and @PG lines are contiguous, preserving the within-group order. Skipped
+	// when a -h override supplies the header verbatim (upstream copies that
+	// header text unchanged).
+	if opts.HeaderOverride == "" {
+		hdr.Lines = regroupMergedHeaderLines(hdr.Lines)
+	}
+
 	// Build the comparator.
 	refIndex := make(map[string]int, len(hdr.Refs))
 	for i, ref := range hdr.Refs {
@@ -284,6 +298,40 @@ func Merge(inputs []io.Reader, out io.Writer, opts MergeOptions) error {
 		}
 	}
 	return bw.Close()
+}
+
+// regroupMergedHeaderLines reorders a merged header's lines into upstream
+// samtools' emission order: @HD, then every @SQ, then every @RG, then every
+// @PG, then every @CO, with any other line types kept after those groups.
+// Upstream's finish_merged_header (bam_sort.c) always appends the accumulated
+// @RG block (out_rg), then the @PG block (out_pg), then the @CO block (out_co)
+// after the @HD/@SQ skeleton; our union path appended later inputs' renamed @RG
+// and @PG lines to input 0's already-interleaved header, so a renamed @RG could
+// follow input 0's @PG. This regroup restores the grouped order. The relative
+// order within each group is preserved (a stable partition), so an
+// already-grouped header is left byte-identical.
+func regroupMergedHeaderLines(lines []sam.HeaderLine) []sam.HeaderLine {
+	// Order buckets the way upstream emits them. Any tag not listed (e.g. a
+	// user-defined record) sorts after the known groups, in first-seen order.
+	rank := map[string]int{"HD": 0, "SQ": 1, "RG": 2, "PG": 3, "CO": 4}
+	const otherRank = 5
+	rankOf := func(tag string) int {
+		if r, ok := rank[tag]; ok {
+			return r
+		}
+		return otherRank
+	}
+	out := make([]sam.HeaderLine, 0, len(lines))
+	// Emit buckets 0..5 in order; a stable pass per bucket preserves the
+	// original within-group sequence.
+	for bucket := 0; bucket <= otherRank; bucket++ {
+		for _, ln := range lines {
+			if rankOf(ln.Tag) == bucket {
+				out = append(out, ln)
+			}
+		}
+	}
+	return out
 }
 
 // recordRGID returns the record's RG:Z aux value, or "" when absent.
