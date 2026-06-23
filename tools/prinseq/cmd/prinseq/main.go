@@ -36,6 +36,19 @@ func main() {
 
 	command := os.Args[1]
 
+	// Upstream prinseq-lite.pl uses a FLAT flag CLI (e.g.
+	// "prinseq-lite.pl -fastq in.fq -out_good good -min_len 40 ..."),
+	// whereas this port grew a subcommand surface ("prinseq filter -i ...").
+	// To stay drop-in compatible, detect the flat form — any leading argument
+	// that is an option rather than a subcommand word — and dispatch to the
+	// flat front end. The global -h/--help and -v/--version switches are still
+	// handled by the switch below before reaching the flat handler.
+	if command != "-h" && command != "--help" && command != "-v" && command != "--version" &&
+		isFlatInvocation(os.Args[1:]) {
+		runFlat(os.Args[1:])
+		return
+	}
+
 	switch command {
 	case "stats":
 		runStats(os.Args[2:])
