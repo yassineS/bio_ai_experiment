@@ -142,3 +142,6 @@ __pycache__/
 /giab-concordance
 /parity-pipeline
 /full-validation
+reference_code/seqtk
+reference_code/skewer
+reference_code/vcftools
