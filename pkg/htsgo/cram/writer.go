@@ -2,7 +2,9 @@ package cram
 
 import (
 	"bytes"
+	"crypto/md5"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -170,6 +172,11 @@ type RecordWriter struct {
 	// reference-free.
 	reference map[string][]byte
 
+	// referencePath is the reference FASTA path passed with -T/--reference,
+	// emitted verbatim as the @SQ UR: tag (see WriterOptions.ReferencePath).
+	// Empty suppresses UR injection.
+	referencePath string
+
 	// refIndex maps a reference name to its zero-based @SQ position, so a
 	// record's RName / RNext can be turned into the integer ids the CRAM
 	// data series store.
@@ -283,6 +290,15 @@ type WriterOptions struct {
 	// emitted file is byte-identical for any value. 0 (the default) auto-sizes
 	// to the machine's CPU count (capped); 1 forces the synchronous path.
 	EncodeThreads int
+	// ReferencePath is the reference FASTA path the file was encoded against
+	// (the -T/--reference argument). When non-empty it is written verbatim as
+	// the UR: tag on every @SQ line that lacks one, mirroring upstream htslib
+	// (cram_write_SAM_hdr's full_path(ref_fn)). The caller passes the path
+	// exactly as samtools would emit it — already absolute for the fixtures —
+	// so the embedded header byte-matches upstream. Empty suppresses UR
+	// injection. It is independent of Reference: Reference supplies the bases
+	// for M5 and reference-based encoding, ReferencePath supplies the UR text.
+	ReferencePath string
 }
 
 // NewRecordWriterOpts returns a RecordWriter that encodes records to w as
@@ -316,6 +332,7 @@ func NewRecordWriterOpts(w io.Writer, h *sam.Header, opts WriterOptions) (*Recor
 		version:         opts.Version,
 		binning:         opts.Binning,
 		reference:       opts.Reference,
+		referencePath:   opts.ReferencePath,
 		encodeThreads:   resolveEncodeThreads(opts.EncodeThreads),
 		refIndex:        make(map[string]int32, len(h.Refs)),
 		recordsPerSlice: defaultRecordsPerSlice,
@@ -529,10 +546,12 @@ func (rw *RecordWriter) writeFileHeader() error {
 
 	// The SAM header block payload is a 4-byte little-endian text length
 	// followed by the header text, matching what readSAMHeader expects. The
-	// header is serialised in htslib's canonical @-line order (@HD, @CO, @PG,
-	// @RG, @SQ) so the embedded SAM header byte-matches what upstream samtools
-	// writes into a CRAM, regardless of the order the lines arrived in.
-	text := []byte(rw.header.TextCanonical())
+	// header is serialised in htslib's emission order (verbatim input order
+	// with @HD hoisted first) so the embedded SAM header byte-matches what
+	// upstream samtools writes into a CRAM. When a reference is supplied the
+	// @SQ lines are first augmented with the M5 (reference MD5) and UR
+	// (reference path) tags upstream injects (cram_write_SAM_hdr).
+	text := []byte(rw.headerForEncode().TextCanonical())
 	payload := make([]byte, 4+len(text))
 	binary.LittleEndian.PutUint32(payload[:4], uint32(len(text)))
 	copy(payload[4:], text)
@@ -560,6 +579,83 @@ func (rw *RecordWriter) writeFileHeader() error {
 	}
 	rw.wroteHeader = true
 	return nil
+}
+
+// headerForEncode returns the SAM header to embed in the CRAM file. When the
+// writer has neither a reference map nor a reference path it returns the
+// original header unchanged (the reference-free case is left byte-identical).
+// Otherwise it returns a copy whose @SQ lines carry the M5 (reference MD5) and
+// UR (reference path) tags upstream htslib injects in cram_write_SAM_hdr:
+//
+//   - M5 is the lower-case hex MD5 of the reference sequence for that contig,
+//     hashed exactly as htslib does — over the upper-cased, whitespace-stripped
+//     bases. The bases in rw.reference are already supplied upper-cased with
+//     newlines removed (the FASTA random-access reader canonicalises them), so
+//     md5.Sum over them reproduces the htslib M5 byte-for-byte. M5 is only
+//     filled when the contig's bases are available; a contig absent from the
+//     reference map is left without M5 (matching upstream, which cannot hash a
+//     reference it could not load).
+//   - UR is rw.referencePath verbatim — the -T/--reference argument, which the
+//     caller passes already as upstream's full_path() would emit it.
+//
+// An @SQ that already carries an M5 or UR is left intact: upstream never
+// overwrites an existing tag, only fills the absent one.
+func (rw *RecordWriter) headerForEncode() *sam.Header {
+	if rw.reference == nil && rw.referencePath == "" {
+		return rw.header
+	}
+	cp := *rw.header
+	cp.Lines = make([]sam.HeaderLine, len(rw.header.Lines))
+	for i, line := range rw.header.Lines {
+		if line.Tag != "SQ" {
+			cp.Lines[i] = line
+			continue
+		}
+		cp.Lines[i] = rw.augmentSQLine(line)
+	}
+	return &cp
+}
+
+// augmentSQLine returns a copy of an @SQ header line with the M5 and UR tags
+// appended when they are absent and computable. The original line (and its
+// Fields slice) is never mutated, so the caller's header is untouched.
+func (rw *RecordWriter) augmentSQLine(line sam.HeaderLine) sam.HeaderLine {
+	var name string
+	haveM5, haveUR := false, false
+	for _, f := range line.Fields {
+		switch f.Tag {
+		case "SN":
+			name = f.Value
+		case "M5":
+			haveM5 = true
+		case "UR":
+			haveUR = true
+		}
+	}
+
+	var m5 string
+	if !haveM5 {
+		if bases, ok := rw.reference[name]; ok {
+			sum := md5.Sum(bases)
+			m5 = hex.EncodeToString(sum[:])
+		}
+	}
+	addUR := !haveUR && rw.referencePath != ""
+
+	if m5 == "" && !addUR {
+		return line // nothing to add; leave the line exactly as it was.
+	}
+
+	out := line
+	out.Fields = make([]sam.HeaderField, len(line.Fields), len(line.Fields)+2)
+	copy(out.Fields, line.Fields)
+	if m5 != "" {
+		out.Fields = append(out.Fields, sam.HeaderField{Tag: "M5", Value: m5})
+	}
+	if addUR {
+		out.Fields = append(out.Fields, sam.HeaderField{Tag: "UR", Value: rw.referencePath})
+	}
+	return out
 }
 
 // resolveEncodeThreads turns the WriterOptions value into a concrete worker

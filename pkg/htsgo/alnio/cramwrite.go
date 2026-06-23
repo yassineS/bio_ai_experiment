@@ -25,6 +25,11 @@ type CRAMWriteOptions struct {
 	// CRAM and shrinking the file; the same reference is then required to
 	// decode. When nil the writer stays reference-free (self-contained).
 	Reference map[string][]byte
+	// ReferencePath is the -T/--reference FASTA path. When non-empty it is
+	// written verbatim as the @SQ UR: tag on every @SQ line that lacks one,
+	// matching upstream samtools. It is independent of Reference (which carries
+	// the bases for M5 and reference-based encoding).
+	ReferencePath string
 }
 
 // ParseQualityBinning maps a CRAM quality-binning option string to a
@@ -103,8 +108,9 @@ func (cw *cramWriter) WriteHeader(h *sam.Header) error {
 		return cw.err
 	}
 	rw, err := cram.NewRecordWriterOpts(cw.w, h, cram.WriterOptions{
-		Binning:   cw.opts.QualityBinning,
-		Reference: cw.opts.Reference,
+		Binning:       cw.opts.QualityBinning,
+		Reference:     cw.opts.Reference,
+		ReferencePath: cw.opts.ReferencePath,
 	})
 	if err != nil {
 		cw.err = err

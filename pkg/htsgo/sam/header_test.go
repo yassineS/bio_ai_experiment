@@ -7,10 +7,12 @@ import (
 	"testing"
 )
 
-// TestTextCanonicalOrder verifies TextCanonical regroups @-lines into
-// htslib's emission order (@HD, @CO, @PG, @RG, @SQ, then any other type),
-// preserving the input order within each group, while Text keeps the verbatim
-// input order.
+// TestTextCanonicalOrder verifies TextCanonical reproduces htslib's emission
+// order: the verbatim input order with @HD hoisted to the front, with no other
+// line type regrouped. This matches what `samtools view -C` writes (validated
+// against upstream samtools on the large fixture: a @HD,@SQ,@RG,@PG BAM header
+// re-emits as @HD,@SQ,@RG,@PG, not regrouped). Text keeps the strict verbatim
+// input order without hoisting @HD.
 func TestTextCanonicalOrder(t *testing.T) {
 	in := "@CO\tfirst comment\n" +
 		"@PG\tID:p1\tPN:p1\n" +
@@ -29,27 +31,30 @@ func TestTextCanonicalOrder(t *testing.T) {
 		t.Errorf("Text() did not preserve input order:\n got=%q\nwant=%q", got, in)
 	}
 
+	// TextCanonical hoists @HD to the front and otherwise preserves input
+	// order: @CO/@PG/@RG/@SQ keep their relative positions, and the two @SQ
+	// lines stay split by the @HD that was between them in the input.
 	want := "@HD\tVN:1.6\tSO:coordinate\n" +
 		"@CO\tfirst comment\n" +
-		"@CO\tsecond comment\n" +
 		"@PG\tID:p1\tPN:p1\n" +
 		"@RG\tID:rg1\tSM:s1\n" +
 		"@SQ\tSN:chr2\tLN:50\n" +
-		"@SQ\tSN:chr1\tLN:100\n"
+		"@SQ\tSN:chr1\tLN:100\n" +
+		"@CO\tsecond comment\n"
 	if got := h.TextCanonical(); got != want {
 		t.Errorf("TextCanonical() order wrong:\n got=%q\nwant=%q", got, want)
 	}
 }
 
-// TestTextCanonicalUnknownLineType verifies a user-defined header line type
-// is preserved and emitted after the known groups.
+// TestTextCanonicalUnknownLineType verifies a user-defined header line type is
+// preserved in its input position (only @HD is hoisted to the front).
 func TestTextCanonicalUnknownLineType(t *testing.T) {
 	in := "@XY\tZZ:custom\n@HD\tVN:1.6\n@SQ\tSN:c\tLN:1\n"
 	h, err := ParseHeaderText(in)
 	if err != nil {
 		t.Fatalf("ParseHeaderText: %v", err)
 	}
-	want := "@HD\tVN:1.6\n@SQ\tSN:c\tLN:1\n@XY\tZZ:custom\n"
+	want := "@HD\tVN:1.6\n@XY\tZZ:custom\n@SQ\tSN:c\tLN:1\n"
 	if got := h.TextCanonical(); got != want {
 		t.Errorf("TextCanonical() with unknown type:\n got=%q\nwant=%q", got, want)
 	}

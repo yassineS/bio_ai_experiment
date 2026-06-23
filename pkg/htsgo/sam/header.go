@@ -237,8 +237,7 @@ func (h *Header) WriteTo(w io.Writer) (int64, error) {
 }
 
 // Text returns the SAM-encoded header as a string, preserving the verbatim
-// input order of the lines. Use TextCanonical for htslib's grouped emission
-// order.
+// input order of the lines. Use TextCanonical for htslib's emission order.
 func (h *Header) Text() string {
 	var sb strings.Builder
 	for _, line := range h.Lines {
@@ -247,38 +246,31 @@ func (h *Header) Text() string {
 	return sb.String()
 }
 
-// TextCanonical returns the SAM-encoded header with @-lines grouped into
-// htslib's canonical emission order rather than verbatim input order: the @HD
-// line(s) first, then @CO comment lines, then @PG lines, then @RG lines, and
-// finally @SQ lines, with every other (user-defined) line type appended last.
-// Within each group the original input order is preserved, so @SQ reference
-// order and @PG / @RG order are unchanged.
+// TextCanonical returns the SAM-encoded header in htslib's emission order:
+// the verbatim input order of the lines, except that the @HD line is always
+// hoisted to the front. No other line type is regrouped — an @SQ, @RG, @PG or
+// @CO keeps its relative input position, exactly as htslib's global line
+// ordering (sam_hrecs_global_lineno / sam_hrecs_rebuild_text) does. htslib
+// only special-cases @HD, which it forces to be the first line.
 //
-// This mirrors htslib's header rebuild (sam_hrecs_rebuild_text), which is the
-// order samtools emits into BAM and CRAM headers. Text() keeps the verbatim
-// input order for byte-faithful SAM round-tripping; TextCanonical() is used
-// where a container format (CRAM) needs to byte-match upstream's reordered
-// header.
+// This is the order samtools emits into the BAM and CRAM headers it writes:
+// `samtools view -C` on a BAM whose header is @HD,@SQ,@RG,@PG re-emits exactly
+// @HD,@SQ,@RG,@PG, not a regrouped @HD,@PG,@RG,@SQ. Text() keeps the strict
+// verbatim order (it does not even hoist @HD) for byte-faithful SAM
+// round-tripping; TextCanonical() is used where a container format (CRAM)
+// needs to byte-match upstream's header.
 func (h *Header) TextCanonical() string {
-	// htslib's canonical grouping order. Any line type not listed here is
-	// emitted after these groups, in input order, so nothing is dropped.
-	order := []string{"HD", "CO", "PG", "RG", "SQ"}
-	rank := make(map[string]int, len(order))
-	for i, t := range order {
-		rank[t] = i
-	}
-	// Stable-bucket the lines by type while preserving per-group input order.
-	groups := make([][]HeaderLine, len(order)+1)
+	var sb strings.Builder
+	// Emit the @HD line(s) first. htslib keeps at most one @HD, but tolerate
+	// more than one by hoisting every @HD in input order.
 	for _, line := range h.Lines {
-		if r, ok := rank[line.Tag]; ok {
-			groups[r] = append(groups[r], line)
-		} else {
-			groups[len(order)] = append(groups[len(order)], line)
+		if line.Tag == "HD" {
+			writeHeaderLine(&sb, line)
 		}
 	}
-	var sb strings.Builder
-	for _, group := range groups {
-		for _, line := range group {
+	// Then every remaining line in verbatim input order.
+	for _, line := range h.Lines {
+		if line.Tag != "HD" {
 			writeHeaderLine(&sb, line)
 		}
 	}

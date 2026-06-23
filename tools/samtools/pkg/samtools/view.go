@@ -678,7 +678,14 @@ func openViewWriter(out io.Writer, hdr *sam.Header, opts ViewOptions) (sam.Write
 				return nil, err
 			}
 		}
-		w = alnio.NewCRAMWriterOpts(out, alnio.CRAMWriteOptions{QualityBinning: binning, Reference: ref})
+		// opts.Reference is the -T path: pass it as the UR: tag source and the
+		// loaded bases (ref) as the M5 / reference-based-encoding source, so the
+		// CRAM @SQ lines carry M5+UR exactly as upstream samtools writes them.
+		w = alnio.NewCRAMWriterOpts(out, alnio.CRAMWriteOptions{
+			QualityBinning: binning,
+			Reference:      ref,
+			ReferencePath:  opts.Reference,
+		})
 	case opts.OutputBAM:
 		bw, err := sam.NewBAMWriterOptions(out, sam.BAMWriterOptions{
 			Uncompressed: opts.Uncompressed,
