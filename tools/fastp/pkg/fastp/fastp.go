@@ -64,7 +64,7 @@ type ProcessOptions struct {
 	QualThreshold int
 	MinLength     int
 	MaxLength     int
-	QualPercent   int // Percentage of bases that must meet quality threshold
+	QualPercent   int // Max percent of bases allowed BELOW the threshold (upstream unqualified_percent_limit, -u)
 
 	// Complexity filtering
 	LowComplexity       bool
@@ -1376,29 +1376,46 @@ func filterRecord(record *fastq.Record, opts ProcessOptions, stats *ProcessStats
 	// N-base-count limit AND the low-quality-base percentage limit (and
 	// the average-quality requirement, once ported).
 	if !opts.DisableQualityFiltering {
-		// Step 5: Check N content (nBaseLimit / N-percent).
-		nCount := countNs(seq[start:end])
-		nPercent := 100.0 * float64(nCount) / float64(end-start)
-
-		if nCount > opts.MaxNCount || nPercent > opts.MaxNPercent {
-			stats.TooManyNReads++
-			return nil, false
-		}
-
-		// Step 6: Check quality (percentage of bases meeting threshold).
-		if opts.QualPercent > 0 {
-			qualScores := getQualityScores(qual[start:end], encoding)
-			passCount := 0
-			for _, q := range qualScores {
-				if q >= opts.QualThreshold {
-					passCount++
-				}
+		// Upstream's Filter::passFilter (filter.cpp:14-52) scans the read
+		// once, counting low-quality bases (Phred < qualifiedQual) and N
+		// bases, then applies the checks in a fixed order: the unqualified
+		// percentage limit FIRST, then (avg-qual, off by default), then the
+		// N-base count. The order is load-bearing for stat parity because a
+		// read that trips both the quality and N filters is bucketed by
+		// whichever check fires first (low_quality, not too_many_N).
+		rlen := end - start
+		qualScores := getQualityScores(qual[start:end], encoding)
+		lowQualNum := 0
+		for _, q := range qualScores {
+			if q < opts.QualThreshold {
+				lowQualNum++
 			}
-			passPercent := 100.0 * float64(passCount) / float64(len(qualScores))
-			if passPercent < float64(opts.QualPercent) {
+		}
+		nCount := countNs(seq[start:end])
+
+		// Step 5: low-quality-base percentage limit. Upstream fails when the
+		// number of unqualified bases EXCEEDS unqualifiedPercentLimit% of the
+		// read length: `lowQualNum > unqualifiedPercentLimit * rlen / 100.0`
+		// (opts.QualPercent is upstream's unqualifiedPercentLimit, default
+		// 40). The previous port inverted this — it required at least
+		// QualPercent% of bases to be qualified (i.e. <60% unqualified),
+		// which let far too many low-quality reads through and retained ~2%
+		// more read-pairs than upstream.
+		if opts.QualPercent > 0 {
+			if float64(lowQualNum) > float64(opts.QualPercent)*float64(rlen)/100.0 {
 				stats.LowQualityReads++
 				return nil, false
 			}
+		}
+
+		// Step 6: N-base count limit (upstream nBaseLimit, default 5). We also
+		// retain the optional N-percent cap (--max-n-percent), which upstream
+		// lacks; with the default 20% cap on ~100 bp reads the count limit is
+		// the binding constraint, so this stays parity-neutral on real data.
+		nPercent := 100.0 * float64(nCount) / float64(rlen)
+		if nCount > opts.MaxNCount || nPercent > opts.MaxNPercent {
+			stats.TooManyNReads++
+			return nil, false
 		}
 	}
 

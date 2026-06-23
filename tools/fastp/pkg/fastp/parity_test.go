@@ -417,10 +417,11 @@ func TestParity_Fastp_Case06_SEQualityFilter(t *testing.T) {
 
 	opts := DefaultProcessOptions()
 	opts.QualThreshold = 30
-	// Upstream's -u 20 means "20% of bases may be below threshold". Our
-	// QualPercent is the inverse: "percent that must MEET the threshold"
-	// — i.e. 100 - upstream's -u value.
-	opts.QualPercent = 80
+	// QualPercent is upstream's unqualified_percent_limit (-u): the maximum
+	// percentage of bases allowed to fall BELOW the quality threshold before
+	// the read is discarded. It maps 1:1 to -u (here 20), matching
+	// Filter::passFilter's `lowQualNum > unqualifiedPercentLimit * rlen/100`.
+	opts.QualPercent = 20
 	_, goStats := runGoFastpSE(t, in, opts)
 
 	goJSON := jsonFromStats(t, goStats)

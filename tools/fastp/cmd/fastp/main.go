@@ -19,17 +19,15 @@ const usage = `fastp - All-in-one FASTQ preprocessor
 
 Usage:
   fastp -i input.fastq -o output.fastq [options]
-  fastp -I read1.fastq -O out1.fastq --in2 read2.fastq --out2 out2.fastq [options]
+  fastp -i read1.fastq -I read2.fastq -o out1.fastq -O out2.fastq [options]
 
 Options:
-  Input/Output:
-    -i, --input FILE          Input FASTQ file (single-end, required)
-    -o, --output FILE         Output FASTQ file (single-end, required)
-    -I, --in1 FILE            Input FASTQ file read 1 (paired-end)
-    --in2 FILE                Input FASTQ file read 2 (paired-end)
-    -O, --out1 FILE           Output FASTQ file read 1 (paired-end)
-    --out2 FILE               Output FASTQ file read 2 (paired-end)
-  
+  Input/Output (upstream-exact short flags):
+    -i, --in1 FILE            Read 1 input (or single-end input; --input alias)
+    -I, --in2 FILE            Read 2 input (paired-end)
+    -o, --out1 FILE           Read 1 output (or single-end output; --output alias)
+    -O, --out2 FILE           Read 2 output (paired-end)
+
   Adapter Trimming:
     -x, --adapter3 SEQ        3' adapter sequence
     -y, --adapter5 SEQ        5' adapter sequence
@@ -38,17 +36,17 @@ Options:
     --adapter_fasta FILE      Trim reads by all sequences in this FASTA file
 
   Quality Filtering:
-    -q, --qual-threshold INT  Quality threshold (default: 15)
-    --qual-percent INT        Percent of bases meeting quality (default: 40)
+    -q, --qualified_quality_phred INT  Qualified base quality threshold (default: 15)
+    -u, --unqualified_percent_limit INT  Max percent of bases below threshold (default: 40)
     -Q, --disable_quality_filtering  Disable quality filtering (N-base, low-quality-percent)
 
   Length Filtering:
-    -l, --min-length INT      Minimum read length (default: 15)
+    -l, --length_required INT Minimum read length (default: 15; --min-length alias)
     --max-length INT          Maximum read length (0 = no limit)
     -L, --disable_length_filtering   Disable length filtering (length_required / length_limit)
 
   Content Filtering:
-    --max-n-count INT         Maximum N count (default: 5)
+    -n, --n_base_limit INT    Maximum N count (default: 5; --max-n-count alias)
     --max-n-percent FLOAT     Maximum N percentage (default: 20.0)
 
   Poly-tail Trimming:
@@ -115,13 +113,13 @@ Options:
     -w, --threads INT         Number of threads (default: 1)
   
   Reporting:
-    --html FILE               Self-contained HTML report (no JS, no CDN)
-    --json FILE               JSON report (fastp-compatible schema)
-    --detect_adapter_for_pe   Overlap-based adapter detection for PE reads
+    -h, --html FILE           Self-contained HTML report (no JS, no CDN)
+    -j, --json FILE           JSON report (fastp-compatible schema)
+    -2, --detect_adapter_for_pe   Overlap-based adapter detection for PE reads
 
   Other:
     -t, --qual-type TYPE      Quality type: sanger, illumina (default: sanger)
-    -h, --help                Show this help and exit
+    -?, --help                Show this help and exit (-h is the HTML report)
     -v, --version             Show version information and exit
     --quiet                   Don't print statistics
 
@@ -145,19 +143,19 @@ Examples:
   fastp -i input.fastq -o output.fastq --base-correction
   
   # Merge overlapping paired-end reads
-  fastp -I R1.fastq -O out1.fastq --in2 R2.fastq --out2 out2.fastq --merge-overlap
-  
+  fastp -i R1.fastq -I R2.fastq -o out1.fastq -O out2.fastq --merge-overlap
+
   # Multi-threaded with HTML + JSON reports
-  fastp -i input.fastq -o output.fastq -w 4 --html report.html --json report.json
+  fastp -i input.fastq -o output.fastq -w 4 -h report.html -j report.json
 
   # PE adapter detection via overlap analysis
-  fastp -I r1.fq -O r1.out.fq --in2 r2.fq --out2 r2.out.fq --detect_adapter_for_pe
+  fastp -i r1.fq -I r2.fq -o r1.out.fq -O r2.out.fq --detect_adapter_for_pe
 
   # Comprehensive preprocessing
   fastp -i input.fastq -o output.fastq \
     -x AGATCGGAAGAGC -q 20 -l 30 \
-    --trim-poly-g --max-n-count 3 \
-    --base-correction -w 4 --html report.html --json report.json
+    --trim-poly-g -n 3 \
+    --base-correction -w 4 -h report.html -j report.json
 
 Version: 1.0.0 (Go implementation)
 `
@@ -239,13 +237,21 @@ func main() {
 		splitPrefixDigits int
 	)
 
-	// Input/Output
-	cliflag.StringVar(fs, &inputFile, "i", "input", "", "Input FASTQ file (single-end)")
-	cliflag.StringVar(fs, &outputFile, "o", "output", "", "Output FASTQ file (single-end)")
-	cliflag.StringVar(fs, &in1File, "I", "in1", "", "Input FASTQ file read 1 (paired-end)")
-	cliflag.StringVar(fs, &in2File, "", "in2", "", "Input FASTQ file read 2 (paired-end)")
-	cliflag.StringVar(fs, &out1File, "O", "out1", "", "Output FASTQ file read 1 (paired-end)")
-	cliflag.StringVar(fs, &out2File, "", "out2", "", "Output FASTQ file read 2 (paired-end)")
+	// Input/Output.
+	//
+	// Short flags are upstream-exact so a stock fastp command line is
+	// drop-in: -i=read1 (or the single-end input), -I=read2, -o=read1
+	// output (or the single-end output), -O=read2 output. read1/read1-out
+	// are stored in in1File/out1File; single-end mode is detected later by
+	// the absence of in2File. The legacy long names (--input/--output) are
+	// retained as aliases of --in1/--out1 so existing single-end command
+	// lines keep working, and --in2/--out2 remain as the GNU long forms.
+	cliflag.StringVar(fs, &in1File, "i", "in1", "", "Input FASTQ file read 1 (or single-end input)")
+	cliflag.StringVar(fs, &in1File, "", "input", "", "Single-end input FASTQ (alias of --in1)")
+	cliflag.StringVar(fs, &in2File, "I", "in2", "", "Input FASTQ file read 2 (paired-end)")
+	cliflag.StringVar(fs, &out1File, "o", "out1", "", "Output FASTQ file read 1 (or single-end output)")
+	cliflag.StringVar(fs, &out1File, "", "output", "", "Single-end output FASTQ (alias of --out1)")
+	cliflag.StringVar(fs, &out2File, "O", "out2", "", "Output FASTQ file read 2 (paired-end)")
 
 	// Adapter trimming
 	cliflag.StringVar(fs, &adapter3, "x", "adapter3", "", "3' adapter sequence")
@@ -254,18 +260,29 @@ func main() {
 	cliflag.BoolVar(fs, &disableAdapter, "A", "disable_adapter_trimming", false, "Disable all adapter trimming")
 	cliflag.StringVar(fs, &adapterFasta, "", "adapter_fasta", "", "Trim reads by all sequences in this FASTA file")
 
-	// Quality filtering
-	cliflag.IntVar(fs, &qualThreshold, "q", "qual-threshold", 15, "Quality threshold (default: 15)")
-	cliflag.IntVar(fs, &qualPercent, "", "qual-percent", 40, "Percent of bases meeting quality (default: 40)")
+	// Quality filtering. Short flags and upstream long aliases are
+	// upstream-exact: -q/--qualified_quality_phred sets the per-base
+	// qualified threshold, and -u/--unqualified_percent_limit sets the
+	// maximum percentage of sub-threshold bases tolerated before a read is
+	// discarded (NOT the percent that must pass). --qual-threshold and
+	// --qual-percent are retained as legacy aliases.
+	cliflag.IntVar(fs, &qualThreshold, "q", "qual-threshold", 15, "Qualified base quality threshold (default: 15)")
+	cliflag.IntVar(fs, &qualThreshold, "", "qualified_quality_phred", 15, "Qualified base quality threshold (upstream alias of -q)")
+	cliflag.IntVar(fs, &qualPercent, "u", "qual-percent", 40, "Max percent of bases allowed below the quality threshold (default: 40)")
+	cliflag.IntVar(fs, &qualPercent, "", "unqualified_percent_limit", 40, "Max percent of unqualified bases (upstream alias of -u)")
 	cliflag.BoolVar(fs, &disableQualityFilt, "Q", "disable_quality_filtering", false, "Disable quality filtering (N-base, low-quality-percent, avg-quality)")
 
-	// Length filtering
+	// Length filtering. -l/--length_required is upstream-exact;
+	// --min-length is a legacy alias.
 	cliflag.IntVar(fs, &minLength, "l", "min-length", 15, "Minimum read length (default: 15)")
+	cliflag.IntVar(fs, &minLength, "", "length_required", 15, "Minimum read length (upstream alias of -l)")
 	cliflag.IntVar(fs, &maxLength, "", "max-length", 0, "Maximum read length (0 = no limit)")
 	cliflag.BoolVar(fs, &disableLengthFilt, "L", "disable_length_filtering", false, "Disable length filtering (length_required / length_limit discard)")
 
-	// Content filtering
-	cliflag.IntVar(fs, &maxNCount, "", "max-n-count", 5, "Maximum N count (default: 5)")
+	// Content filtering. -n/--n_base_limit is upstream-exact; --max-n-count
+	// is a legacy alias. (--max-n-percent has no upstream equivalent.)
+	cliflag.IntVar(fs, &maxNCount, "n", "max-n-count", 5, "Maximum N count (default: 5)")
+	cliflag.IntVar(fs, &maxNCount, "", "n_base_limit", 5, "Maximum N count (upstream alias of -n)")
 	cliflag.Float64Var(fs, &maxNPercent, "", "max-n-percent", 20.0, "Maximum N percentage (default: 20.0)")
 
 	// Poly-tail trimming
@@ -335,16 +352,18 @@ func main() {
 	// Multi-threading
 	cliflag.IntVar(fs, &threads, "w", "threads", 1, "Number of threads (default: 1)")
 
-	// Reporting outputs. --html is long-only (upstream fastp uses -h for
-	// help; we keep -h reserved for help to avoid colliding with that
-	// muscle memory). --json is also long-only for symmetry.
-	cliflag.StringVar(fs, &htmlReport, "", "html", "", "HTML report output file")
-	cliflag.StringVar(fs, &jsonReport, "", "json", "", "JSON report output file")
-	cliflag.BoolVar(fs, &showHelp, "h", "help", false, "Show usage and exit")
+	// Reporting outputs. Short flags are upstream-exact: -h=html and -j=json
+	// (upstream reserves -? / --help for help, NOT -h). We keep --help and
+	// add -? so the help path is still reachable without colliding with the
+	// html report flag.
+	cliflag.StringVar(fs, &htmlReport, "h", "html", "", "HTML report output file")
+	cliflag.StringVar(fs, &jsonReport, "j", "json", "", "JSON report output file")
+	cliflag.BoolVar(fs, &showHelp, "?", "help", false, "Show usage and exit")
 	cliflag.BoolVar(fs, &showVersion, "v", "version", false, "Show version information and exit")
 
-	// Automatic adapter detection
-	cliflag.BoolVar(fs, &detectAdapterForPE, "", "detect_adapter_for_pe", false, "Enable overlap-based adapter detection for paired-end")
+	// Automatic adapter detection. -2 is upstream's short flag for
+	// detect_adapter_for_pe.
+	cliflag.BoolVar(fs, &detectAdapterForPE, "2", "detect_adapter_for_pe", false, "Enable overlap-based adapter detection for paired-end")
 
 	// Other
 	cliflag.StringVar(fs, &qualType, "t", "qual-type", "sanger", "Quality type: sanger, illumina (default: sanger)")
@@ -374,19 +393,24 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Determine mode: paired-end or single-end. In merge mode the merged
-	// output is written to --merged_out, so out1/out2 are optional (they
-	// only carry unmerged pairs when --include_unmerged is NOT used).
+	// Determine mode: paired-end or single-end. As in upstream fastp,
+	// paired-end is selected purely by the presence of both -i/--in1 and
+	// -I/--in2; the single-end input/output reuse in1File/out1File (which
+	// -i/-o feed). In merge mode the merged output is written to
+	// --merged_out, so out1/out2 are optional (they only carry unmerged
+	// pairs when --include_unmerged is NOT used).
+	inputFile = in1File
+	outputFile = out1File
 	isPaired := (in1File != "" && in2File != "" && out1File != "" && out2File != "")
 	if merge && in1File != "" && in2File != "" && (mergedOut != "" || (out1File != "" && out2File != "")) {
 		isPaired = true
 	}
-	isSingle := (inputFile != "" && outputFile != "")
+	isSingle := (in1File != "" && in2File == "" && out1File != "")
 
 	if !isPaired && !isSingle {
 		fmt.Fprintln(os.Stderr, "Error: must specify either:")
-		fmt.Fprintln(os.Stderr, "  Single-end: -i/--input and -o/--output")
-		fmt.Fprintln(os.Stderr, "  Paired-end: -I/--in1, --in2, -O/--out1, --out2")
+		fmt.Fprintln(os.Stderr, "  Single-end: -i/--in1 (or --input) and -o/--out1 (or --output)")
+		fmt.Fprintln(os.Stderr, "  Paired-end: -i/--in1, -I/--in2, -o/--out1, -O/--out2")
 		fs.Usage()
 		os.Exit(1)
 	}

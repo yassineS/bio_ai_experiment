@@ -234,7 +234,11 @@ III!!!IIIIII!!!!IIII
 	var output bytes.Buffer
 	opts := DefaultProcessOptions()
 	opts.QualThreshold = 20
-	opts.QualPercent = 80 // Require 80% of bases to meet quality threshold
+	// QualPercent is upstream's unqualified_percent_limit (-u): the read is
+	// discarded when MORE than this percentage of bases fall below the quality
+	// threshold. The fixture read has 7/20 = 35% sub-Q20 bases, so a 20% limit
+	// rejects it (35% > 20%).
+	opts.QualPercent = 20
 	opts.MinLength = 10
 
 	stats, err := ProcessSingleEnd(strings.NewReader(input), &output, fastq.Phred33, opts)
@@ -247,6 +251,47 @@ III!!!IIIIII!!!!IIII
 	}
 	if stats.LowQualityReads != 1 {
 		t.Errorf("Expected 1 low quality read, got %d", stats.LowQualityReads)
+	}
+}
+
+// TestQualityFilterUnqualifiedPercentLimit pins the quality filter to upstream
+// fastp's Filter::passFilter semantics: a read is discarded when the number of
+// bases BELOW the quality threshold EXCEEDS unqualifiedPercentLimit% of the
+// read length (lowQualNum > QualPercent * rlen / 100). A previous port inverted
+// this (it required QualPercent% of bases to be qualified), which let ~2% more
+// read-pairs survive than upstream. The fixture read has exactly 7/20 = 35%
+// sub-Q20 bases.
+func TestQualityFilterUnqualifiedPercentLimit(t *testing.T) {
+	// 20 bases; '!'=Q0 (below Q20), 'I'=Q40. 7 of 20 bases are sub-Q20 (35%).
+	const input = "@read1\nACGTACGTACGTACGTACGT\n+\nIII!!!IIIIII!!!!IIII\n"
+
+	tests := []struct {
+		name        string
+		qualPercent int // upstream -u / unqualified_percent_limit
+		wantDropped bool
+	}{
+		{name: "limit 40 keeps (35% < 40%)", qualPercent: 40, wantDropped: false},
+		{name: "limit 35 keeps (35% not > 35%)", qualPercent: 35, wantDropped: false},
+		{name: "limit 30 drops (35% > 30%)", qualPercent: 30, wantDropped: true},
+		{name: "limit 20 drops (35% > 20%)", qualPercent: 20, wantDropped: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			opts := DefaultProcessOptions()
+			opts.QualThreshold = 20
+			opts.QualPercent = tt.qualPercent
+			opts.MinLength = 10
+			stats, err := ProcessSingleEnd(strings.NewReader(input), &output, fastq.Phred33, opts)
+			if err != nil {
+				t.Fatalf("ProcessSingleEnd: %v", err)
+			}
+			gotDropped := stats.LowQualityReads == 1
+			if gotDropped != tt.wantDropped {
+				t.Errorf("QualPercent=%d: dropped=%v (LowQualityReads=%d), want dropped=%v",
+					tt.qualPercent, gotDropped, stats.LowQualityReads, tt.wantDropped)
+			}
+		})
 	}
 }
 
