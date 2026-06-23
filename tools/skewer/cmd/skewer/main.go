@@ -18,9 +18,26 @@ import (
 const usage = `skewer - Fast adapter trimming tool for FASTQ files
 
 Usage:
-  skewer <command> [options]
+  skewer [options] <reads.fastq> [paired-reads.fastq]   (upstream-compatible form)
+  skewer <command> [options]                            (extended subcommand form)
 
-Commands:
+Upstream-compatible options (drop-in for skewer 0.2.2):
+  -x <str>             3' adapter sequence/file
+  -y <str>             3' adapter sequence/file for the paired mate
+  -m, --mode <str>     trimming mode: head|tail|any (single-end), pe (paired-end)
+  -r <num>             maximum allowed error rate (0.1)
+  -d <num>             maximum allowed indel error rate (0.03)
+  -k <int>             minimum overlap length for adapter detection
+  -q, --end-quality    trim 3' end until the given quality is reached (0)
+  -l, --min <int>      minimum read length allowed after trimming (18)
+  -o, --output <str>   base name of output file ('<reads>')
+  -z, --compress       compress output in GZIP format
+  -1, --stdout         redirect output to STDOUT (suppresses -o and -z)
+  -f, --format <str>   FASTQ quality value format: sanger|solexa|auto (auto)
+  -t, --threads <int>  number of concurrent threads (accepted; single-threaded)
+      --quiet          no progress update
+
+Subcommands (extended functionality):
   se      Trim single-end reads
   pe      Trim paired-end reads
   batch   Process multiple files in parallel
@@ -29,6 +46,11 @@ For command-specific help:
   skewer se -h
   skewer pe -h
   skewer batch -h
+
+Examples:
+  skewer -x AGATCGGAAGAGC -q 3 sample-pair1.fq.gz sample-pair2.fq.gz -o trimmed
+  skewer -m pe sample-pair1.fastq sample-pair2.fastq -o out
+  skewer se -i input.fastq -o output.fastq -x AGATCGGAAGAGC
 
 Version: 1.0.0 (Go implementation)
 `
@@ -54,9 +76,11 @@ func main() {
 		fmt.Println("skewer version 1.0.0 (Go implementation)")
 		os.Exit(0)
 	default:
-		fmt.Fprintf(os.Stderr, "Error: unknown command %q\n\n", command)
-		fmt.Fprint(os.Stderr, usage)
-		os.Exit(1)
+		// Anything that is not one of our extended subcommands is treated as
+		// upstream skewer's positional CLI: `skewer [options] <r1> [r2] -o base`.
+		// This keeps us drop-in compatible with skewer 0.2.2 while preserving
+		// the richer se/pe/batch subcommands above.
+		runUpstreamCLI(os.Args[1:])
 	}
 }
 
