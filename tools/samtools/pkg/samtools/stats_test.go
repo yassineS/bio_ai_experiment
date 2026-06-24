@@ -1170,6 +1170,103 @@ func TestStatsTargetRegionsDeletionBoundary(t *testing.T) {
 	}
 }
 
+// TestStatsUnmappedWithCigarExcluded is a regression test for the case where a
+// primary record carries the UNMAP flag (0x4) yet still has a valid RNAME/POS,
+// a mapped-style CIGAR and an NM aux tag — a shape BWA emits for reads it places
+// next to a mapped mate but marks unmapped. Upstream stats.c gates count_indels,
+// the NM-derived "mismatches" tally and the "bases mapped (cigar)" cigar walk
+// behind `if (IS_UNMAPPED) return;` (stats.c:1255), so such a read contributes
+// to NONE of them. An earlier draft of this port ran all three for every primary
+// record regardless of the UNMAP flag, overcounting bases mapped (cigar),
+// mismatches and the ID/IC indel histograms (observed on real GIAB data as
+// +505 cigar bases / +20 mismatches across 5 such reads).
+//
+// The fixture has one ordinary mapped read and one unmapped-with-cigar read.
+// The unmapped read's 8M2I4M3D CIGAR (M+I = 12) and NM:i:6 must be excluded, and
+// its 2I/3D must not appear in the ID histogram; only the mapped read's
+// 10M (10 cigar bases, NM:i:1) is counted.
+func TestStatsUnmappedWithCigarExcluded(t *testing.T) {
+	hdr := "@HD\tVN:1.4\tSO:coordinate\n@SQ\tSN:c\tLN:100000\n"
+	// Mapped read: flag 0 (mapped), 10M, NM:i:1.
+	mapped := "m1\t0\tc\t10\t40\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII\tNM:i:1\n"
+	// Unmapped-with-cigar read: flag 4 (UNMAP) set, but a valid RNAME/POS,
+	// CIGAR 8M2I4M3D and NM:i:6. Must contribute nothing to cigar/mismatch/ID.
+	unmapped := "u1\t4\tc\t20\t0\t8M2I4M3D\t*\t0\t0\tACGTACGTACGTAC\tIIIIIIIIIIIIII\tNM:i:6\n"
+	var out bytes.Buffer
+	if err := Stats(strings.NewReader(hdr+mapped+unmapped), &out, StatsOptions{}); err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "SN\tbases mapped (cigar):\t10\t") {
+		t.Errorf("expected bases mapped (cigar) = 10 (unmapped read excluded); got:\n%s", got)
+	}
+	if !strings.Contains(got, "SN\tmismatches:\t1\t") {
+		t.Errorf("expected mismatches = 1 (unmapped read's NM excluded); got:\n%s", got)
+	}
+	// The unmapped read's 2I insertion and 3D deletion must NOT appear: with
+	// only the mapped read's gap-free 10M, no ID rows are emitted.
+	if strings.Contains(extractSection(got, "ID"), "ID\t") {
+		t.Errorf("expected no ID indel rows (unmapped read's indels excluded); got ID section:\n%s",
+			extractSection(got, "ID"))
+	}
+}
+
+// TestStatsUnmappedQualStillCounted guards the partner invariant to the fix
+// above: upstream's sum_qual / total_len accumulation lives in
+// collect_orig_read_stats (stats.c:893,988), which runs for every primary
+// record BEFORE the `if (IS_UNMAPPED) return;` gate. The quality sum and total
+// length must therefore still fold in an unmapped read, even though its cigar /
+// NM / indels are excluded. This pins the gate to the right place (after the
+// quality/length work, before the cigar walk) so the unmapped-cigar fix does
+// not regress "average quality" or "total length".
+func TestStatsUnmappedQualStillCounted(t *testing.T) {
+	hdr := "@HD\tVN:1.4\tSO:coordinate\n@SQ\tSN:c\tLN:100000\n"
+	// One unmapped read (flag 4), 4 bases all quality 'I' (Phred 40).
+	body := "u1\t4\tc\t20\t0\t*\t*\t0\t0\tACGT\tIIII\n"
+	var out bytes.Buffer
+	if err := Stats(strings.NewReader(hdr+body), &out, StatsOptions{}); err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "SN\ttotal length:\t4\t") {
+		t.Errorf("expected total length = 4 (unmapped read's bases still counted); got:\n%s", got)
+	}
+	if !strings.Contains(got, "SN\taverage quality:\t40.0\n") {
+		t.Errorf("expected average quality = 40.0 (unmapped read's qual still summed); got:\n%s", got)
+	}
+}
+
+// TestStatsAverageLengthRounding is a regression test for the "average length"
+// SN lines. Upstream computes each as a 32-bit-float division formatted with
+// "%.0f" (round-half-to-even), e.g. stats.c:1593. An earlier draft used Go
+// integer division, which truncates: a mean of 96.6 printed 96 instead of
+// upstream's 97. Here three mapped reads of lengths 96, 97 and 97 give a mean of
+// 290/3 = 96.667, which must round to 97.
+func TestStatsAverageLengthRounding(t *testing.T) {
+	hdr := "@HD\tVN:1.4\tSO:coordinate\n@SQ\tSN:c\tLN:100000\n"
+	seq := func(n int) string {
+		b := make([]byte, n)
+		q := make([]byte, n)
+		for i := range b {
+			b[i] = 'A'
+			q[i] = 'I'
+		}
+		return string(b) + "\t" + string(q)
+	}
+	body := ""
+	for i, ln := range []int{96, 97, 97} {
+		body += fmt.Sprintf("r%d\t0\tc\t%d\t40\t%dM\t*\t0\t0\t%s\n", i, 10+i, ln, seq(ln))
+	}
+	var out bytes.Buffer
+	if err := Stats(strings.NewReader(hdr+body), &out, StatsOptions{}); err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "SN\taverage length:\t97\n") {
+		t.Errorf("expected average length = 97 (96.667 rounds up, not truncates); got:\n%s", got)
+	}
+}
+
 // TestStatsMPCParity compares our MPC mismatches-per-cycle section against
 // upstream's stats expected outputs. The stat/1-8 golden files were generated
 // with `-r test.fa`, so the section comment lines and every cycle row

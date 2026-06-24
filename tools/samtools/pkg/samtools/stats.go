@@ -865,6 +865,22 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) error {
 	// returned G+C base count feeds the GC-depth distribution.
 	gcCount := c.collectCycleStats(rec, opts)
 
+	// Quality sum (only for QC-passed sequences). This is upstream's sum_qual,
+	// accumulated inside collect_orig_read_stats (stats.c:988) and therefore
+	// folded in for every primary record — mapped or unmapped — BEFORE the
+	// `if (IS_UNMAPPED) return;` early-return below. Upstream uses 255
+	// ("missing") for "*" qualities, which gives the large "average quality:
+	// 255.0" observed on all-missing-qual fixtures.
+	if len(rec.Qual) == 0 {
+		// "*" qual — encode 255 per base, matching upstream's missing-qual handling.
+		c.TotalQual += 255 * rlen
+	} else {
+		for _, q := range rec.Qual {
+			c.TotalQual += int64(q)
+		}
+	}
+	c.TotalQualBases += rlen
+
 	// Per-barcode base-content and quality accumulation. Upstream calls
 	// collect_barcode_stats from collect_orig_read_stats but only for
 	// READ_ORDER_FIRST records (stats.c:993), i.e. unpaired reads and the
@@ -905,6 +921,19 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) error {
 		c.BasesDuplicated += rlen
 	}
 
+	// Everything from here on is the mapped-read tail of upstream
+	// collect_orig_read_stats, which is gated by `if (IS_UNMAPPED) return;`
+	// (stats.c:1255). count_indels, the NM-derived mismatch tally and the
+	// cigar "bases mapped" walk all sit after that early-return, so an
+	// *unmapped* primary record contributes to none of them — even when (as
+	// some BWA records do) it carries the unmapped flag together with a valid
+	// RNAME/POS, a mapped-style CIGAR and an NM aux tag. Folding those reads in
+	// here previously overcounted bases mapped (cigar), mismatches and the
+	// ID/IC indel histograms.
+	if !rec.IsMapped() {
+		return nil
+	}
+
 	// Cigar-aware "bases mapped (cigar)" — matches upstream `nbases_mapped_cigar`
 	// which counts M, =, X *and* I bases (see stats.c line 1581 comment).
 	c.addBasesMappedCigar(rec)
@@ -915,11 +944,9 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) error {
 	// COV coverage-distribution depth, GCD GC-depth and MPC
 	// mismatches-per-cycle (mapped reads only). MPC is a no-op unless
 	// --ref-seq is in effect.
-	if rec.IsMapped() {
-		c.accumulateCoverage(rec)
-		c.accumulateGCD(rec, gcCount)
-		c.accumulateMPC(rec, unclippedLength(rec))
-	}
+	c.accumulateCoverage(rec)
+	c.accumulateGCD(rec, gcCount)
+	c.accumulateMPC(rec, unclippedLength(rec))
 
 	// Mismatches via NM aux tag.
 	if a, ok := rec.GetAux("NM"); ok {
@@ -927,19 +954,6 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) error {
 			c.Mismatches += v
 		}
 	}
-
-	// Quality sum (only for QC-passed sequences).
-	// Upstream uses 255 ("missing") for "*" qualities, which gives the
-	// large "average quality: 255.0" observed in the fixture.
-	if len(rec.Qual) == 0 {
-		// "*" qual — encode 255 per base, matching upstream's missing-qual handling.
-		c.TotalQual += 255 * rlen
-	} else {
-		for _, q := range rec.Qual {
-			c.TotalQual += int64(q)
-		}
-	}
-	c.TotalQualBases += rlen
 
 	// Pair orientation + insert size classification.
 	if rec.IsPaired() && rec.IsMapped() && !rec.IsMateUnmapped() {
@@ -2388,21 +2402,29 @@ func (c *StatsCounters) writeSN(bw *bufio.Writer, opts StatsOptions) {
 		errRate = float64(c.Mismatches) / float64(c.BasesMappedCigar)
 	}
 	emit("error rate", fmt.Sprintf("%.6e", errRate), "# mismatches / bases mapped (cigar)")
-	avgLen := int64(0)
+	// Average lengths mirror stats.c:1586-1595: each is a 32-bit-float
+	// division of the total length by the read count, formatted with "%.0f"
+	// (round-half-to-even, matching C printf). The denominator is the count of
+	// 1st + 2nd + other fragments (== Sequences here) for the overall average
+	// and the per-fragment counts for the others. Truncating with integer
+	// division (the previous behaviour) lands one base low whenever the true
+	// mean has a fractional part >= 0.5, which is why a 96.6 mean printed 96
+	// rather than upstream's 97.
+	avgLen := float32(0)
 	if c.Sequences > 0 {
-		avgLen = c.TotalLength / c.Sequences
+		avgLen = float32(c.TotalLength) / float32(c.Sequences)
 	}
-	emit("average length", avgLen, "")
-	avgFirst := int64(0)
+	emit("average length", fmt.Sprintf("%.0f", avgLen), "")
+	avgFirst := float32(0)
 	if c.FirstFrag > 0 {
-		avgFirst = c.TotalFirstFragLength / c.FirstFrag
+		avgFirst = float32(c.TotalFirstFragLength) / float32(c.FirstFrag)
 	}
-	emit("average first fragment length", avgFirst, "")
-	avgLast := int64(0)
+	emit("average first fragment length", fmt.Sprintf("%.0f", avgFirst), "")
+	avgLast := float32(0)
 	if c.LastFrag > 0 {
-		avgLast = c.TotalLastFragLength / c.LastFrag
+		avgLast = float32(c.TotalLastFragLength) / float32(c.LastFrag)
 	}
-	emit("average last fragment length", avgLast, "")
+	emit("average last fragment length", fmt.Sprintf("%.0f", avgLast), "")
 	emit("maximum length", c.MaxLength, "")
 	emit("maximum first fragment length", c.MaxFirstFragLength, "")
 	emit("maximum last fragment length", c.MaxLastFragLength, "")
