@@ -577,7 +577,7 @@ func (e *recordEncoder) encodeMate(rec *sam.Record) error {
 // the record's tag combination in the dictionary, registering a new
 // combination the first time it is seen.
 func (e *recordEncoder) tagLine(rec *sam.Record) int32 {
-	keys := recordTagKeys(rec)
+	keys := recordTagKeys(rec, e.reorderTrailingTags())
 	for _, k := range keys {
 		e.tagKeySet[k] = true
 	}
@@ -591,15 +591,134 @@ func (e *recordEncoder) tagLine(rec *sam.Record) int32 {
 	return idx
 }
 
+// reorderTrailingTags reports whether the encoder must migrate inline MD, NM
+// and RG to the tail of a record's aux block. This is the CRAM v2/v3 case:
+// htslib's cram_encode.c drops MD/NM/RG from the tag dictionary entirely and
+// re-appends them after every ordinary aux tag on decode. CRAM v4 instead
+// keeps them in the dictionary as "MD*"/"NM*"/"RG*" placeholders at their
+// inline position, so no migration is applied there.
+func (e *recordEncoder) reorderTrailingTags() bool { return !e.version.usesUint7() }
+
 // recordTagKeys returns the ordered three-byte tag keys of a record's
-// auxiliary fields. The order is the record's own Aux order, which the
-// reader reproduces, so tag order round-trips.
-func recordTagKeys(rec *sam.Record) []tagKey {
-	keys := make([]tagKey, 0, len(rec.Aux))
-	for _, a := range rec.Aux {
+// auxiliary fields. The order is the record's own Aux order — with MD, NM
+// and RG migrated to the tail by auxForEncoding when reorder is set — which
+// the reader reproduces, so tag order round-trips byte-exact with upstream.
+func recordTagKeys(rec *sam.Record, reorder bool) []tagKey {
+	aux := auxForEncoding(rec, reorder)
+	keys := make([]tagKey, 0, len(aux))
+	for _, a := range aux {
 		keys = append(keys, auxTagKey(a))
 	}
 	return keys
+}
+
+// auxForEncoding returns the record's auxiliary fields in the order CRAM
+// stores them so the decoded aux block byte-matches upstream htslib. When
+// reorder is false the record's own Aux slice is returned unchanged (the
+// CRAM v4 path, which keeps MD/NM/RG inline as dictionary placeholders).
+//
+// When reorder is true (CRAM v2/v3) it mirrors htslib's cram_encode.c, which
+// routes MD, NM and RG through dedicated handling (the MD/NM auto-decode path
+// and the RG data series): they are dropped from the generic tag dictionary
+// and, on decode (cram_to_bam), appended after every ordinary aux tag in the
+// fixed order MD, NM, RG. Our writer keeps these tags inline in the dictionary,
+// so to reproduce the same decoded ordering it migrates them to the tail here:
+//
+//   - RG is always moved last (htslib always appends the data-series RG:Z
+//     after the aux block, for mapped and unmapped reads alike).
+//   - MD then NM are moved just ahead of RG, but only for a mapped read placed
+//     on a reference — the exact records for which htslib extracts and later
+//     regenerates them. An unmapped or unplaced read keeps any inline MD/NM in
+//     place, matching htslib leaving them verbatim in the dictionary.
+//
+// Only tags that are actually present move; the relative order of all other
+// tags is preserved. When no migration applies the record's own Aux slice is
+// returned unchanged so the common no-tag / already-ordered case allocates
+// nothing.
+func auxForEncoding(rec *sam.Record, reorder bool) []sam.Aux {
+	if !reorder {
+		return rec.Aux
+	}
+	mappedOnRef := rec.Flag&sam.FlagUnmapped == 0 && rec.RName != "" && rec.RName != "*"
+	var mdIdx, nmIdx, rgIdx = -1, -1, -1
+	for i, a := range rec.Aux {
+		switch a.Tag {
+		case "MD":
+			if mappedOnRef && mdIdx < 0 {
+				mdIdx = i
+			}
+		case "NM":
+			if mappedOnRef && nmIdx < 0 {
+				nmIdx = i
+			}
+		case "RG":
+			if rgIdx < 0 {
+				rgIdx = i
+			}
+		}
+	}
+	// A tag already sitting in its final tail slot needs no move. Determine
+	// which of MD/NM/RG must migrate; if none do, return the slice as-is.
+	move := make(map[int]bool, 3)
+	if mdIdx >= 0 {
+		move[mdIdx] = true
+	}
+	if nmIdx >= 0 {
+		move[nmIdx] = true
+	}
+	if rgIdx >= 0 {
+		move[rgIdx] = true
+	}
+	if len(move) == 0 {
+		return rec.Aux
+	}
+	// Already in canonical trailing order MD, NM, RG? Then no reordering is
+	// needed and we avoid the allocation. The migrated tags must occupy the
+	// final positions in that exact relative order.
+	if auxTailAlreadyOrdered(rec.Aux, mdIdx, nmIdx, rgIdx) {
+		return rec.Aux
+	}
+	out := make([]sam.Aux, 0, len(rec.Aux))
+	for i, a := range rec.Aux {
+		if !move[i] {
+			out = append(out, a)
+		}
+	}
+	if mdIdx >= 0 {
+		out = append(out, rec.Aux[mdIdx])
+	}
+	if nmIdx >= 0 {
+		out = append(out, rec.Aux[nmIdx])
+	}
+	if rgIdx >= 0 {
+		out = append(out, rec.Aux[rgIdx])
+	}
+	return out
+}
+
+// auxTailAlreadyOrdered reports whether the migrated tags (those with a
+// non-negative index) already occupy the final aux positions in the canonical
+// order MD, NM, RG, so auxForEncoding can skip reordering. The expected tail
+// is the present subset of [MD, NM, RG] in that order, anchored at the end of
+// the aux slice.
+func auxTailAlreadyOrdered(aux []sam.Aux, mdIdx, nmIdx, rgIdx int) bool {
+	want := make([]int, 0, 3)
+	if mdIdx >= 0 {
+		want = append(want, mdIdx)
+	}
+	if nmIdx >= 0 {
+		want = append(want, nmIdx)
+	}
+	if rgIdx >= 0 {
+		want = append(want, rgIdx)
+	}
+	tailStart := len(aux) - len(want)
+	for k, idx := range want {
+		if idx != tailStart+k {
+			return false
+		}
+	}
+	return true
 }
 
 // auxTagKey builds the three-byte CRAM tag key of an auxiliary field:
@@ -624,9 +743,12 @@ func comboID(keys []tagKey) string {
 
 // encodeTags writes every auxiliary tag value of a record into its
 // per-tag BYTE_ARRAY_LEN series: the ITF-8 value length into the tag's
-// length buffer and the value bytes into its value buffer.
+// length buffer and the value bytes into its value buffer. It walks the
+// aux fields in auxForEncoding order — MD/NM/RG migrated to the tail — so
+// each tag's value-series order matches the TD dictionary order the same
+// helper produces for tagLine.
 func (e *recordEncoder) encodeTags(rec *sam.Record) error {
-	for _, a := range rec.Aux {
+	for _, a := range auxForEncoding(rec, e.reorderTrailingTags()) {
 		key := auxTagKey(a)
 		raw, err := encodeTagValue(a)
 		if err != nil {

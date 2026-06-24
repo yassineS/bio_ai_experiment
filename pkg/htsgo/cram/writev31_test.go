@@ -94,15 +94,18 @@ func v31SampleRecords() []*sam.Record {
 			Seq: "TTTTGGGGCC", Qual: []byte{20, 21, 22, 23, 24, 25, 26, 27, 28, 29},
 		})
 	}
-	// Aux tags of every supported type, including B-arrays.
+	// Aux tags of every supported type, including B-arrays. MD and NM sit in
+	// their canonical CRAM v3 tail order (MD then NM, last) so the encoder's
+	// MD/NM/RG migration is an identity here; the migration of an out-of-place
+	// inline MD/NM is covered by TestAuxForEncoding.
 	aux1 := mkRec("aux1", "chr1", 900, "8M", "ACGTACGT")
 	aux1.Aux = []sam.Aux{
-		{Tag: "NM", Type: 'i', Value: int64(3)},
 		{Tag: "Xc", Type: 'c', Value: int64(-5)},
 		{Tag: "XF", Type: 'f', Value: float64(2.5)},
 		{Tag: "XA", Type: 'A', Value: "Q"},
-		{Tag: "MD", Type: 'Z', Value: "8"},
 		{Tag: "XH", Type: 'H', Value: "DEADBEEF"},
+		{Tag: "MD", Type: 'Z', Value: "8"},
+		{Tag: "NM", Type: 'i', Value: int64(3)},
 	}
 	aux2 := mkRec("aux2", "chr2", 1000, "8M", "TTTTGGGG")
 	aux2.Aux = []sam.Aux{

@@ -280,8 +280,12 @@ func TestWriteCRAMReverseStrand(t *testing.T) {
 func TestWriteCRAMAuxTags(t *testing.T) {
 	h := writerTestHeader()
 	rec1 := mkRec("aux1", "chr1", 100, "8M", "ACGTACGT")
+	// MD and NM are placed in their canonical CRAM tail order (MD then NM,
+	// last of all), so the encoder's MD/NM/RG tail migration leaves them put
+	// and the round-trip is an identity. The migration of an out-of-place
+	// inline MD/NM is covered by TestAuxForEncoding and
+	// TestWriteCRAMInlineMDNMReordered.
 	rec1.Aux = []sam.Aux{
-		{Tag: "NM", Type: 'i', Value: int64(3)},
 		{Tag: "AS", Type: 'i', Value: int64(-7)},
 		{Tag: "Xc", Type: 'c', Value: int64(-5)},
 		{Tag: "XC", Type: 'C', Value: int64(200)},
@@ -289,8 +293,9 @@ func TestWriteCRAMAuxTags(t *testing.T) {
 		{Tag: "XS", Type: 'S', Value: int64(60000)},
 		{Tag: "XF", Type: 'f', Value: float64(2.5)},
 		{Tag: "XA", Type: 'A', Value: "Q"},
-		{Tag: "MD", Type: 'Z', Value: "8"},
 		{Tag: "XH", Type: 'H', Value: "DEADBEEF"},
+		{Tag: "MD", Type: 'Z', Value: "8"},
+		{Tag: "NM", Type: 'i', Value: int64(3)},
 	}
 	rec2 := mkRec("aux2", "chr1", 200, "8M", "TTTTGGGG")
 	rec2.Aux = []sam.Aux{
