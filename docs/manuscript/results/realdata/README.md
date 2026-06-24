@@ -165,6 +165,48 @@ test harness's option invocation for those modes, **not** a real result. They
 need the command corrected (and the decoder bug fixed) before they mean anything.
 Only the reference-based mode above is valid.
 
+## Finding E — `realparity` differential battery (H2a, whole-file)
+
+A systematic differential-parity battery (`pipeline/cmd/realparity`) run on the
+real GIAB inputs: `hs37d5.fa` reference + the NA12878 exome BAM (39.7 M reads) +
+the HG002 GRCh37 benchmark VCF, each samtools/bcftools cell run on **our** port
+and the **upstream** binary with provenance-stripped byte-exact comparison.
+
+**Data-naming discovery (a real-world reference mismatch).** The BAM is
+**hg19/UCSC-named** (`chrM`, `chr1`, …, `chr17_gl000203_random`) while `hs37d5`
+and the VCF are **GRCh37-named** (`MT`, `1`, …). None of the BAM contigs match
+the reference by name — which exercised exactly the edge cases a clean dataset
+would not.
+
+**Harness memory-safety (enabling the run).** The battery originally buffered
+*both* sides' fully-decoded output (`CompareByteExact` on two `[]byte`), so a
+multi-GB BAM decoded to ~15–20 GB of SAM ×2 and OOM-killed the 12 GB VM before
+comparing. Refactored to a **streaming provenance-stripping md5 digest** (no
+full-output buffers, no temp files; harness peak RSS ~12 MB), proven byte-for-
+byte equivalent to `CompareByteExact` by a 200 k-input fuzz (commit `fd6e308`).
+This first complete pass surfaced the bugs below.
+
+**Bugs found and fixed** (each byte-exact vs the upstream oracle on real data,
+independently reviewed, committed):
+
+| # | bug | symptom on real data | commit |
+|---|---|---|---|
+| 1 | CRAM **reference-free decode** | `view_cram` decode aborted `fasta: contig "chrM" not in index` — our decoder ignored the slice `RR=0` (reference-not-required) flag and tried to fetch the absent contig; upstream encodes/decodes such slices reference-free | `3769fda` |
+| 2 | CRAM **@SQ M5/UR** | encoding `-T ref` omitted the `M5`/`UR` tags upstream injects; UR must be added iff the @SQ has an M5 (computed or pre-existing), bare otherwise — verified against the upstream binary | `aa5c784`, `3769fda` |
+| 3 | CRAM **inline MD/NM aux order** | decoded records differed from upstream purely in aux order — upstream pulls inline `MD`/`NM`/`RG` to the tail (`MD,NM,RG`), ours kept `MD`/`NM` inline | `d74a9b4` |
+| 4 | `samtools stats` | GCD GC% used `float64` not upstream's `float` (`e3e98ea`); and the CIGAR/indel/NM-mismatch walk wasn't gated on `IS_UNMAPPED`, folding in BWA unmapped-with-CIGAR primary reads (`bases mapped (cigar)` +505, `mismatches` +20), plus integer-truncated average length | `e3e98ea`, `986d520` |
+| 5 | `samtools depth` **OOM** | `depth -a -r chr20` (63 M positions) buffered its whole output → **11.4 GB, OOM-killed**; rewritten to stream like `bam2depth.c` → **72 MB**, byte-exact | `c0c573e` |
+| 6 | `samtools faidx` **missing** | the subcommand did not exist (only `dict`); implemented `faidx`/`fqidx` byte-exact (index build + extract, plain + bgzipped), with a streaming bgzipped index build (hs37d5 `.fai`+`.gzi` at ~16 MB, not the ~3 GB genome) | `deb6e01` |
+| 7 | `realparity` harness | `depth`/`bcftools query`/`bcftools stats` take `-r REGION`, not a positional region (which upstream reads as a filename) | `a7e7177` |
+
+**Validated byte-exact on full-scale real data** (provenance-stripped): `flagstat`
+(39.7 M reads), `idxstats`, `stats` (whole BAM), `view_bam`, **`sort`** (whole
+2.8 GB BAM, no OOM), `view_cram` (reference-free, chrM + chr20+21), `depth -a`
+(chr20, 63 M lines), and `bcftools view`/`view_body`/`norm`/`stats`/`query`. The
+first complete re-run scored **14 PASS / 0 DIVERGE** with the lone ERROR being
+the `depth` OOM (now fixed); a final uncontended confirmation run (all cells,
+reps=3) is the citable end-to-end result (`giabfinal/`).
+
 ## Status — real-data bugs found
 
 The GIAB exome surfaced several genuine parity gaps. The bulk were then fixed
