@@ -35,6 +35,8 @@ Subcommands:
   idxstats      Per-reference read counts from an indexed BAM.
   quickcheck    Fast format sanity check.
   dict          Emit a sequence dictionary from a FASTA file.
+  faidx         Index or extract regions from a FASTA file.
+  fqidx         Index or extract regions from a FASTQ file.
   cat           Concatenate BAMs without re-sorting.
   reheader      Replace the header of a BAM in place.
   addreplacerg  Add or replace @RG line and per-record RG tag.
@@ -80,6 +82,10 @@ func main() {
 		os.Exit(runQuickcheck(os.Args[2:]))
 	case "dict":
 		os.Exit(runDict(os.Args[2:]))
+	case "faidx":
+		os.Exit(runFaidx(os.Args[2:]))
+	case "fqidx":
+		os.Exit(runFqidx(os.Args[2:]))
 	case "cat":
 		os.Exit(runCat(os.Args[2:]))
 	case "reheader":

@@ -127,6 +127,18 @@ func (i *Index) Get(name string) (IndexEntry, bool) {
 	return i.entries[pos], true
 }
 
+// Pos returns the on-disk position (index into Entries) of the contig with
+// the given name, or -1 if it is absent. It is the O(1) companion to Get for
+// callers that need the entry's ordinal (e.g. faidx region resolution that
+// indexes Entries directly).
+func (i *Index) Pos(name string) int {
+	pos, ok := i.byName[name]
+	if !ok {
+		return -1
+	}
+	return pos
+}
+
 // Names returns all contig names in on-disk order.
 func (i *Index) Names() []string {
 	out := make([]string, 0, len(i.entries))
@@ -198,6 +210,17 @@ func BuildIndexBytes(data []byte) (*Index, error) {
 // FASTA payload.
 func BuildIndexFullHeaderBytes(data []byte) (*Index, error) {
 	return buildIndexFromBytes(data, true)
+}
+
+// BuildIndexReader builds a samtools-faidx-compatible index by streaming a
+// FASTA payload from r, holding only O(1) state regardless of genome size.
+// It is the streaming counterpart of BuildIndexBytes: callers that have a
+// reader (e.g. a bgzf.Reader over a bgzipped reference) feed it directly
+// instead of slurping the whole decompressed genome into memory. Offsets are
+// recorded into the uncompressed/virtual stream, exactly as samtools faidx
+// records them.
+func BuildIndexReader(r io.Reader) (*Index, error) {
+	return buildIndexFromReader(r, false)
 }
 
 // buildIndexFromReader is the streaming, source-agnostic core of
@@ -395,6 +418,14 @@ func NewRandomAccess(r io.ReaderAt, idx *Index) *RandomAccess {
 	return &RandomAccess{r: r, idx: idx, close: func() error { return nil }}
 }
 
+// NewRandomAccessFile pairs an open *os.File with an in-memory index and
+// takes ownership of the file handle (Close releases it). It is used when the
+// caller has already loaded a specific .fai (e.g. `samtools faidx --fai-idx`)
+// and wants random access over a plain, uncompressed FASTA.
+func NewRandomAccessFile(f *os.File, idx *Index) *RandomAccess {
+	return &RandomAccess{r: f, idx: idx, close: f.Close}
+}
+
 // newRandomAccessWithCloser wraps a ReaderAt + index and installs a custom
 // Close hook (used by the .gzi partial-decompression backend, which owns an
 // open file handle that must be released on Close).
@@ -455,6 +486,58 @@ func (ra *RandomAccess) Fetch(name string, start, end int64) ([]byte, error) {
 		}
 		if b >= 'a' && b <= 'z' {
 			b -= 'a' - 'A'
+		}
+		out = append(out, b)
+	}
+	if int64(len(out)) != end-start {
+		return nil, fmt.Errorf("fasta: requested %d bases but read %d on %s", end-start, len(out), name)
+	}
+	return out, nil
+}
+
+// FetchRaw returns the sequence bases for the half-open range [start, end)
+// on contig name, preserving the original letter case exactly as stored in
+// the FASTA (it strips embedded newlines/CR but does NOT uppercase). It is
+// the case-preserving counterpart of Fetch, used by `samtools faidx` whose
+// output echoes the reference bytes verbatim. Coordinates are 0-based.
+//
+// Fetch is intentionally left unchanged (it uppercases for canonical
+// case-insensitive comparison in the normalisation paths); callers that need
+// the raw bytes use FetchRaw instead.
+func (ra *RandomAccess) FetchRaw(name string, start, end int64) ([]byte, error) {
+	pos, ok := ra.idx.byName[name]
+	if !ok {
+		return nil, fmt.Errorf("fasta: contig %q not in index", name)
+	}
+	entry := ra.idx.entries[pos]
+	if start < 0 || end < start || end > entry.Length {
+		return nil, fmt.Errorf("fasta: range %s:%d-%d out of bounds (length %d)", name, start, end, entry.Length)
+	}
+	if start == end {
+		return []byte{}, nil
+	}
+
+	startLine := start / entry.LineBases
+	startCol := start % entry.LineBases
+	endLine := (end - 1) / entry.LineBases
+	endCol := (end - 1) % entry.LineBases
+
+	startByte := entry.Offset + startLine*entry.LineWidth + startCol
+	endByte := entry.Offset + endLine*entry.LineWidth + endCol + 1
+	if endByte <= startByte {
+		return nil, fmt.Errorf("fasta: bad byte range %d-%d", startByte, endByte)
+	}
+
+	buf := make([]byte, endByte-startByte)
+	if _, err := ra.r.ReadAt(buf, startByte); err != nil && err != io.EOF {
+		return nil, err
+	}
+	// Strip embedded newlines (and CR) from the raw file slice, preserving
+	// the original case.
+	out := buf[:0]
+	for _, b := range buf {
+		if b == '\n' || b == '\r' {
+			continue
 		}
 		out = append(out, b)
 	}
