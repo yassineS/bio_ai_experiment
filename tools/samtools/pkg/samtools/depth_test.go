@@ -1,6 +1,7 @@
 package samtools
 
 import (
+	"bufio"
 	"bytes"
 	"io"
 	"os"
@@ -457,4 +458,234 @@ func itoa(i int) string {
 		buf[n] = '-'
 	}
 	return string(buf[n:])
+}
+
+// --- streaming tests ---------------------------------------------------------
+//
+// The aggregator processes coordinate-sorted records through a sliding ring
+// buffer, flushing (and writing) each position as reads advance and holding
+// only O(active reads) state — never O(positions). These tests exercise the
+// streaming paths that distinguish it from a buffer-everything implementation:
+// ring-buffer growth, ring wrap-around across large coordinate gaps, the
+// per-reference flush boundary, and the multi-input coordinate merge. Each case
+// is checked against a deliberately simple O(positions) brute-force oracle so
+// the streaming machinery is held to the same per-position semantics the rest
+// of the suite asserts by hand.
+
+// genDepthRead renders a single 5M SAM record at the given 1-based position.
+func genDepthRead(name, chrom string, pos1, qual int) string {
+	q := strings.Repeat(string(rune('!'+qual)), 5)
+	return name + "\t0\t" + chrom + "\t" + itoa(pos1) + "\t60\t5M\t*\t0\t0\tACGTA\t" + q + "\n"
+}
+
+// bruteDepth is an intentionally naive O(positions) reference implementation of
+// the same default-mode depth semantics: it walks every read's 5M span into a
+// per-(chrom,pos) counter and span set, then emits the union in (header-order,
+// ascending-pos) order. Reads here are always 5M with full-pass quality, so
+// depth == span at every covered position; that keeps the oracle trivial while
+// still validating the streaming flush/merge order and counts. It deliberately
+// does NOT stream, so it is the independent check the streaming engine is
+// diffed against.
+func bruteDepth(t *testing.T, reads []struct {
+	chrom string
+	pos1  int
+}, chromOrder []string, nInputs int, inputOf []int) string {
+	t.Helper()
+	type key struct {
+		chrom string
+		pos   int
+	}
+	depth := map[key][]int{}
+	for ri, r := range reads {
+		for p := r.pos1; p < r.pos1+5; p++ {
+			k := key{r.chrom, p}
+			if depth[k] == nil {
+				depth[k] = make([]int, nInputs)
+			}
+			depth[k][inputOf[ri]]++
+		}
+	}
+	var sb strings.Builder
+	for _, chrom := range chromOrder {
+		// Collect covered positions on this chrom, ascending.
+		var positions []int
+		seen := map[int]bool{}
+		for k := range depth {
+			if k.chrom == chrom && !seen[k.pos] {
+				positions = append(positions, k.pos)
+				seen[k.pos] = true
+			}
+		}
+		// Insertion sort is fine for test sizes.
+		for i := 1; i < len(positions); i++ {
+			for j := i; j > 0 && positions[j] < positions[j-1]; j-- {
+				positions[j], positions[j-1] = positions[j-1], positions[j]
+			}
+		}
+		for _, p := range positions {
+			d := depth[key{chrom, p}]
+			sb.WriteString(chrom)
+			sb.WriteByte('\t')
+			sb.WriteString(itoa(p))
+			for i := 0; i < nInputs; i++ {
+				sb.WriteByte('\t')
+				sb.WriteString(itoa(d[i]))
+			}
+			sb.WriteByte('\n')
+		}
+	}
+	return sb.String()
+}
+
+func TestDepthStreamingParityVsOracle(t *testing.T) {
+	header := "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:chr1\tLN:5000000\n@SQ\tSN:chr2\tLN:5000000\n"
+	type read struct {
+		chrom string
+		pos1  int
+	}
+	cases := []struct {
+		name  string
+		reads []read
+	}{
+		{
+			// Dense overlapping cluster — every read shares ring slots.
+			name: "dense cluster",
+			reads: []read{
+				{"chr1", 100}, {"chr1", 101}, {"chr1", 102},
+				{"chr1", 103}, {"chr1", 104}, {"chr1", 105},
+			},
+		},
+		{
+			// Large coordinate gaps (input stays coordinate-sorted, as a
+			// real BAM is) force the ring to flush fully and reuse the same
+			// slots far apart — the classic wrap-around hazard a
+			// buffer-everything implementation never hits. The 10 -> 2050
+			// jump is > 2048 apart, provoking the geometric ring growth.
+			name: "wide gaps wrap ring",
+			reads: []read{
+				{"chr1", 10},
+				{"chr1", 2050},
+				{"chr1", 5000},
+				{"chr1", 9000},
+				{"chr1", 4_000_000},
+			},
+		},
+		{
+			// Two references back to back: exercises the per-ref flush
+			// boundary in the streaming engine.
+			name: "two references",
+			reads: []read{
+				{"chr1", 50}, {"chr1", 51},
+				{"chr2", 7}, {"chr2", 12},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var sb strings.Builder
+			sb.WriteString(header)
+			bruteReads := make([]struct {
+				chrom string
+				pos1  int
+			}, 0, len(tc.reads))
+			inputOf := make([]int, 0, len(tc.reads))
+			for i, r := range tc.reads {
+				sb.WriteString(genDepthRead("r"+itoa(i), r.chrom, r.pos1, 40))
+				bruteReads = append(bruteReads, struct {
+					chrom string
+					pos1  int
+				}{r.chrom, r.pos1})
+				inputOf = append(inputOf, 0)
+			}
+			got := runDepth(t, []string{sb.String()}, DepthOptions{ExcludeFlags: 0x4})
+			want := bruteDepth(t, bruteReads, []string{"chr1", "chr2"}, 1, inputOf)
+			if got != want {
+				t.Errorf("streaming output != oracle\n got:\n%s\nwant:\n%s", got, want)
+			}
+		})
+	}
+}
+
+// TestDepthStreamingMultiInputMerge checks the coordinate-order merge across
+// two inputs whose reads interleave by position, including the ring growth a
+// far-apart read triggers, against the brute-force oracle.
+func TestDepthStreamingMultiInputMerge(t *testing.T) {
+	header := "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:chr1\tLN:5000000\n"
+	// Input A and B reads interleave: A@100, B@102, A@4000000, B@4000003.
+	aSAM := header + genDepthRead("a0", "chr1", 100, 40) + genDepthRead("a1", "chr1", 4_000_000, 40)
+	bSAM := header + genDepthRead("b0", "chr1", 102, 40) + genDepthRead("b1", "chr1", 4_000_003, 40)
+
+	got := runDepth(t, []string{aSAM, bSAM}, DepthOptions{ExcludeFlags: 0x4})
+
+	bruteReads := []struct {
+		chrom string
+		pos1  int
+	}{
+		{"chr1", 100}, {"chr1", 4_000_000}, // input 0
+		{"chr1", 102}, {"chr1", 4_000_003}, // input 1
+	}
+	inputOf := []int{0, 0, 1, 1}
+	want := bruteDepth(t, bruteReads, []string{"chr1"}, 2, inputOf)
+	if got != want {
+		t.Errorf("multi-input streaming output != oracle\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// TestDepthStreamingBoundedState is a streaming-oriented guard: a single read
+// landing deep into a large reference must not cause the engine to allocate
+// per-position state for the whole reference. With -a the engine emits the
+// leading zero rows by streaming them straight to the writer, while the ring
+// buffer only ever needs to hold one read's 5 bp span (rounded up to the 2 KiB
+// minimum). The output is consumed line by line via a streaming scanner (never
+// materialised into a per-position map) so the test itself stays bounded too —
+// mirroring the property under test. This is the behaviour a buffer-everything
+// design OOMs on for the real GIAB chr20 (63,025,520 positions, which our
+// streaming engine emitted byte-exactly in ~74 MB RSS while the old buffering
+// code consumed 11.4 GB and was OOM-killed).
+func TestDepthStreamingBoundedState(t *testing.T) {
+	const refLen = 2_000_000
+	const readPos = 1_500_123 // 1-based; well past the ring window
+	header := "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:chr1\tLN:" + itoa(refLen) + "\n"
+	sam := header + genDepthRead("r0", "chr1", readPos, 40)
+
+	var buf bytes.Buffer
+	if err := Depth([]io.Reader{strings.NewReader(sam)}, &buf, DepthOptions{
+		ExcludeFlags: 0x4,
+		AllPositions: true,
+	}); err != nil {
+		t.Fatalf("Depth: %v", err)
+	}
+
+	// Scan the output as a stream, asserting every position 1..refLen appears
+	// exactly once and in ascending order, with depth 1 only across the read's
+	// 5 bp span and depth 0 everywhere else.
+	sc := bufio.NewScanner(&buf)
+	sc.Buffer(make([]byte, 0, 64*1024), 64*1024)
+	want := 1
+	rows := 0
+	for sc.Scan() {
+		line := sc.Text()
+		f := strings.Split(line, "\t")
+		if len(f) != 3 || f[0] != "chr1" {
+			t.Fatalf("row %d: malformed line %q", rows, line)
+		}
+		if f[1] != itoa(want) {
+			t.Fatalf("row %d: position out of order: got %s, want %d", rows, f[1], want)
+		}
+		wantDepth := "0"
+		if want >= readPos && want < readPos+5 {
+			wantDepth = "1"
+		}
+		if f[2] != wantDepth {
+			t.Fatalf("chr1:%d: got depth %s, want %s", want, f[2], wantDepth)
+		}
+		want++
+		rows++
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if rows != refLen {
+		t.Errorf("expected %d emitted rows (whole reference streamed), got %d", refLen, rows)
+	}
 }

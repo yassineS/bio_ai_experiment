@@ -100,6 +100,13 @@ type depthRegion struct {
 //
 // All inputs must share an identical @SQ ordering for the output to be
 // well-defined; this is the same constraint as upstream samtools.
+//
+// The implementation streams: it mirrors upstream bam2depth.c by holding only
+// a sliding ring buffer of per-input depth/span counters spanning the active
+// read window (O(active reads), not O(positions)). Each output line is written
+// to the buffered writer as soon as its position is flushed, so memory stays
+// bounded even for chromosome-wide, coordinate-sorted inputs — independent of
+// how many positions are emitted.
 func Depth(inputs []io.Reader, out io.Writer, opts DepthOptions) error {
 	if len(inputs) == 0 {
 		return fmt.Errorf("samtools depth: no inputs")
@@ -130,45 +137,267 @@ func Depth(inputs []io.Reader, out io.Writer, opts DepthOptions) error {
 	bw := bufio.NewWriter(out)
 	defer bw.Flush()
 
-	// We compute depth one reference at a time. Pre-buffer records per
-	// reference so we can do a streaming sliding-window across positions.
-	perRefRecords := make([][]map[string][]*sam.Record, len(readers))
+	// Wrap each input in a one-record-ahead peeking source that applies the
+	// depth-level filters and tags every record with its header reference
+	// index, so the streaming engine can merge inputs in coordinate order
+	// without buffering the whole stream.
+	srcs := make([]*depthSource, len(readers))
 	for i, rd := range readers {
-		recs, rerr := groupRecordsByRef(rd, opts)
-		if rerr != nil {
-			return fmt.Errorf("samtools depth: input %d: %w", i, rerr)
-		}
-		perRefRecords[i] = []map[string][]*sam.Record{recs}
+		srcs[i] = newDepthSource(rd, hdr, opts)
 	}
 
-	// Iterate references in header order (subset by region.names).
-	for _, ref := range region.names {
-		// Pull intervals for this ref.
-		intervals, ok := region.byRef[ref]
-		if !ok {
+	st := newDepthStream(bw, hdr, region, opts, len(readers))
+	return st.run(srcs)
+}
+
+// depthSource is a one-record-lookahead view over a single input. It applies
+// the per-read filters (flag include/exclude, MAPQ, min read length) as it
+// reads, so dropped reads never reach the streaming engine, and resolves each
+// kept record's reference index once for the coordinate-order merge.
+type depthSource struct {
+	rd   sam.Reader
+	hdr  *sam.Header
+	opts DepthOptions
+	cur  *sam.Record // next kept record, or nil when exhausted
+	tid  int         // header reference index of cur
+	err  error
+	done bool
+}
+
+// newDepthSource builds a depthSource and primes its first kept record.
+func newDepthSource(rd sam.Reader, hdr *sam.Header, opts DepthOptions) *depthSource {
+	s := &depthSource{rd: rd, hdr: hdr, opts: opts}
+	s.advance()
+	return s
+}
+
+// advance loads the next kept record into s.cur (or marks the source done /
+// failed). Filtered-out records are skipped here so the engine only ever sees
+// records that contribute to depth, mirroring the filter loop in
+// bam2depth.c's fastdepth_core.
+func (s *depthSource) advance() {
+	for {
+		rec, err := s.rd.Read()
+		if err == io.EOF {
+			s.cur, s.done = nil, true
+			return
+		}
+		if err != nil {
+			s.cur, s.err, s.done = nil, err, true
+			return
+		}
+		if !keepDepthRecord(rec, s.opts) {
 			continue
 		}
-		// Build per-input counters as a slice of position→depth maps.
-		// To keep memory bounded we sort intervals and walk them in turn.
-		if intervals == nil {
-			// "All positions of this reference" — use the @SQ length.
-			refLen := refLength(hdr, ref)
-			if refLen <= 0 {
+		tid := s.hdr.RefIndex(rec.RName)
+		if tid < 0 {
+			// Reference not in the header ordering; skip (matches upstream's
+			// silent handling of records on unknown references).
+			continue
+		}
+		s.cur, s.tid = rec, tid
+		return
+	}
+}
+
+// depthStream is the streaming aggregator. It holds a per-input ring buffer of
+// depth and span counters spanning the active read window for the reference
+// currently being processed, exactly mirroring upstream bam2depth.c's
+// depth_hist: positions are flushed (and lines written) as reads advance, so
+// only O(active reads) state is retained, never O(positions).
+type depthStream struct {
+	bw     *bufio.Writer
+	hdr    *sam.Header
+	region depthRegion
+	opts   DepthOptions
+	n      int // number of inputs
+
+	// Ring buffers, one per input, indexed by (pos & mask). depth holds the
+	// base-quality-filtered count; span holds the number of reads physically
+	// spanning the position (M/=/X/D/N), used to emit interior depth-0 rows.
+	size  int
+	mask  int
+	depth [][]int32
+	span  [][]int32
+	// endPos[i] is one past the furthest reference position any read from
+	// input i has reached on the current reference (absolute coordinate).
+	endPos []int
+
+	lastOutput int // next absolute position not yet emitted on the current ref
+	curRef     int // header index of the reference being processed, or -1
+	refName    string
+
+	// Per-reference interval cursor over the merged include intervals. When
+	// nil the whole reference is included (sentinel for `-A` / default).
+	intervals [][2]int
+	ivIdx     int
+
+	line []byte // reused output line buffer
+}
+
+// newDepthStream constructs the streaming aggregator.
+func newDepthStream(bw *bufio.Writer, hdr *sam.Header, region depthRegion, opts DepthOptions, n int) *depthStream {
+	return &depthStream{
+		bw:         bw,
+		hdr:        hdr,
+		region:     region,
+		opts:       opts,
+		n:          n,
+		curRef:     -1,
+		lastOutput: 0,
+		endPos:     make([]int, n),
+	}
+}
+
+// run merges the per-input sources in coordinate order and feeds each record
+// to the aggregator, then flushes the trailing reference.
+func (st *depthStream) run(srcs []*depthSource) error {
+	for {
+		// Pick the next record across all inputs by (tid, pos), matching the
+		// merge in bam2depth.c's main loop.
+		best := -1
+		bestTid, bestPos := 0, 0
+		for i, s := range srcs {
+			if s.err != nil {
+				return s.err
+			}
+			if s.cur == nil {
 				continue
 			}
-			intervals = [][2]int{{0, refLen}}
+			pos := int(s.cur.Pos) - 1
+			if best < 0 || s.tid < bestTid || (s.tid == bestTid && pos < bestPos) {
+				best, bestTid, bestPos = i, s.tid, pos
+			}
 		}
-		// Sort + dedupe overlaps.
-		intervals = mergeIntervals(intervals)
-
-		// Gather per-input records for this reference.
-		perInputRecs := make([][]*sam.Record, len(readers))
-		for i := range readers {
-			perInputRecs[i] = perRefRecords[i][0][ref]
+		if best < 0 {
+			break // all inputs exhausted
 		}
+		if err := st.addRecord(srcs[best].cur, srcs[best].tid, best); err != nil {
+			return err
+		}
+		srcs[best].advance()
+	}
+	// Flush the final reference (and, under -aa, any references after it).
+	return st.finish()
+}
 
-		for _, iv := range intervals {
-			if err := emitDepthInterval(bw, ref, iv[0], iv[1], perInputRecs, opts); err != nil {
+// orderIndex returns the position of ref tid within region.names, or -1 if
+// the reference is not selected for output.
+func (st *depthStream) selected(tid int) bool {
+	name := st.hdr.Refs[tid].Name
+	_, ok := st.region.byRef[name]
+	return ok
+}
+
+// addRecord feeds a single coordinate-ordered record (from input `file`, on
+// header reference `tid`) into the ring buffer, flushing any positions that
+// precede it. Mirrors bam2depth.c add_depth.
+//
+// Records on references that are not in the output set (e.g. a `-r`/BED
+// restriction to other contigs) are dropped without disturbing any ring or
+// output state: input is coordinate-sorted, so all of a reference's reads are
+// contiguous and an unselected reference never interleaves a selected one.
+func (st *depthStream) addRecord(rec *sam.Record, tid, file int) error {
+	if !st.selected(tid) {
+		return nil
+	}
+	if tid != st.curRef {
+		// Close out the previous reference, then any skipped references that
+		// -aa must zero-fill, then open the new one.
+		if err := st.closeRef(tid); err != nil {
+			return err
+		}
+		if err := st.openRef(tid, int(rec.Pos)-1); err != nil {
+			return err
+		}
+	} else {
+		pos0 := int(rec.Pos) - 1
+		if st.lastOutput < pos0 {
+			if err := st.flushTo(pos0); err != nil {
+				return err
+			}
+		}
+	}
+	return st.accumulate(rec, file)
+}
+
+// openRef initialises the ring buffer state for a freshly seen reference whose
+// first record starts at firstPos0 (0-based), zero-filling the head of the ref
+// under -a/-aa.
+func (st *depthStream) openRef(tid, firstPos0 int) error {
+	st.curRef = tid
+	st.refName = st.hdr.Refs[tid].Name
+	for i := range st.endPos {
+		st.endPos[i] = 0
+	}
+	// Reset ring contents lazily: we re-zero positions on demand as reads
+	// extend the window, so a fresh ref simply restarts lastOutput.
+	st.resetRing()
+
+	st.loadIntervals(tid)
+	begClamp := st.refBeg()
+	st.lastOutput = firstPos0
+	if begClamp >= 0 && st.lastOutput < begClamp {
+		st.lastOutput = begClamp
+	}
+
+	if st.includeZeros() {
+		// Zero-fill the start of the reference up to the first read.
+		if err := st.zeroRegion(0, firstPos0); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// closeRef flushes the tail of the current reference (positions still covered
+// by a read's span past lastOutput) and, under -a/-aa, the zero-depth tail to
+// the reference end. nextTid is the reference about to be opened (or
+// len(Refs) when finishing); under -aa any wholly skipped references between
+// the two are zero-filled.
+func (st *depthStream) closeRef(nextTid int) error {
+	if st.curRef >= 0 {
+		// Flush positions that remain inside some input's read span.
+		i := st.lastOutput
+		for {
+			covered := false
+			for f := 0; f < st.n; f++ {
+				if i < st.endPos[f] {
+					covered = true
+					break
+				}
+			}
+			if !covered {
+				break
+			}
+			if err := st.emitPos(i); err != nil {
+				return err
+			}
+			i++
+		}
+		st.lastOutput = i
+		if st.includeZeros() {
+			refLen := int(st.hdr.Refs[st.curRef].Length)
+			if err := st.zeroRegion(i, refLen); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Under -aa (AllTrans) without a region restriction, zero-fill any
+	// references wholly skipped between curRef and nextTid.
+	if st.opts.AllTransPositions && len(st.opts.Regions) == 0 && st.opts.BedPath == "" {
+		from := 0
+		if st.curRef >= 0 {
+			from = st.curRef + 1
+		}
+		for r := from; r < nextTid && r < len(st.hdr.Refs); r++ {
+			st.curRef = r
+			st.refName = st.hdr.Refs[r].Name
+			st.loadIntervals(r)
+			st.lastOutput = 0
+			refLen := int(st.hdr.Refs[r].Length)
+			if err := st.zeroRegion(0, refLen); err != nil {
 				return err
 			}
 		}
@@ -176,127 +405,82 @@ func Depth(inputs []io.Reader, out io.Writer, opts DepthOptions) error {
 	return nil
 }
 
-// emitDepthInterval emits per-position depth lines for one [beg0, end0)
-// half-open interval on the named reference, across the parallel per-input
-// record slices.
-func emitDepthInterval(bw *bufio.Writer, ref string, beg0, end0 int, perInputRecs [][]*sam.Record, opts DepthOptions) error {
-	if end0 <= beg0 {
+// finish flushes the final reference and, under -aa, any trailing references.
+func (st *depthStream) finish() error {
+	if err := st.closeRef(len(st.hdr.Refs)); err != nil {
+		return err
+	}
+	// -a/-aa with a region but no reads at all: zero-fill the region. Matches
+	// bam2depth.c's "-a or -aa without a single read being output yet" branch.
+	if st.curRef < 0 && st.includeZeros() && (len(st.opts.Regions) > 0 || st.opts.BedPath != "" || st.opts.AllTransPositions) {
+		for _, name := range st.region.names {
+			tid := st.hdr.RefIndex(name)
+			if tid < 0 {
+				continue
+			}
+			st.curRef = tid
+			st.refName = name
+			st.loadIntervals(tid)
+			st.lastOutput = 0
+			refLen := int(st.hdr.Refs[tid].Length)
+			if err := st.zeroRegion(0, refLen); err != nil {
+				return err
+			}
+		}
+	}
+	return st.bw.Flush()
+}
+
+// accumulate records one read's depth/span contribution into the ring buffer,
+// growing the ring if the read's span exceeds the current capacity.
+func (st *depthStream) accumulate(rec *sam.Record, file int) error {
+	if rec.Pos <= 0 {
 		return nil
 	}
-	n := len(perInputRecs)
-	// Pre-compute per-input cumulative depth across the interval using a
-	// difference array, then walk it. This is O(reads + width) per input.
-	width := end0 - beg0
-	diffs := make([][]int32, n)
-	// spanDiff tracks, per input, the difference array of how many reads
-	// physically SPAN each position (reference-consuming ops: M/=/X/D/N),
-	// independent of the base-quality filter. Upstream samtools depth emits
-	// a row for every position inside a read's span — including positions
-	// whose only covering bases are dropped by the -q (min base quality)
-	// filter, or that fall in a deletion / reference skip — printing depth 0
-	// there. See reference_code/samtools/bam2depth.c: the flush loops keep
-	// emitting position i while i < end_pos[n] (the running max read end)
-	// and only break once no file's read span still reaches i. Tracking the
-	// span separately from the qual-filtered depth reproduces that exactly.
-	spanDiff := make([][]int32, n)
-	for i := range perInputRecs {
-		diffs[i] = make([]int32, width+1)
-		spanDiff[i] = make([]int32, width+1)
-		for _, rec := range perInputRecs[i] {
-			addReadDepth(rec, beg0, end0, opts, diffs[i], spanDiff[i])
-		}
+	pos0 := int(rec.Pos) - 1
+	endPos := pos0
+	if n := rec.Cigar.ReferenceLength(); n > 0 {
+		endPos = pos0 + n // 0-based, one past end
+	}
+	// Clip the read end to the region end if one is set.
+	if hi := st.refEnd(); hi >= 0 && endPos > hi {
+		endPos = hi
 	}
 
-	// Stream the depth values position by position. Each output row is
-	// assembled into a single reused byte buffer with strconv.AppendInt — no
-	// per-number string allocation — and written in one call, instead of the
-	// several bufio calls and two string allocations per position the naive
-	// form incurs (the dominant cost on dense output).
-	cur := make([]int32, n)
-	span := make([]int32, n)
-	var line []byte
-	for pos0 := beg0; pos0 < end0; pos0++ {
-		// Apply diffs[i][pos0 - beg0] to cur[i].
-		idx := pos0 - beg0
-		any := false
-		spanned := false
-		for i := range cur {
-			cur[i] += diffs[i][idx]
-			span[i] += spanDiff[i][idx]
-			if cur[i] > 0 {
-				any = true
-			}
-			if span[i] > 0 {
-				spanned = true
-			}
-		}
-		// Emit when at least one input has positive depth, when at least one
-		// input's read span covers this position (depth-0 interior positions
-		// — matches upstream), or when -a/-aa forces every position.
-		if !any && !spanned && !opts.AllPositions && !opts.AllTransPositions {
-			continue
-		}
-		// Emit pos+1 (SAM is 1-based).
-		line = append(line[:0], ref...)
-		line = append(line, '\t')
-		line = strconv.AppendInt(line, int64(pos0+1), 10)
-		for i := 0; i < n; i++ {
-			d := cur[i]
-			if opts.MaxDepth > 0 && d > int32(opts.MaxDepth) {
-				d = int32(opts.MaxDepth)
-			}
-			line = append(line, '\t')
-			line = strconv.AppendInt(line, int64(d), 10)
-		}
-		line = append(line, '\n')
-		if _, err := bw.Write(line); err != nil {
-			return err
-		}
+	st.ensureCapacity(endPos - pos0)
+
+	// Zero any newly seen ring slots between the old endPos[file] and this
+	// read's end so accumulation starts from a clean count (upstream zeroes
+	// the same window before incrementing).
+	from := st.endPos[file]
+	if pos0 > from {
+		from = pos0
+	}
+	for i := from; i < endPos; i++ {
+		st.depth[file][i&st.mask] = 0
+		st.span[file][i&st.mask] = 0
+	}
+
+	st.addReadDepthRing(rec, file, pos0, endPos)
+
+	if st.endPos[file] < endPos {
+		st.endPos[file] = endPos
 	}
 	return nil
 }
 
-// addReadDepth walks a record's CIGAR and increments diff[start-beg0] /
-// decrements diff[end-beg0] for each contiguous reference-consuming run
-// (M/=/X). Soft/hard clips and insertions consume query bases but not
-// reference; deletions and reference skips consume reference but do not add
-// depth.
-//
-// In parallel it records the read's reference SPAN into spanDiff for every
-// reference-consuming op (M/=/X plus D and N): these positions count as
-// "covered by a read" for the purpose of emitting a row, even when the
-// per-base quality filter zeroes the depth or the op contributes no base
-// (deletion / reference skip). This mirrors upstream bam2depth.c, where a
-// position prints while it is within some read's [pos, bam_endpos) span and
-// the depth value is the count of bases passing the base-quality filter
-// (which can be 0). spanDiff may be nil for callers that do not need the
-// span (none today; kept defensive).
-//
-// Bases below opts.MinBaseQ are skipped on a per-base basis when SEQ/QUAL
-// information is available.
-func addReadDepth(rec *sam.Record, beg0, end0 int, opts DepthOptions, diff, spanDiff []int32) {
-	if rec.Pos <= 0 {
-		return
-	}
-	// markSpan records that [clipBeg, clipEnd) on the reference is spanned
-	// by this read (clamped to the requested interval).
-	markSpan := func(runBeg, runEnd int) {
-		if spanDiff == nil {
-			return
-		}
-		clipBeg := runBeg
-		if clipBeg < beg0 {
-			clipBeg = beg0
-		}
-		clipEnd := runEnd
-		if clipEnd > end0 {
-			clipEnd = end0
-		}
-		if clipEnd > clipBeg {
-			spanDiff[clipBeg-beg0]++
-			spanDiff[clipEnd-beg0]--
-		}
-	}
+// addReadDepthRing walks the CIGAR and increments the ring buffer in place,
+// applying the per-base quality filter. It mirrors addReadDepth's original
+// CIGAR accounting (M/=/X add filtered depth and span; D/N add span only;
+// I/S consume query only; H/P ignored) but writes directly into the sliding
+// ring instead of a per-interval difference array.
+func (st *depthStream) addReadDepthRing(rec *sam.Record, file, beg0, regionEnd int) {
+	depth := st.depth[file]
+	span := st.span[file]
+	mask := st.mask
+	hasQual := st.opts.MinBaseQ > 0 && len(rec.Qual) > 0
+	minQ := st.opts.MinBaseQ
+
 	refPos := int(rec.Pos) - 1
 	queryPos := 0
 	for _, op := range rec.Cigar {
@@ -305,70 +489,232 @@ func addReadDepth(rec *sam.Record, beg0, end0 int, opts DepthOptions, diff, span
 		case sam.CigarMatch, sam.CigarEqual, sam.CigarMismatch:
 			runBeg := refPos
 			runEnd := refPos + l
-			markSpan(runBeg, runEnd)
-			// Intersect with the requested interval before recording.
-			clipBeg := runBeg
-			if clipBeg < beg0 {
-				clipBeg = beg0
-			}
-			clipEnd := runEnd
-			if clipEnd > end0 {
-				clipEnd = end0
-			}
-			if clipEnd > clipBeg {
-				if opts.MinBaseQ > 0 && len(rec.Qual) > 0 {
-					// Per-base baseQ filter: bump diff in single-position
-					// steps so each base can be accepted or rejected.
-					for p := clipBeg; p < clipEnd; p++ {
-						qIdx := queryPos + (p - runBeg)
-						if qIdx >= 0 && qIdx < len(rec.Qual) && rec.Qual[qIdx] < opts.MinBaseQ {
-							continue
-						}
-						diff[p-beg0]++
-						diff[p+1-beg0]--
+			lo, hi := clip(runBeg, runEnd, regionEnd)
+			for p := lo; p < hi; p++ {
+				span[p&mask]++
+				if hasQual {
+					qIdx := queryPos + (p - runBeg)
+					if qIdx >= 0 && qIdx < len(rec.Qual) && rec.Qual[qIdx] < minQ {
+						continue
 					}
-				} else {
-					diff[clipBeg-beg0]++
-					diff[clipEnd-beg0]--
 				}
+				depth[p&mask]++
 			}
 			refPos += l
 			queryPos += l
 		case sam.CigarInsertion, sam.CigarSoftClip:
 			queryPos += l
 		case sam.CigarDeletion, sam.CigarSkipped:
-			// Deletions and reference skips consume reference and thus extend
-			// the read's covered span (they print as depth 0), but add no
-			// depth.
-			markSpan(refPos, refPos+l)
+			// Deletions and reference skips consume reference and extend the
+			// read's covered span (they print as depth 0) but add no depth.
+			runBeg := refPos
+			runEnd := refPos + l
+			lo, hi := clip(runBeg, runEnd, regionEnd)
+			for p := lo; p < hi; p++ {
+				span[p&mask]++
+			}
 			refPos += l
 		case sam.CigarHardClip, sam.CigarPadding:
-			// Neither consumes ref nor query (in our accounting).
+			// Neither consumes ref nor query in our accounting.
 		}
-		if refPos >= end0 {
+		if refPos >= regionEnd {
 			return
 		}
 	}
 }
 
-// groupRecordsByRef drains a single sam.Reader into per-reference record
-// slices, applying flag / mapq / readlen filters as it goes so we never hold
-// records we are going to drop.
-func groupRecordsByRef(rd sam.Reader, opts DepthOptions) (map[string][]*sam.Record, error) {
-	out := map[string][]*sam.Record{}
-	for {
-		rec, err := rd.Read()
-		if err == io.EOF {
-			return out, nil
+// clip intersects [runBeg, runEnd) with [0, regionEnd) (the region end is
+// already clamped into regionEnd by the caller; the low edge is implicitly 0
+// because positions before a read's start cannot be touched here).
+func clip(runBeg, runEnd, regionEnd int) (int, int) {
+	lo := runBeg
+	hi := runEnd
+	if hi > regionEnd {
+		hi = regionEnd
+	}
+	return lo, hi
+}
+
+// flushTo emits every position in [lastOutput, upto) that is still covered by
+// some input's read span, zero-filling holes under -a/-aa, then advances
+// lastOutput to upto. Mirrors the in-ref flush loop of bam2depth.c add_depth.
+func (st *depthStream) flushTo(upto int) error {
+	i := st.lastOutput
+	for ; i < upto; i++ {
+		covered := false
+		for f := 0; f < st.n; f++ {
+			if i < st.endPos[f] {
+				covered = true
+				break
+			}
 		}
-		if err != nil {
-			return nil, err
+		if !covered {
+			break
 		}
-		if !keepDepthRecord(rec, opts) {
+		if err := st.emitPos(i); err != nil {
+			return err
+		}
+	}
+	if st.includeZeros() && i < upto {
+		if err := st.zeroRegion(i, upto); err != nil {
+			return err
+		}
+	}
+	st.lastOutput = upto
+	return nil
+}
+
+// emitPos writes the depth line for a single covered position (0-based) if it
+// falls inside an include interval, reading each input's count from the ring.
+func (st *depthStream) emitPos(pos0 int) error {
+	if !st.inInterval(pos0) {
+		return nil
+	}
+	st.line = append(st.line[:0], st.refName...)
+	st.line = append(st.line, '\t')
+	st.line = strconv.AppendInt(st.line, int64(pos0+1), 10)
+	mask := st.mask
+	for f := 0; f < st.n; f++ {
+		var d int32
+		if pos0 < st.endPos[f] {
+			d = st.depth[f][pos0&mask]
+		}
+		if st.opts.MaxDepth > 0 && d > int32(st.opts.MaxDepth) {
+			d = int32(st.opts.MaxDepth)
+		}
+		st.line = append(st.line, '\t')
+		st.line = strconv.AppendInt(st.line, int64(d), 10)
+	}
+	st.line = append(st.line, '\n')
+	_, err := st.bw.Write(st.line)
+	return err
+}
+
+// zeroRegion emits depth-0 rows for [start, end) (0-based, half-open) clamped
+// to the active region, for positions inside an include interval. Mirrors
+// bam2depth.c zero_region.
+func (st *depthStream) zeroRegion(start, end int) error {
+	if begClamp := st.refBeg(); begClamp >= 0 && start < begClamp {
+		start = begClamp
+	}
+	if endClamp := st.refEnd(); endClamp >= 0 && end > endClamp {
+		end = endClamp
+	}
+	for i := start; i < end; i++ {
+		if !st.inInterval(i) {
 			continue
 		}
-		out[rec.RName] = append(out[rec.RName], rec)
+		st.line = append(st.line[:0], st.refName...)
+		st.line = append(st.line, '\t')
+		st.line = strconv.AppendInt(st.line, int64(i+1), 10)
+		for f := 0; f < st.n; f++ {
+			st.line = append(st.line, '\t', '0')
+		}
+		st.line = append(st.line, '\n')
+		if _, err := st.bw.Write(st.line); err != nil {
+			return err
+		}
 	}
+	return nil
+}
+
+// includeZeros reports whether zero-depth positions inside covered regions are
+// emitted (-a or -aa).
+func (st *depthStream) includeZeros() bool {
+	return st.opts.AllPositions || st.opts.AllTransPositions
+}
+
+// ensureCapacity grows the per-input ring buffers so they can hold a window of
+// `need` positions, mirroring the geometric growth in bam2depth.c. Growing
+// preserves the live window [lastOutput, lastOutput+oldSize) by re-keying.
+func (st *depthStream) ensureCapacity(need int) {
+	if need+1 < st.size && st.size > 0 {
+		return
+	}
+	old := st.size
+	newSize := st.size
+	if newSize == 0 {
+		newSize = 2048
+	}
+	for need+1 >= newSize {
+		newSize *= 2
+	}
+	newMask := newSize - 1
+	for f := 0; f < st.n; f++ {
+		nd := make([]int32, newSize)
+		ns := make([]int32, newSize)
+		if old > 0 {
+			for i := st.lastOutput; i < st.lastOutput+old; i++ {
+				nd[i&newMask] = st.depth[f][i&st.mask]
+				ns[i&newMask] = st.span[f][i&st.mask]
+			}
+		}
+		st.depth[f] = nd
+		st.span[f] = ns
+	}
+	st.size = newSize
+	st.mask = newMask
+}
+
+// resetRing allocates the per-input ring slices on first use (they are reused
+// verbatim across references; positions are re-zeroed lazily as reads extend
+// the window, so no per-reference clearing is needed).
+func (st *depthStream) resetRing() {
+	if st.depth == nil {
+		st.depth = make([][]int32, st.n)
+		st.span = make([][]int32, st.n)
+	}
+}
+
+// loadIntervals selects the merged include-interval set for reference tid and
+// resets the interval cursor. A nil interval set means "whole reference".
+func (st *depthStream) loadIntervals(tid int) {
+	name := st.hdr.Refs[tid].Name
+	ivs := st.region.byRef[name]
+	if ivs == nil {
+		st.intervals = nil
+	} else {
+		st.intervals = mergeIntervals(ivs)
+	}
+	st.ivIdx = 0
+}
+
+// refBeg returns the lower clamp (0-based) for the active reference when a
+// single contiguous region restriction is in force, or -1 for no clamp. The
+// per-position interval test (inInterval) enforces the actual membership; this
+// clamp only mirrors upstream's dh->beg fast path for the common single-region
+// case so zero-fill loops start at the right place.
+func (st *depthStream) refBeg() int {
+	if len(st.intervals) == 1 {
+		return st.intervals[0][0]
+	}
+	return -1
+}
+
+// refEnd returns the upper clamp (0-based, exclusive) for the active reference
+// under a single contiguous region restriction, or -1 for no clamp.
+func (st *depthStream) refEnd() int {
+	if len(st.intervals) == 1 {
+		return st.intervals[0][1]
+	}
+	return -1
+}
+
+// inInterval reports whether 0-based position pos0 falls inside an include
+// interval for the active reference. A nil interval set includes everything.
+// The cursor st.ivIdx advances monotonically because positions are emitted in
+// ascending order.
+func (st *depthStream) inInterval(pos0 int) bool {
+	if st.intervals == nil {
+		return true
+	}
+	for st.ivIdx < len(st.intervals) && pos0 >= st.intervals[st.ivIdx][1] {
+		st.ivIdx++
+	}
+	if st.ivIdx >= len(st.intervals) {
+		return false
+	}
+	return pos0 >= st.intervals[st.ivIdx][0]
 }
 
 // keepDepthRecord applies the depth-level filters: flag include/exclude,
