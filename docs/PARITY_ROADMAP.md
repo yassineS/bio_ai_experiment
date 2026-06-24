@@ -227,6 +227,30 @@ A skimmable per-tool completion table lives in the top-level
   through **slice 4**, and `convert`'s GEN/HAP/TSV/gVCF modes are all
   implemented and live-oracle validated.
 
+### Performance & memory scalability follow-ups (2026-06-25, from the real-data + large-tier perf)
+
+The H2a real-data GIAB run and the large-tier bench (all **byte-exact** vs
+upstream) surfaced memory-scalability gaps — correctness is fine, but a few
+cells hold O(file) state where upstream streams. These would OOM at WGS scale:
+
+- **`bcftools norm` buffers the whole VCF** — `norm.go:238 readVCFAll` reads
+  every record into `[]*vcf.Variant` and `:365 sortVariants` globally sorts
+  them, so RSS is ~9.1 GiB vs upstream's 21 MiB (436×) on the HG002 VCF (48×
+  at large). Upstream `vcfnorm.c` streams with only a small same-CHROM/POS
+  `mrows` buffer (already mirrored at `norm.go:683`) plus a bounded left-align
+  reorder window. **Fix:** replace the read-all + global sort with that
+  streaming window. Delicate — must stay byte-exact across `-m-/-m+`,
+  `--check-ref`, left-align, `--rm-dup`; and verify behaviour on *unsorted*
+  input (the global sort may currently reorder where upstream would not).
+- **`samtools depth` ~27× slower** than upstream's pileup (now correct and
+  bounded at 73 MB after the streaming fix; profile the ring-buffer engine).
+- **`samtools view` region→SAM ~12×**, and the ~11× RSS on `sam_depth` /
+  `sam_view_bam2cram` — secondary optimisation targets.
+- The large-tier heavy cells (`sam_mpileup`, `bcf_call`, `bcf_isec`) OOM on
+  the 12 GB box because the bench/parity harness buffers each side's whole
+  output; a stream-comparing bench (like `realparity`) or a fat node would
+  let them complete. Not a port defect.
+
 Genuinely-remaining real gaps (the deliverable — see PROJECT_STATUS.md for
 the canonical version with effort sizing). Cloud I/O is **complete**
 (streaming + every indexed region path, incl. `.crai` CRAM, live-validated
