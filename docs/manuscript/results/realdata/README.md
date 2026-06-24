@@ -199,13 +199,38 @@ independently reviewed, committed):
 | 6 | `samtools faidx` **missing** | the subcommand did not exist (only `dict`); implemented `faidx`/`fqidx` byte-exact (index build + extract, plain + bgzipped), with a streaming bgzipped index build (hs37d5 `.fai`+`.gzi` at ~16 MB, not the ~3 GB genome) | `deb6e01` |
 | 7 | `realparity` harness | `depth`/`bcftools query`/`bcftools stats` take `-r REGION`, not a positional region (which upstream reads as a filename) | `a7e7177` |
 
-**Validated byte-exact on full-scale real data** (provenance-stripped): `flagstat`
-(39.7 M reads), `idxstats`, `stats` (whole BAM), `view_bam`, **`sort`** (whole
-2.8 GB BAM, no OOM), `view_cram` (reference-free, chrM + chr20+21), `depth -a`
-(chr20, 63 M lines), and `bcftools view`/`view_body`/`norm`/`stats`/`query`. The
-first complete re-run scored **14 PASS / 0 DIVERGE** with the lone ERROR being
-the `depth` OOM (now fixed); a final uncontended confirmation run (all cells,
-reps=3) is the citable end-to-end result (`giabfinal/`).
+**Final verdict — `PASS=15 / DIVERGE=0 / ERROR=0`** (uncontended, reps=3,
+`giabfinal/`). Every cell is byte-exact after provenance stripping on full-scale
+real data: `view_sam`/`view_sam_header` (chr20), `flagstat` (39.7 M reads),
+`idxstats`, `stats` (whole BAM), `depth -a` (chr20, 63 M lines), `quickcheck`,
+`view_bam`, **`sort`** (whole 2.8 GB BAM, no OOM), `view_cram` (reference-free),
+and `bcftools view`/`view_body`/`norm`/`stats`/`query`. (The first complete
+re-run scored 14 PASS / 0 DIVERGE; its lone ERROR — the `depth` OOM — was then
+fixed and this run confirms it.)
+
+### Real-data performance (min over reps; `ratio = ours/upstream`)
+
+Correctness is byte-exact everywhere; the timing/memory record surfaces
+optimisation targets (not defects):
+
+| cell | wall× | note |
+|---|---|---|
+| `samtools_quickcheck` | 0.44 | faster |
+| `samtools_view_bam` | 0.76 | faster (whole 2.8 GB re-encode) |
+| `bcftools_view` / `view_body` / `query` | 0.78–0.87 | faster (whole VCF) |
+| `samtools_view_cram` | 1.04 | par wall (CPU 4.8× — our reference-free encode does more work) |
+| `samtools_idxstats` | 1.29 | par |
+| `samtools_flagstat` | 1.38 | slower |
+| `samtools_sort` | 1.50 | slower (wall; CPU 2.9×, RSS 6.0 GiB vs 0.9 GiB) |
+| `samtools_stats` | 1.56 | slower |
+| `bcftools_norm` | 5.00 | **RSS 9.1 GiB vs 21 MiB (436×)** — buffers the whole VCF |
+| `samtools_view` (region→SAM) | 12.7 | **slow** — region-query + SAM serialisation |
+| `samtools_depth_a` | 27.7 | **slow** — correct + bounded (73 MB) but slow vs upstream pileup |
+
+`bcftools_stats` (123×) is the empty `-r chr20` cell (the VCF is GRCh37-named
+`20`, not `chr20`), so its ratio is noise. The three flagged cells —
+`bcftools norm` memory, `depth` and region-`view` speed — are recorded as
+performance follow-ups (see `docs/PARITY_ROADMAP.md`); none affects correctness.
 
 ## Status — real-data bugs found
 
