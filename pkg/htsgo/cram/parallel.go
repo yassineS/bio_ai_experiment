@@ -304,7 +304,7 @@ func (rr *RecordReader) decodeSliceParallel(h *CompressionHeader, sl *Slice, con
 	if err != nil {
 		return nil, false, wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
 	}
-	refBases, refStart, err := rr.resolveSliceReferenceLocked(sl)
+	refBases, refStart, err := rr.resolveSliceReferenceLocked(sl, h.Preservation.ReferenceRequired)
 	if err != nil {
 		return nil, false, wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
 	}
@@ -330,13 +330,13 @@ func (rr *RecordReader) decodeSliceParallel(h *CompressionHeader, sl *Slice, con
 // the REF_CACHE file read and the REF_PATH source are themselves stateless or
 // already mutex-guarded; the lock here protects the memo and keeps a single
 // consistent resolution path shared with the sequential code.
-func (rr *RecordReader) resolveSliceReferenceLocked(sl *Slice) ([]byte, int32, error) {
+func (rr *RecordReader) resolveSliceReferenceLocked(sl *Slice, refRequired bool) ([]byte, int32, error) {
 	// An embedded reference is self-contained and touches no shared state, so
 	// the common embed_ref case resolves without contending on the mutex.
 	if sl.Header != nil && sl.Header.RefSeqID >= 0 && sl.HasEmbeddedReference() {
-		return rr.resolveSliceReference(sl)
+		return rr.resolveSliceReference(sl, refRequired)
 	}
 	rr.refMu.Lock()
 	defer rr.refMu.Unlock()
-	return rr.resolveSliceReference(sl)
+	return rr.resolveSliceReference(sl, refRequired)
 }

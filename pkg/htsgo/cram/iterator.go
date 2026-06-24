@@ -339,7 +339,7 @@ func (rr *RecordReader) decodeSlice(h *CompressionHeader, sl *Slice, containerId
 	if err != nil {
 		return nil, wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
 	}
-	refBases, refStart, err := rr.resolveSliceReference(sl)
+	refBases, refStart, err := rr.resolveSliceReference(sl, h.Preservation.ReferenceRequired)
 	if err != nil {
 		return nil, wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
 	}
@@ -456,7 +456,17 @@ func insertBeforeTrailingRG(aux, add []sam.Aux) []sam.Aux {
 // reference bases and the latter resolves its references per record
 // against the contig table, both falling back to the C4b 'N' fill — so
 // they return a nil span. A nil span with no source is the C4b path.
-func (rr *RecordReader) resolveSliceReference(sl *Slice) ([]byte, int32, error) {
+//
+// refRequired is the container compression header's RR (reference-required)
+// preservation-map entry. When it is false the records were encoded
+// reference-free — their bases are carried verbatim, no implicit match runs
+// need the reference — so the external FASTA/REF_CACHE is deliberately NOT
+// consulted, mirroring htslib's cram_decode.c, which gates the whole
+// cram_get_ref load on !comp_hdr->no_ref. This is what lets a CRAM whose
+// contig is absent from the -T reference (so it was encoded reference-free)
+// decode without a "contig not in index" error: an embedded reference, when
+// present, is still honoured because it is self-contained.
+func (rr *RecordReader) resolveSliceReference(sl *Slice, refRequired bool) ([]byte, int32, error) {
 	sh := sl.Header
 	if sh.RefSeqID < 0 {
 		return nil, 0, nil
@@ -476,6 +486,14 @@ func (rr *RecordReader) resolveSliceReference(sl *Slice) ([]byte, int32, error) 
 			bases = bases[:sh.AlignmentSpan]
 		}
 		return bases, sh.AlignmentStart, nil
+	}
+	// The records are reference-free (RR=0): their bases are stored verbatim,
+	// so the external reference is not consulted — and must not be, since the
+	// contig may be absent from it (a CRAM encoded with a -T reference whose
+	// contigs do not match). htslib gates the equivalent cram_get_ref load on
+	// !no_ref for exactly this case.
+	if !refRequired {
+		return nil, 0, nil
 	}
 	if !rr.refResolver.hasSource() {
 		return nil, 0, nil

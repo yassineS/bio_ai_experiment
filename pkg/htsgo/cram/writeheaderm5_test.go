@@ -40,7 +40,9 @@ func TestCRAMHeaderM5URInjection(t *testing.T) {
 		t.Fatalf("ParseHeaderText: %v", err)
 	}
 
-	// Only c1 has bases supplied; c2 keeps its existing M5. Both get UR.
+	// Only c1 has bases supplied; c2 keeps its existing M5. Both end up with an
+	// M5, so both gain UR (UR is injected on every @SQ that has an M5, whether
+	// computed or pre-existing — verified against upstream samtools).
 	ref := map[string][]byte{"c1": []byte(knownRefBases)}
 
 	var buf bytes.Buffer
@@ -63,7 +65,8 @@ func TestCRAMHeaderM5URInjection(t *testing.T) {
 
 	// The whole embedded header must equal the upstream-correct text: @HD
 	// first, @SQ lines keep their input position (not regrouped after @RG), c1
-	// gains M5(known)+UR, c2 keeps its existing M5 and gains only UR.
+	// gains M5(known)+UR, c2 keeps its existing M5 and (because it has an M5)
+	// also gains UR.
 	want := "@HD\tVN:1.6\tSO:coordinate\n" +
 		"@SQ\tSN:c1\tLN:10\tM5:" + knownRefMD5 + "\tUR:" + knownRefPath + "\n" +
 		"@SQ\tSN:c2\tLN:10\tM5:deadbeefdeadbeefdeadbeefdeadbeef\tUR:" + knownRefPath + "\n" +
@@ -74,10 +77,13 @@ func TestCRAMHeaderM5URInjection(t *testing.T) {
 	}
 }
 
-// TestCRAMHeaderURWithoutBases checks that ReferencePath alone injects UR onto
-// every @SQ even when no bases are supplied (so no M5 can be computed) — the
-// two tags are filled independently, mirroring upstream where UR comes from the
-// -T path and M5 from the loaded sequence.
+// TestCRAMHeaderURWithoutBases checks that a contig absent from the reference
+// gets NEITHER M5 nor UR, even when a ReferencePath is set. This mirrors real
+// upstream htslib behaviour, verified against samtools on a name-mismatched
+// GIAB BAM (chr-prefixed reads vs a non-prefixed FASTA): an @SQ whose sequence
+// cannot be loaded is left bare and its slice is encoded reference-free, so the
+// embedded header byte-matches upstream. (M5 and UR are filled TOGETHER, only
+// for a loadable contig — UR is not injected on its own.)
 func TestCRAMHeaderURWithoutBases(t *testing.T) {
 	const in = "@HD\tVN:1.6\n@SQ\tSN:c1\tLN:10\n"
 	h, err := sam.ParseHeaderText(in)
@@ -93,9 +99,10 @@ func TestCRAMHeaderURWithoutBases(t *testing.T) {
 		t.Fatalf("NewRecordReader: %v", err)
 	}
 	got := rr.Header().Text()
-	want := "@HD\tVN:1.6\n@SQ\tSN:c1\tLN:10\tUR:" + knownRefPath + "\n"
+	// c1 has no loadable bases, so the @SQ stays bare (no M5, no UR).
+	want := "@HD\tVN:1.6\n@SQ\tSN:c1\tLN:10\n"
 	if got != want {
-		t.Fatalf("UR-only header mismatch:\n got=%q\nwant=%q", got, want)
+		t.Fatalf("absent-contig header should be bare:\n got=%q\nwant=%q", got, want)
 	}
 }
 

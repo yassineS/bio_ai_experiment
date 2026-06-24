@@ -596,7 +596,10 @@ func (rw *RecordWriter) writeFileHeader() error {
 //     reference map is left without M5 (matching upstream, which cannot hash a
 //     reference it could not load).
 //   - UR is rw.referencePath verbatim — the -T/--reference argument, which the
-//     caller passes already as upstream's full_path() would emit it.
+//     caller passes already as upstream's full_path() would emit it. It is
+//     injected onto every @SQ that ends up with an M5 (computed OR pre-existing);
+//     an @SQ with no M5 at all (a contig absent from the reference and without a
+//     pre-existing M5, encoded reference-free) is left bare, matching upstream.
 //
 // An @SQ that already carries an M5 or UR is left intact: upstream never
 // overwrites an existing tag, only fills the absent one.
@@ -633,14 +636,20 @@ func (rw *RecordWriter) augmentSQLine(line sam.HeaderLine) sam.HeaderLine {
 		}
 	}
 
+	// M5 is computed only for a contig whose bases were loaded from the
+	// reference. UR (the -T path) is then injected onto every @SQ that ENDS UP
+	// WITH an M5 — whether one was just computed or was already present in the
+	// input header. An @SQ with NO M5 (a contig absent from the reference and
+	// carrying no pre-existing M5, e.g. a name-mismatched chr-prefixed contig)
+	// gets NEITHER tag and is encoded reference-free, exactly as upstream htslib
+	// does (verified against samtools on a name-mismatched GIAB BAM).
+	bases, contigInRef := rw.reference[name]
 	var m5 string
-	if !haveM5 {
-		if bases, ok := rw.reference[name]; ok {
-			sum := md5.Sum(bases)
-			m5 = hex.EncodeToString(sum[:])
-		}
+	if !haveM5 && contigInRef {
+		sum := md5.Sum(bases)
+		m5 = hex.EncodeToString(sum[:])
 	}
-	addUR := !haveUR && rw.referencePath != ""
+	addUR := !haveUR && rw.referencePath != "" && (haveM5 || m5 != "")
 
 	if m5 == "" && !addUR {
 		return line // nothing to add; leave the line exactly as it was.

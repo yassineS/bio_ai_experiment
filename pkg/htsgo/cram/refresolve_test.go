@@ -290,7 +290,7 @@ func TestResolveSliceReferenceUnmapped(t *testing.T) {
 			Header:   &SliceHeader{RefSeqID: id, AlignmentStart: 1, AlignmentSpan: 4, EmbeddedRefID: -1},
 			external: map[int32]*Block{},
 		}
-		bases, _, err := rr.resolveSliceReference(sl)
+		bases, _, err := rr.resolveSliceReference(sl, true)
 		if err != nil || bases != nil {
 			t.Errorf("RefSeqID %d should resolve to nil span; got %v,%v", id, bases, err)
 		}
