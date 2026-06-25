@@ -330,6 +330,43 @@ func TestIsecVennMode(t *testing.T) {
 	}
 }
 
+// TestIsecSitesOrderByMembership pins the sites.txt ordering of colocated
+// records to upstream's synced-reader rule: at one (CHROM, POS) the variant
+// present in the most inputs is listed first (htslib bcf_sr_sort.c push_vset
+// takes the highest-membership vset first), and equal-membership keys keep
+// first-appearance (input-major, file) order. Input 1 deliberately lists the
+// keys in the reverse of the expected order so a no-op sort would fail.
+func TestIsecSitesOrderByMembership(t *testing.T) {
+	hdr := "##fileformat=VCFv4.2\n##contig=<ID=chr1,length=10000>\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"GT\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+	rec := func(ref, alt string) string {
+		return "chr1\t100\t.\t" + ref + "\t" + alt + "\t.\tPASS\t.\tGT\t0/1\n"
+	}
+	// Membership: A>G in all three (111), A>T in inputs 1+2 (110), A>C and G>A
+	// private to input 1 (100). Input 1's file order is reverse-membership.
+	in1 := hdr + rec("A", "C") + rec("A", "T") + rec("A", "G") + rec("G", "A")
+	in2 := hdr + rec("A", "T") + rec("A", "G")
+	in3 := hdr + rec("A", "G")
+	paths := writeIsecInputs(t, []string{in1, in2, in3})
+
+	prefix := t.TempDir()
+	if _, err := IsecFiles(paths, &bytes.Buffer{}, IsecOptions{Prefix: prefix}); err != nil {
+		t.Fatalf("IsecFiles: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(prefix, "sites.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "chr1\t100\tA\tG\t111\n" +
+		"chr1\t100\tA\tT\t110\n" +
+		"chr1\t100\tA\tC\t100\n" +
+		"chr1\t100\tG\tA\t100\n"
+	if string(got) != want {
+		t.Errorf("sites.txt order wrong:\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
 func TestParseNfilesSpec(t *testing.T) {
 	type want struct {
 		mode byte

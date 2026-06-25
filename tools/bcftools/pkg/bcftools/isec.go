@@ -888,15 +888,35 @@ func isecCore(st *isecState, groups [][]*vcf.Variant) error {
 		}
 	}
 
-	// Sort the union key list by (contig order, POS) only, stably. Upstream's
-	// synced reader presents records at the same position in file order, so the
-	// tie-break must preserve first-appearance order (keyOrder is built in file
-	// order) rather than re-sort by REF/ALT — otherwise two records at one POS
-	// (e.g. A>T then A>C) would be emitted A>C-first.
+	// Sort the union key list by (contig order, POS), then — among keys at the
+	// SAME (CHROM, POS) — by how many inputs the key appears in, descending.
+	// Upstream's synced-reader sort (htslib bcf_sr_sort.c) emits the colocated
+	// variant-sets highest-membership first: push_vset always takes the vset
+	// present in the most files (`imax` = max cnt), so a site shared by both
+	// inputs is listed before a private one at the same position. Ties (equal
+	// membership) keep first-appearance order — keyOrder is built input-major in
+	// file order, and the stable sort preserves it, matching upstream's
+	// reader-major vset construction. This ordering is observable only in the
+	// interleaved sites.txt / -w dump; the per-input projections are unaffected
+	// because each key's records are written to their own file.
 	primaryOrder := contigOrder(st.headers[0])
+	membCount := func(k string) int {
+		c := 0
+		for _, b := range *keyMembership[k] {
+			if b {
+				c++
+			}
+		}
+		return c
+	}
 	sort.SliceStable(keyOrder, func(i, j int) bool {
-		ai, bi := keyVariants[keyOrder[i]][0].variant, keyVariants[keyOrder[j]][0].variant
-		return keyFor(ai, primaryOrder).less(keyFor(bi, primaryOrder))
+		ki, kj := keyOrder[i], keyOrder[j]
+		ka := keyFor(keyVariants[ki][0].variant, primaryOrder)
+		kb := keyFor(keyVariants[kj][0].variant, primaryOrder)
+		if !ka.equal(kb) {
+			return ka.less(kb)
+		}
+		return membCount(ki) > membCount(kj)
 	})
 
 	// The -n constraint is applied per matched site in the emit loop below (a
