@@ -722,6 +722,10 @@ type isecState struct {
 	perInputW     []variantWriter
 	perInputClose []func()
 	sitesF        *os.File
+	// sitesW buffers sites.txt: the per-site lines are written one fmt.Fprintf
+	// at a time, so writing straight to sitesF would issue a syscall per site —
+	// crippling on a slow/network filesystem. Flushed in isecFinalize.
+	sitesW *bufio.Writer
 
 	// stdout stream writer, opened when -w is set or no -p/-w is given.
 	openStdout      bool
@@ -834,6 +838,7 @@ func isecSetup(headers []*vcf.Header, stdout io.Writer, opts IsecOptions) (*isec
 			return nil, fmt.Errorf("bcftools isec: create %s: %w", sitesPath, err)
 		}
 		st.sitesF = sf
+		st.sitesW = bufio.NewWriterSize(sf, 256<<10)
 	}
 
 	// Open the stdout writer if -w is set or both -p and -w are empty
@@ -993,7 +998,7 @@ func isecCore(st *isecState, groups [][]*vcf.Variant) error {
 				if len(rep.Alt) > 0 {
 					alt = strings.Join(rep.Alt, ",")
 				}
-				fmt.Fprintf(st.sitesF, "%s\t%d\t%s\t%s\t%s\n", rep.Chrom, rep.Pos, ref, alt, string(bits))
+				fmt.Fprintf(st.sitesW, "%s\t%d\t%s\t%s\t%s\n", rep.Chrom, rep.Pos, ref, alt, string(bits))
 			}
 			// Per-input projection.
 			if opts.Prefix != "" {
@@ -1045,6 +1050,9 @@ func isecFinalize(st *isecState) (int, error) {
 	}
 	for _, c := range st.perInputClose {
 		c()
+	}
+	if st.sitesW != nil {
+		_ = st.sitesW.Flush()
 	}
 	if st.sitesF != nil {
 		_ = st.sitesF.Close()

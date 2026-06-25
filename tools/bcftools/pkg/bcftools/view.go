@@ -1057,6 +1057,10 @@ type bgzfFlusher interface {
 type vcfVariantWriter struct {
 	w    *vcf.Writer
 	bgzf bgzfFlusher
+	// outer is the large interposed buffer for plain uncompressed VCF (see
+	// openOutput). Flush drains it too, so callers that only call Flush (and not
+	// the finish func) still get complete output.
+	outer *bufio.Writer
 }
 
 func (a *vcfVariantWriter) WriteHeader() error {
@@ -1072,7 +1076,15 @@ func (a *vcfVariantWriter) WriteHeader() error {
 	return nil
 }
 func (a *vcfVariantWriter) Write(v *vcf.Variant) error { return a.w.Write(v) }
-func (a *vcfVariantWriter) Flush() error               { return a.w.Flush() }
+func (a *vcfVariantWriter) Flush() error {
+	if err := a.w.Flush(); err != nil {
+		return err
+	}
+	if a.outer != nil {
+		return a.outer.Flush()
+	}
+	return nil
+}
 
 // bcfVariantWriter wraps a bcf.Writer so View can treat both output formats
 // the same way. As with vcfVariantWriter, a non-nil bgzf closes the BGZF block
@@ -1163,8 +1175,19 @@ func openOutput(out io.Writer, opts ViewOptions, hdr *vcf.Header) (variantWriter
 		}
 		return &bcfVariantWriter{w: w}, func() { _ = w.Flush() }, nil
 	}
-	return &vcfVariantWriter{w: vcf.NewWriter(out, hdr)}, func() {}, nil
+	// Plain uncompressed VCF. vcf.NewWriter buffers internally, but only with the
+	// default 4 KiB bufio buffer, so a many-sample record set flushes every few
+	// dozen records — thousands of tiny write() syscalls that crawl on a slow or
+	// network filesystem. Interpose a large buffer so file writes land in big
+	// chunks; the finish func flushes it after the writer's own Flush.
+	bw := bufio.NewWriterSize(out, plainVCFWriteBuf)
+	return &vcfVariantWriter{w: vcf.NewWriter(bw, hdr), outer: bw}, func() { _ = bw.Flush() }, nil
 }
+
+// plainVCFWriteBuf is the interposed buffer size for uncompressed VCF output
+// (see openOutput). 256 KiB keeps the syscall count low on slow/network disks
+// without holding a meaningful amount of memory.
+const plainVCFWriteBuf = 256 << 10
 
 // LoadSamplesFilePairs reads a samples file like LoadSamplesFile but
 // also returns the optional second whitespace-separated column as a
