@@ -57,7 +57,17 @@ type BAMReader struct {
 	// seqScratch holds the expanded SEQ nibbles between decode and the single
 	// string conversion, reused across records to avoid a per-record slice.
 	seqScratch []byte
-	err        error
+	// numScratch is a small reusable buffer for integer/float formatting on the
+	// BAM->SAM text fast path (WriteSAMBody), so serialising a record's numeric
+	// fields and aux integers allocates nothing. 32 bytes is ample: the longest
+	// base-10 int64 is 20 chars and the longest float32 %g is well under 32.
+	numScratch [32]byte
+	// textScratch is a reusable buffer the BAM->SAM fast path fills with a
+	// record's expanded SEQ or ASCII-33 QUAL so each is written to the bufio
+	// writer in a single Write rather than one WriteByte per base. Reused
+	// across records to stay allocation-free.
+	textScratch []byte
+	err         error
 }
 
 // NewBAMReader constructs a BAMReader that consumes BGZF-encoded BAM bytes

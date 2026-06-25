@@ -179,6 +179,16 @@ func View(in io.Reader, out io.Writer, opts ViewOptions) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	// Fast path: a BGZF-wrapped BAM stream serialised to plain SAM with only
+	// fixed-prefix-decidable filters (flag/MAPQ/region/BED) is written straight
+	// from the raw BAM bytes, skipping the per-record Record build. This is the
+	// same direct serialiser the indexed path uses; it applies here to whole-
+	// file and stdin BAM->SAM. Other formats (text SAM, CRAM) and filters that
+	// need the read name or an aux tag fall through to the decode loop below.
+	if br, ok := r.(*sam.BAMReader); ok && samFastPathEligible(&opts) {
+		return viewStreamFast(br, out, &opts, hdr, resolved)
+	}
+
 	regionFilter := buildRegionFilter(resolved, hdr)
 	if regionFilter == nil && len(opts.Regions) > 0 {
 		// User asked for regions but none resolved — surface a predicate
@@ -518,6 +528,16 @@ func viewIndexedChunks(f io.ReadSeeker, out io.Writer, opts ViewOptions, unionFn
 		return 0, perr
 	}
 	chunks := unionFn(hdr, resolved)
+
+	// Fast path: plain-SAM output with only fixed-prefix-decidable filters
+	// (flag/MAPQ/region/BED) serialises each survivor straight from the raw BAM
+	// bytes, skipping the per-record Record build and its string allocations.
+	// This is the dominant samtools-view workload (a region query to SAM) and
+	// the biggest win; output is byte-identical to the decode path below.
+	if samFastPathEligible(&opts) {
+		return viewIndexedChunksFast(f, out, &opts, hdr, chunks, resolved)
+	}
+
 	regionFilter := buildRegionFilter(resolved, hdr)
 	if regionFilter == nil && len(opts.Regions) > 0 {
 		regionFilter = func(*sam.Record) bool { return false }
@@ -593,6 +613,76 @@ func viewIndexedChunks(f io.ReadSeeker, out io.Writer, opts ViewOptions, unionFn
 		return matched, nil
 	}
 	if err := closeViewWriter(w); err != nil {
+		return matched, err
+	}
+	return matched, nil
+}
+
+// viewIndexedChunksFast is the BAM->SAM text fast path for the indexed
+// seek-and-scan loop. It mirrors viewIndexedChunks' chunk iteration but, for
+// each record that survives the flag/MAPQ/region/BED filters, serialises the
+// SAM line straight from the raw BAM bytes via sam.BAMReader.WriteSAMBody —
+// avoiding the intermediate Record and its per-field/per-aux string
+// allocations. Callers must have verified samFastPathEligible(opts).
+func viewIndexedChunksFast(f io.ReadSeeker, out io.Writer, opts *ViewOptions, hdr *sam.Header, chunks []bam.BAIChunk, resolved []region.ResolvedRegion) (int, error) {
+	regionPred := fastRegionPredicate(resolved)
+	if regionPred == nil && len(opts.Regions) > 0 {
+		regionPred = func(*sam.FastFields) bool { return false }
+	}
+	bedPred, berr := fastBedFilter(opts.BedPath)
+	if berr != nil {
+		return 0, berr
+	}
+
+	// When counting (-c) we still iterate and filter via the cheap fixed-prefix
+	// decode, but emit no header and write no record bytes; bw stays nil so
+	// fastSAMScan only counts. Otherwise serialise to a buffered writer.
+	var bw *bufio.Writer
+	if !opts.Count {
+		bw = bufio.NewWriter(out)
+		if opts.HeaderOnly || opts.WithHeader {
+			if _, err := hdr.WriteTo(bw); err != nil {
+				return 0, err
+			}
+		}
+		if opts.HeaderOnly {
+			return 0, bw.Flush()
+		}
+	}
+
+	matched := 0
+	for _, c := range chunks {
+		if c.Beg >= c.End {
+			continue
+		}
+		startBlock := int64(c.Beg >> 16)
+		if _, err := f.Seek(startBlock, io.SeekStart); err != nil {
+			return matched, err
+		}
+		bgz, err := bgzip.NewReader(f)
+		if err != nil {
+			return matched, err
+		}
+		uoff := int(c.Beg & 0xFFFF)
+		if uoff > 0 {
+			if _, err := io.CopyN(io.Discard, bgz, int64(uoff)); err != nil {
+				return matched, err
+			}
+		}
+		boundedSrc := &chunkBoundedReader{r: bgz, end: uint64(c.End)}
+		br := sam.NewBAMBodyReader(boundedSrc, hdr)
+		n, scanErr := fastSAMScan(br, bw, opts, regionPred, bedPred)
+		matched += n
+		_ = bgz.Close()
+		if scanErr != nil {
+			return matched, scanErr
+		}
+	}
+	if opts.Count {
+		fmt.Fprintln(out, matched)
+		return matched, nil
+	}
+	if err := bw.Flush(); err != nil {
 		return matched, err
 	}
 	return matched, nil
