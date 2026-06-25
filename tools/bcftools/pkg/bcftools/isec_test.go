@@ -4,9 +4,136 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
+
+// TestIsecStreamingMatchesInMemory pins the streaming k-way merge byte-identical
+// to the whole-corpus in-memory path. It runs the same streamable inputs through
+// IsecFiles (which takes isecStreaming) and through Isec on pre-read groups,
+// across several forced flush thresholds — including 1 (flush every position) —
+// so a batch boundary lands between, and inside, runs of intra-position
+// duplicates that must stay paired across inputs. The inputs span two contigs,
+// same-position different-allele keys, private records on both sides, and an
+// unpaired duplicate occurrence.
+func TestIsecStreamingMatchesInMemory(t *testing.T) {
+	hdr := `##fileformat=VCFv4.2
+##contig=<ID=chr1,length=100000>
+##contig=<ID=chr2,length=100000>
+##INFO=<ID=DP,Number=1,Type=Integer,Description="DP">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="GT">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1
+`
+	mk := func(recs ...string) string { return hdr + strings.Join(recs, "\n") + "\n" }
+	a := mk(
+		"chr1\t100\trs1\tA\tT\t.\tPASS\t.\tGT\t0/1",  // shared
+		"chr1\t100\trs1b\tA\tC\t.\tPASS\t.\tGT\t0/1", // same pos, different ALT key
+		"chr1\t200\trsA\tG\tC\t.\tPASS\t.\tGT\t0/1",  // private to A
+		"chr1\t300\trs2\tA\tT\t.\tPASS\t.\tGT\t0/1",  // dup-key occ 1, shared
+		"chr1\t300\trs2\tA\tT\t.\tPASS\t.\tGT\t0/1",  // dup-key occ 2, no B partner
+		"chr2\t50\trsC\tA\tT\t.\tPASS\t.\tGT\t0/1",   // shared on chr2
+		"chr2\t60\trsD\tA\tT\t.\tPASS\t.\tGT\t0/1",   // private to A
+	)
+	b := mk(
+		"chr1\t100\trs1\tA\tT\t.\tPASS\t.\tGT\t0/1", // shared
+		"chr1\t180\trsB\tT\tA\t.\tPASS\t.\tGT\t0/1", // private to B
+		"chr1\t300\trs2\tA\tT\t.\tPASS\t.\tGT\t0/1", // pairs with A's first 300
+		"chr2\t50\trsC\tA\tT\t.\tPASS\t.\tGT\t0/1",  // shared on chr2
+	)
+	paths := writeIsecInputs(t, []string{a, b})
+
+	// In-memory reference: read both files whole and run Isec once.
+	readGroups := func() ([]*vcf.Header, [][]*vcf.Variant) {
+		hs := make([]*vcf.Header, len(paths))
+		gs := make([][]*vcf.Variant, len(paths))
+		for i, p := range paths {
+			in, err := iohelper.OpenReader(p)
+			if err != nil {
+				t.Fatalf("open %s: %v", p, err)
+			}
+			h, recs, err := readAllVariants(in)
+			_ = in.Close()
+			if err != nil {
+				t.Fatalf("read %s: %v", p, err)
+			}
+			hs[i], gs[i] = h, recs
+		}
+		return hs, gs
+	}
+
+	optsCases := []struct {
+		name   string
+		mk     func(prefix string) IsecOptions
+		prefix bool
+	}{
+		{"venn_prefix", func(p string) IsecOptions { return IsecOptions{Prefix: p} }, true},
+		{"intersect_stdout", func(string) IsecOptions { return IsecOptions{Nfiles: NfilesSpec{Mode: '=', N: 2}} }, false},
+		{"union_stdout", func(string) IsecOptions { return IsecOptions{} }, false},
+		{"collapse_all_prefix", func(p string) IsecOptions { return IsecOptions{Prefix: p, Collapse: CollapseAll} }, true},
+	}
+
+	defaultFlush := isecStreamFlushRecords
+	defer func() { isecStreamFlushRecords = defaultFlush }()
+
+	for _, oc := range optsCases {
+		for _, flush := range []int{1, 2, 3, defaultFlush} {
+			t.Run(oc.name+"/flush="+strconv.Itoa(flush), func(t *testing.T) {
+				isecStreamFlushRecords = flush
+
+				// Streaming path via IsecFiles.
+				streamDir := t.TempDir()
+				var streamOut bytes.Buffer
+				nStream, err := IsecFiles(paths, &streamOut, oc.mk(streamDir))
+				if err != nil {
+					t.Fatalf("streaming IsecFiles: %v", err)
+				}
+
+				// In-memory path via Isec on pre-read groups.
+				memDir := t.TempDir()
+				var memOut bytes.Buffer
+				hs, gs := readGroups()
+				nMem, err := Isec(hs, gs, &memOut, oc.mk(memDir))
+				if err != nil {
+					t.Fatalf("in-memory Isec: %v", err)
+				}
+
+				if nStream != nMem {
+					t.Fatalf("kept count: streaming %d != in-memory %d", nStream, nMem)
+				}
+				if !bytes.Equal(streamOut.Bytes(), memOut.Bytes()) {
+					t.Fatalf("stdout differs:\n--- streaming ---\n%s\n--- in-memory ---\n%s",
+						streamOut.String(), memOut.String())
+				}
+				if oc.prefix {
+					// Compare every emitted file except README.txt, which embeds
+					// the (differing) prefix-dir paths.
+					ents, err := os.ReadDir(streamDir)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, e := range ents {
+						if e.Name() == "README.txt" {
+							continue
+						}
+						s, _ := os.ReadFile(filepath.Join(streamDir, e.Name()))
+						m, err := os.ReadFile(filepath.Join(memDir, e.Name()))
+						if err != nil {
+							t.Fatalf("in-memory missing %s: %v", e.Name(), err)
+						}
+						if !bytes.Equal(s, m) {
+							t.Fatalf("%s differs:\n--- streaming ---\n%s\n--- in-memory ---\n%s",
+								e.Name(), s, m)
+						}
+					}
+				}
+			})
+		}
+	}
+}
 
 const isecHdr = `##fileformat=VCFv4.2
 ##contig=<ID=chr1,length=1000>

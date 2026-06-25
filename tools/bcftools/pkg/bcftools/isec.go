@@ -503,23 +503,37 @@ func isecMergeContigOrder(fileContigs [][]string, primaryOrder map[string]int) (
 	return merged, true
 }
 
-// isecStreaming runs the set operation one contig at a time. For each contig in
-// keyFor order it re-streams every input, collecting only that contig's
-// variants from each file into per-contig groups, runs them through isecCore
-// against the shared open writers, then frees them. Peak memory is bounded by a
-// single contig's variants across all inputs.
-func isecStreaming(paths []string, headers []*vcf.Header, mergedContigs []string, out io.Writer, opts IsecOptions) (int, error) {
+// isecStreamFlushRecords is the soft cap on how many variants accumulate across
+// inputs before isecStreaming flushes a batch through isecCore. The cap is only
+// ever exceeded by a single position-window that is itself larger than the cap
+// (every batch cut lands on a position boundary so cross-input occurrence
+// pairing is never split). ~50k variants is a few MB — small enough to keep
+// peak memory flat across a whole chromosome, large enough that isecCore's
+// per-call map/sort overhead is amortised away. It is a var (not a const) only
+// so tests can shrink it to force many flushes across position boundaries.
+var isecStreamFlushRecords = 50000
+
+// isecStreaming runs the set operation as a streaming k-way merge over the
+// inputs. It advances one forward cursor per input in lock-step by (contig, POS)
+// key: at each step it takes the minimum key across the cursor heads and drains
+// every record at that exact key from every input into a pending batch, then
+// flushes the batch through isecCore once it reaches isecStreamFlushRecords.
+//
+// Because each flush cuts only on a position boundary and the minimum key is
+// monotonically non-decreasing (every input lists its contigs in keyFor order —
+// verified by isecMergeContigOrder — and is POS-sorted within a contig), the
+// concatenated per-batch output is byte-identical to running isecCore over the
+// whole corpus at once. Peak memory is bounded by one batch (plus, in the
+// degenerate case, a single oversized position-window) rather than a whole
+// contig, which is what upstream's synced reader achieves.
+func isecStreaming(paths []string, headers []*vcf.Header, _ []string, out io.Writer, opts IsecOptions) (int, error) {
 	state, err := isecSetup(headers, out, opts)
 	if err != nil {
 		return 0, err
 	}
 	n := len(paths)
+	primaryOrder := contigOrder(headers[0])
 
-	// Open one forward cursor per input and read each file exactly once: for
-	// each contig (visited in keyFor order, which every input lists its contigs
-	// in — verified by isecMergeContigOrder) pull that contig's contiguous run
-	// from each cursor. A file lacking the contig contributes nothing; its
-	// cursor simply stays parked on its next (later) contig.
 	cursors := make([]*isecCursor, 0, n)
 	closeCursors := func() {
 		for _, c := range cursors {
@@ -537,21 +551,63 @@ func isecStreaming(paths []string, headers []*vcf.Header, mergedContigs []string
 	}
 	defer closeCursors()
 
-	for _, contig := range mergedContigs {
-		groups := make([][]*vcf.Variant, n)
+	// pending holds the current batch's variants per input; its backing arrays
+	// are reused across flushes (isecCore consumes — writes out — every variant
+	// before returning, so the pointers are safe to drop).
+	pending := make([][]*vcf.Variant, n)
+	pendingCount := 0
+	flush := func() error {
+		if pendingCount == 0 {
+			return nil
+		}
+		if err := isecCore(state, pending); err != nil {
+			return err
+		}
+		for i := range pending {
+			pending[i] = pending[i][:0]
+		}
+		pendingCount = 0
+		return nil
+	}
+
+	for {
+		// Minimum (contig, POS) key across the live cursor heads.
+		var minKey mergeKey
+		have := false
+		for _, c := range cursors {
+			v := c.peek()
+			if v == nil {
+				continue
+			}
+			k := keyFor(v, primaryOrder)
+			if !have || k.less(minKey) {
+				minKey, have = k, true
+			}
+		}
+		if !have {
+			break // every input exhausted
+		}
+		// Drain the whole position-window at minKey from every input.
 		for i, c := range cursors {
-			for v := c.peek(); v != nil && v.Chrom == contig; v = c.peek() {
-				groups[i] = append(groups[i], c.pop())
+			for v := c.peek(); v != nil && keyFor(v, primaryOrder).equal(minKey); v = c.peek() {
+				pending[i] = append(pending[i], c.pop())
+				pendingCount++
 			}
 			if c.err != nil && c.err != io.EOF {
 				_, _ = isecFinalize(state)
 				return state.totalKept, fmt.Errorf("bcftools isec: %s: %w", paths[i], c.err)
 			}
 		}
-		if err := isecCore(state, groups); err != nil {
-			_, _ = isecFinalize(state)
-			return state.totalKept, err
+		if pendingCount >= isecStreamFlushRecords {
+			if err := flush(); err != nil {
+				_, _ = isecFinalize(state)
+				return state.totalKept, err
+			}
 		}
+	}
+	if err := flush(); err != nil {
+		_, _ = isecFinalize(state)
+		return state.totalKept, err
 	}
 	return isecFinalize(state)
 }
