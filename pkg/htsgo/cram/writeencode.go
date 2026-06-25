@@ -54,7 +54,7 @@ func newSeriesBuffers() *seriesBuffers {
 // lossy quality-binning scheme applied to each record's QUAL (BinningNone
 // leaves quality untouched). recordCounter is the running record total of
 // all earlier containers.
-func encodeContainer(version Version, binning QualityBinning, records []*sam.Record, refIndex map[string]int32, reference map[string][]byte, recordCounter int64) ([]byte, error) {
+func encodeContainer(version Version, binning QualityBinning, records []*sam.Record, refIndex map[string]int32, refWindow []byte, refWindowStart int32, hasRef bool, recordCounter int64) ([]byte, error) {
 	if len(records) == 0 {
 		return nil, fmt.Errorf("cram: cannot encode an empty container")
 	}
@@ -65,13 +65,15 @@ func encodeContainer(version Version, binning QualityBinning, records []*sam.Rec
 	refID, multiRef := sliceRefScope(records, refIndex)
 
 	enc := &recordEncoder{
-		version:   version,
-		intw:      newIntWriter(version),
-		refIndex:  refIndex,
-		multiRef:  multiRef,
-		reference: reference,
-		binning:   binning,
-		buffers:   newSeriesBuffers(),
+		version:        version,
+		intw:           newIntWriter(version),
+		refIndex:       refIndex,
+		multiRef:       multiRef,
+		refWindow:      refWindow,
+		refWindowStart: refWindowStart,
+		hasRef:         hasRef,
+		binning:        binning,
+		buffers:        newSeriesBuffers(),
 	}
 	if err := enc.encodeAll(records); err != nil {
 		return nil, err
@@ -350,14 +352,19 @@ type recordEncoder struct {
 
 	refIndex map[string]int32
 	multiRef bool
-	// reference maps a contig name to its full reference bases. When a
-	// mapped record's contig is present here, encodeFeatures diffs the read
-	// against the reference and emits a substitution feature only at each
-	// mismatch (the matched bases are reconstructed from the reference on
-	// decode), exactly as upstream CRAM does. When nil, or the contig is
-	// absent, the writer falls back to the self-contained reference-free
-	// encoding (every M/=/X run carried literally in a base-stretch feature).
-	reference map[string][]byte
+	// refWindow holds only the reference bases the slice's records actually
+	// span (based at refWindowStart, 0-based), not a whole contig — this is
+	// what bounds the writer's peak memory to one slice's reference span.
+	// hasRef marks the slice's contig as present in the reference even when
+	// refWindow is empty (an all-no-SEQ slice), so the container is still
+	// flagged reference-using. When refWindow is non-empty a mapped record is
+	// diffed against it and only its mismatches are stored as substitution
+	// features (matches reconstructed from the reference on decode), exactly as
+	// upstream CRAM does; otherwise the record falls back to the self-contained
+	// reference-free encoding.
+	refWindow      []byte
+	refWindowStart int32
+	hasRef         bool
 	// binning is the lossy quality-binning scheme applied to each
 	// record's QUAL before it is appended to the QS series. BinningNone
 	// leaves quality untouched.

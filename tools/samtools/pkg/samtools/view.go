@@ -864,25 +864,39 @@ func openViewWriter(out io.Writer, hdr *sam.Header, opts ViewOptions) (sam.Write
 		if err != nil {
 			return nil, err
 		}
-		// With -T/--reference, load the reference so the writer can encode
-		// reads reference-based (only mismatches stored) — far smaller and
-		// faster, matching upstream CRAM. Without it the writer falls back to
-		// the self-contained reference-free encoding.
-		var ref map[string][]byte
+		// With -T/--reference, encode reads reference-based (only mismatches
+		// stored) — far smaller and faster, matching upstream CRAM. The
+		// reference is pulled one contig at a time through a lazy provider, so
+		// the writer never holds more than the contig currently being encoded
+		// resident (upstream streams the reference per contig likewise);
+		// eagerly loading a human FASTA would cost gigabytes. Without -T the
+		// writer falls back to the self-contained reference-free encoding.
+		var provider cram.ReferenceProvider
+		var refRA *fasta.RandomAccess
 		if opts.Reference != "" {
-			ref, err = loadReferenceMap(opts.Reference, hdr)
+			refRA, err = fasta.OpenRandomAccess(opts.Reference)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("samtools view: open reference %s: %w", opts.Reference, err)
 			}
+			// *fasta.RandomAccess satisfies cram.ReferenceProvider (Length +
+			// range Fetch) directly, so the CRAM writer pulls only each slice's
+			// reference window from the FASTA index rather than the whole genome.
+			provider = refRA
 		}
 		// opts.Reference is the -T path: pass it as the UR: tag source and the
-		// loaded bases (ref) as the M5 / reference-based-encoding source, so the
+		// lazily-loaded bases as the M5 / reference-based-encoding source, so the
 		// CRAM @SQ lines carry M5+UR exactly as upstream samtools writes them.
-		w = alnio.NewCRAMWriterOpts(out, alnio.CRAMWriteOptions{
-			QualityBinning: binning,
-			Reference:      ref,
-			ReferencePath:  opts.Reference,
+		cw := alnio.NewCRAMWriterOpts(out, alnio.CRAMWriteOptions{
+			QualityBinning:    binning,
+			ReferenceProvider: provider,
+			ReferencePath:     opts.Reference,
+			EncodeThreads:     opts.Threads,
 		})
+		if refRA != nil {
+			w = &cramRefWriter{Writer: cw, refRA: refRA}
+		} else {
+			w = cw
+		}
 	case opts.OutputBAM:
 		bw, err := sam.NewBAMWriterOptions(out, sam.BAMWriterOptions{
 			Uncompressed: opts.Uncompressed,
@@ -918,25 +932,24 @@ func openViewWriter(out io.Writer, hdr *sam.Header, opts ViewOptions) (sam.Write
 // reference-free per-read encoding). The whole referenced sequence is held in
 // memory, matching how a CRAM encode needs random access to it; a lazy
 // faidx-backed provider would lower peak memory for very large genomes.
-func loadReferenceMap(refPath string, hdr *sam.Header) (map[string][]byte, error) {
-	ra, err := fasta.OpenRandomAccess(refPath)
-	if err != nil {
-		return nil, fmt.Errorf("samtools view: open reference %s: %w", refPath, err)
+// cramRefWriter wraps a reference-based CRAM sam.Writer whose encoder pulls
+// contig bases lazily from refRA. Closing it closes the CRAM writer first
+// (flushing every container, which is what still reads the reference) and then
+// the reference handle, so the FASTA stays open exactly as long as the writer
+// needs it without the whole genome ever being held resident.
+type cramRefWriter struct {
+	sam.Writer
+	refRA *fasta.RandomAccess
+}
+
+// Close finalises the CRAM file and then releases the reference handle,
+// surfacing the first error.
+func (w *cramRefWriter) Close() error {
+	err := w.Writer.Close()
+	if cerr := w.refRA.Close(); cerr != nil && err == nil {
+		err = cerr
 	}
-	defer ra.Close()
-	ref := make(map[string][]byte, len(hdr.Refs))
-	for _, sq := range hdr.Refs {
-		n := ra.Length(sq.Name)
-		if n <= 0 {
-			continue // contig not in the FASTA index
-		}
-		seq, ferr := ra.Fetch(sq.Name, 0, n)
-		if ferr != nil {
-			return nil, fmt.Errorf("samtools view: fetch reference %s: %w", sq.Name, ferr)
-		}
-		ref[sq.Name] = seq
-	}
-	return ref, nil
+	return err
 }
 
 // closeViewWriter flushes the writer if it is non-nil.

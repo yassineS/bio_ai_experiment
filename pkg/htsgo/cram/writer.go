@@ -167,10 +167,12 @@ type RecordWriter struct {
 	// losslessly exact and existing callers are unaffected.
 	binning QualityBinning
 
-	// reference maps a contig name to its bases for reference-based
-	// encoding (see WriterOptions.Reference). Nil keeps the writer
-	// reference-free.
-	reference map[string][]byte
+	// refProvider supplies reference bases per slice (see
+	// WriterOptions.ReferenceProvider). The writer fetches only each slice's
+	// coordinate window — never a whole contig — so peak memory is bounded by
+	// one slice's span. Accessed only from the single-threaded Write/flush
+	// path; each encode job carries its own immutable window slice.
+	refProvider ReferenceProvider
 
 	// referencePath is the reference FASTA path passed with -T/--reference,
 	// emitted verbatim as the @SQ UR: tag (see WriterOptions.ReferencePath).
@@ -225,11 +227,57 @@ type RecordWriter struct {
 	pipeErr     error                  // first encode/write error from the pipeline
 }
 
-// encodeJob is one container's worth of work handed to an encode worker.
+// ReferenceProvider supplies reference bases on demand so a reference-based
+// CRAM writer need not hold the whole genome resident. The writer fetches only
+// the coordinate window each slice actually covers (a few records' span),
+// exactly as upstream htslib streams the reference per slice, so peak memory is
+// bounded by one slice's span rather than a whole chromosome. *fasta.RandomAccess
+// satisfies it directly. See WriterOptions.ReferenceProvider for the contract.
+type ReferenceProvider interface {
+	// Length returns the named contig's base count, or 0 if it is absent.
+	Length(name string) int64
+	// Fetch returns the contig's bases over the half-open, 0-based range
+	// [start, end), clamped to the contig. The returned slice is read-only.
+	Fetch(name string, start, end int64) ([]byte, error)
+}
+
+// mapReferenceProvider adapts an in-memory whole-genome map to the
+// ReferenceProvider interface, so the windowing encode path is the single code
+// path whether the reference is supplied lazily (the production path) or as a
+// resident map (small references and tests).
+type mapReferenceProvider map[string][]byte
+
+func (m mapReferenceProvider) Length(name string) int64 { return int64(len(m[name])) }
+
+func (m mapReferenceProvider) Fetch(name string, start, end int64) ([]byte, error) {
+	b, ok := m[name]
+	if !ok {
+		return nil, nil
+	}
+	if start < 0 {
+		start = 0
+	}
+	if end > int64(len(b)) {
+		end = int64(len(b))
+	}
+	if start >= end {
+		return nil, nil
+	}
+	return b[start:end], nil
+}
+
+// encodeJob is one container's worth of work handed to an encode worker. Its
+// reference window (refWindow, the bases the slice spans, based at refWindowStart
+// 0-based; hasRef marks the contig as present in the reference even when the
+// window is empty) is immutable for the job's lifetime, so workers read it
+// without synchronising against the writer.
 type encodeJob struct {
-	records []*sam.Record
-	counter int64
-	out     chan encodeResult
+	records        []*sam.Record
+	refWindow      []byte
+	refWindowStart int32
+	hasRef         bool
+	counter        int64
+	out            chan encodeResult
 }
 
 // encodeResult carries an encoded container (or the error that produced none).
@@ -285,7 +333,22 @@ type WriterOptions struct {
 	// nil (the zero value, what NewRecordWriter produces) the writer stays
 	// reference-free: every read's bases are carried literally, so the file
 	// is self-contained and decodes without a FASTA.
+	//
+	// Holding the whole genome resident costs gigabytes for a human
+	// reference; ReferenceProvider is the lazy alternative and is preferred
+	// for large references.
 	Reference map[string][]byte
+	// ReferenceProvider lazily supplies one contig's reference bases on
+	// demand, so a reference-based writer never holds more than the contig
+	// (or two, across a boundary) currently being encoded — matching
+	// upstream htslib, which streams the reference per contig rather than
+	// loading the whole FASTA. When set it takes precedence over Reference.
+	// The provider is invoked only from the writer's single-threaded Write
+	// path, at most once per contig change; it must return the contig's full
+	// upper-cased bases, or (nil, nil) for a contig absent from the reference
+	// (which puts that contig on the reference-free path). The returned slice
+	// is treated as read-only.
+	ReferenceProvider ReferenceProvider
 	// EncodeThreads sets how many containers are encoded concurrently. The
 	// emitted file is byte-identical for any value. 0 (the default) auto-sizes
 	// to the machine's CPU count (capped); 1 forces the synchronous path.
@@ -331,7 +394,7 @@ func NewRecordWriterOpts(w io.Writer, h *sam.Header, opts WriterOptions) (*Recor
 		header:          h,
 		version:         opts.Version,
 		binning:         opts.Binning,
-		reference:       opts.Reference,
+		refProvider:     resolveReferenceProvider(opts),
 		referencePath:   opts.ReferencePath,
 		encodeThreads:   resolveEncodeThreads(opts.EncodeThreads),
 		refIndex:        make(map[string]int32, len(h.Refs)),
@@ -604,7 +667,7 @@ func (rw *RecordWriter) writeFileHeader() error {
 // An @SQ that already carries an M5 or UR is left intact: upstream never
 // overwrites an existing tag, only fills the absent one.
 func (rw *RecordWriter) headerForEncode() *sam.Header {
-	if rw.reference == nil && rw.referencePath == "" {
+	if rw.refProvider == nil && rw.referencePath == "" {
 		return rw.header
 	}
 	cp := *rw.header
@@ -643,11 +706,15 @@ func (rw *RecordWriter) augmentSQLine(line sam.HeaderLine) sam.HeaderLine {
 	// carrying no pre-existing M5, e.g. a name-mismatched chr-prefixed contig)
 	// gets NEITHER tag and is encoded reference-free, exactly as upstream htslib
 	// does (verified against samtools on a name-mismatched GIAB BAM).
-	bases, contigInRef := rw.reference[name]
+	// Load the contig's bases (lazily, when a provider is configured) just to
+	// hash; refBasesFor caches at most one contig, so M5'ing the whole header
+	// streams the reference rather than holding it. A load error is treated as
+	// "contig absent" — upstream likewise cannot hash a reference it could not
+	// load, and the reference-based encode path surfaces a genuine I/O failure.
+	contigInRef := rw.refProvider != nil && rw.refProvider.Length(name) > 0
 	var m5 string
 	if !haveM5 && contigInRef {
-		sum := md5.Sum(bases)
-		m5 = hex.EncodeToString(sum[:])
+		m5 = rw.contigMD5(name)
 	}
 	addUR := !haveUR && rw.referencePath != "" && (haveM5 || m5 != "")
 
@@ -665,6 +732,98 @@ func (rw *RecordWriter) augmentSQLine(line sam.HeaderLine) sam.HeaderLine {
 		out.Fields = append(out.Fields, sam.HeaderField{Tag: "UR", Value: rw.referencePath})
 	}
 	return out
+}
+
+// contigMD5 returns the lower-case hex MD5 of a contig's reference bases for the
+// @SQ M5 tag, hashed in fixed-size chunks so the whole contig is never held
+// resident — M5'ing a human chromosome up front would otherwise spike peak RSS
+// by ~one chromosome, which dominated the writer's memory. The MD5 of the
+// in-order chunk concatenation equals the MD5 of the whole contig. It returns ""
+// when a chunk cannot be fetched, matching upstream's "cannot hash a reference
+// it could not load" (no M5 emitted).
+func (rw *RecordWriter) contigMD5(name string) string {
+	n := rw.refProvider.Length(name)
+	if n <= 0 {
+		return ""
+	}
+	const chunk = 1 << 20 // 1 MiB: bounds the transient hash buffer.
+	h := md5.New()
+	for off := int64(0); off < n; off += chunk {
+		end := off + chunk
+		if end > n {
+			end = n
+		}
+		bases, err := rw.refProvider.Fetch(name, off, end)
+		if err != nil || bases == nil {
+			return ""
+		}
+		h.Write(bases)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// resolveReferenceProvider chooses the writer's reference source: an explicit
+// ReferenceProvider when given (the lazy, per-slice production path), otherwise
+// the resident Reference map wrapped so the single windowing encode path serves
+// both. Nil when neither is set (reference-free).
+func resolveReferenceProvider(opts WriterOptions) ReferenceProvider {
+	if opts.ReferenceProvider != nil {
+		return opts.ReferenceProvider
+	}
+	if opts.Reference != nil {
+		return mapReferenceProvider(opts.Reference)
+	}
+	return nil
+}
+
+// bufContigName is the contig name shared by the records currently buffered,
+// or "" when they are unmapped (bufRefID < 0). Every buffered slice is
+// single-reference (Write flushes on a reference change), so one name covers
+// the whole container.
+func (rw *RecordWriter) bufContigName() string {
+	if rw.bufRefID < 0 || int(rw.bufRefID) >= len(rw.header.Refs) {
+		return ""
+	}
+	return rw.header.Refs[rw.bufRefID].Name
+}
+
+// containerWindow resolves the reference window for the container about to be
+// flushed: only the coordinate span the buffered records actually cover is
+// fetched, so the writer never holds more than one slice's worth of reference
+// resident (this is what bounds peak RSS, matching upstream's per-slice
+// reference streaming). It returns the window bases, the window's 0-based start
+// position, and whether the contig exists in the reference at all (true even
+// when the window is empty, e.g. an all-no-SEQ slice, so the container is still
+// flagged reference-using). The returned slice is owned by the encode job and
+// read unsynchronised by workers.
+func (rw *RecordWriter) containerWindow() (window []byte, winStart int32, hasRef bool, err error) {
+	name := rw.bufContigName()
+	if name == "" || rw.refProvider == nil {
+		return nil, 0, false, nil
+	}
+	contigLen := rw.refProvider.Length(name)
+	if contigLen <= 0 {
+		return nil, 0, false, nil // contig absent → reference-free
+	}
+	start, span := sliceSpan(rw.buf)
+	if span <= 0 {
+		return nil, 0, true, nil // mapped contig but no positioned bases (all no-SEQ)
+	}
+	// sliceSpan returns a 1-based start and the span; the window is the
+	// half-open 0-based range [start-1, start-1+span), clamped to the contig.
+	lo := int64(start) - 1
+	if lo < 0 {
+		lo = 0
+	}
+	hi := int64(start) - 1 + int64(span)
+	if hi > contigLen {
+		hi = contigLen
+	}
+	bases, ferr := rw.refProvider.Fetch(name, lo, hi)
+	if ferr != nil {
+		return nil, 0, false, ferr
+	}
+	return bases, int32(lo), true, nil
 }
 
 // resolveEncodeThreads turns the WriterOptions value into a concrete worker
@@ -697,8 +856,13 @@ func (rw *RecordWriter) flushContainer() error {
 	if len(rw.buf) == 0 {
 		return nil
 	}
+	window, winStart, hasRef, err := rw.containerWindow()
+	if err != nil {
+		rw.err = err
+		return err
+	}
 	if rw.encodeThreads <= 1 {
-		container, err := encodeContainer(rw.version, rw.binning, rw.buf, rw.refIndex, rw.reference, rw.recordCounter)
+		container, err := encodeContainer(rw.version, rw.binning, rw.buf, rw.refIndex, window, winStart, hasRef, rw.recordCounter)
 		if err != nil {
 			rw.err = err
 			return err
@@ -721,7 +885,7 @@ func (rw *RecordWriter) flushContainer() error {
 	// caller contract as the synchronous path (records are already retained
 	// across a whole slice). Order is preserved by pushing the result channel
 	// onto rw.ordered before the writer can reach it.
-	job := &encodeJob{records: rw.buf, counter: rw.recordCounter, out: make(chan encodeResult, 1)}
+	job := &encodeJob{records: rw.buf, refWindow: window, refWindowStart: winStart, hasRef: hasRef, counter: rw.recordCounter, out: make(chan encodeResult, 1)}
 	rw.ordered <- job.out
 	rw.jobs <- job
 	rw.recordCounter += int64(len(rw.buf))
@@ -745,7 +909,7 @@ func (rw *RecordWriter) startPipeline() {
 		go func() {
 			defer rw.pipeWG.Done()
 			for job := range rw.jobs {
-				data, err := encodeContainer(rw.version, rw.binning, job.records, rw.refIndex, rw.reference, job.counter)
+				data, err := encodeContainer(rw.version, rw.binning, job.records, rw.refIndex, job.refWindow, job.refWindowStart, job.hasRef, job.counter)
 				job.out <- encodeResult{data: data, err: err}
 			}
 		}()

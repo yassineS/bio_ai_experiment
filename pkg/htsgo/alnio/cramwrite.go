@@ -24,7 +24,19 @@ type CRAMWriteOptions struct {
 	// encoded reference-based (only mismatches stored), matching upstream
 	// CRAM and shrinking the file; the same reference is then required to
 	// decode. When nil the writer stays reference-free (self-contained).
+	// Prefer ReferenceProvider for large references — Reference holds the
+	// whole genome resident.
 	Reference map[string][]byte
+	// ReferenceProvider lazily supplies one contig's bases at a time, so the
+	// writer never holds the whole reference resident (see
+	// cram.WriterOptions.ReferenceProvider). When set it takes precedence
+	// over Reference.
+	ReferenceProvider cram.ReferenceProvider
+	// EncodeThreads bounds how many CRAM containers are encoded concurrently.
+	// The emitted file is byte-identical for any value; the knob trades encode
+	// wall-time against the peak memory of in-flight containers. 0 auto-sizes
+	// to the CPU count (capped); 1 forces the synchronous path.
+	EncodeThreads int
 	// ReferencePath is the -T/--reference FASTA path. When non-empty it is
 	// written verbatim as the @SQ UR: tag on every @SQ line that lacks one,
 	// matching upstream samtools. It is independent of Reference (which carries
@@ -108,9 +120,11 @@ func (cw *cramWriter) WriteHeader(h *sam.Header) error {
 		return cw.err
 	}
 	rw, err := cram.NewRecordWriterOpts(cw.w, h, cram.WriterOptions{
-		Binning:       cw.opts.QualityBinning,
-		Reference:     cw.opts.Reference,
-		ReferencePath: cw.opts.ReferencePath,
+		Binning:           cw.opts.QualityBinning,
+		Reference:         cw.opts.Reference,
+		ReferenceProvider: cw.opts.ReferenceProvider,
+		ReferencePath:     cw.opts.ReferencePath,
+		EncodeThreads:     cw.opts.EncodeThreads,
 	})
 	if err != nil {
 		cw.err = err

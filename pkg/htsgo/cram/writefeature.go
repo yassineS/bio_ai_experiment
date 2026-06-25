@@ -71,32 +71,32 @@ func (e *recordEncoder) encodeFeatures(rec *sam.Record, readLen int) error {
 	// or the read falls outside it. A no-SEQ record never diffs against the
 	// reference (there are no bases to diff): its match runs are always left
 	// implicit, exactly as htslib does.
+	// refWindow holds only the slice's reference span (based at refWindowStart),
+	// so all reference indexing below is window-relative: the read at absolute
+	// 0-based position (rec.Pos-1) maps to window index (rec.Pos-1)-refWindowStart.
 	var ref []byte
-	if e.reference != nil && rec.Pos > 0 && !noSeq {
-		if r, ok := e.reference[rec.RName]; ok {
-			start := int(rec.Pos) - 1
-			// Attach the reference whenever the read STARTS within it. An
-			// alignment whose span overhangs the contig end (htslib's
-			// c1#bounds) is still reference-encoded for the in-bounds bases;
-			// the overhanging bases — for which no reference exists — are
-			// stored verbatim by the match loop below, exactly as htslib's
-			// cram_encode.c clamps the per-base diff to c->ref_end and emits
-			// the remainder with cram_add_base.
-			if start >= 0 && start < len(r) {
-				ref = r
-				// Record that this container used the external reference, so
-				// its compression header omits RR (reference required) and the
-				// decoder loads the reference to fill the implicit match runs.
-				e.usedReference = true
-			}
+	var refBase int32 // window index of the read's first reference base.
+	if e.refWindow != nil && rec.Pos > 0 && !noSeq {
+		start := int(rec.Pos) - 1 - int(e.refWindowStart)
+		// Attach the reference whenever the read STARTS within the window. An
+		// alignment whose span overhangs the contig end (htslib's c1#bounds) is
+		// still reference-encoded for the in-bounds bases; the overhanging bases
+		// — for which no reference exists — are stored verbatim by the match
+		// loop below, exactly as htslib's cram_encode.c clamps the per-base diff
+		// to c->ref_end and emits the remainder with cram_add_base.
+		if start >= 0 && start < len(e.refWindow) {
+			ref = e.refWindow
+			refBase = int32(start)
+			// Record that this container used the external reference, so its
+			// compression header omits RR (reference required) and the decoder
+			// loads the reference to fill the implicit match runs.
+			e.usedReference = true
 		}
-	} else if noSeq && e.reference != nil && rec.Pos > 0 {
+	} else if noSeq && e.hasRef && rec.Pos > 0 {
 		// A no-SEQ record still consults the reference on decode to fill its
 		// implicit match runs, so flag the container as reference-using even
 		// though no per-base diff is performed here.
-		if _, ok := e.reference[rec.RName]; ok {
-			e.usedReference = true
-		}
+		e.usedReference = true
 	}
 
 	type feature struct {
@@ -109,9 +109,9 @@ func (e *recordEncoder) encodeFeatures(rec *sam.Record, readLen int) error {
 	var feats []feature
 
 	readPos := int32(0) // 0-based cursor within the read.
-	refPos := int32(0)  // 0-based cursor within ref (only used when ref != nil).
+	refPos := int32(0)  // cursor within the reference WINDOW (only used when ref != nil).
 	if ref != nil {
-		refPos = int32(rec.Pos) - 1
+		refPos = refBase
 	}
 	for _, op := range rec.Cigar {
 		n := int32(op.Length())
