@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"strconv"
+	"unsafe"
 
 	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 )
@@ -270,7 +271,9 @@ func (br *BAMReader) ReadInto(dst *Record) error {
 	if _, err := io.ReadFull(br.src, br.scrat); err != nil {
 		return err
 	}
-	return br.decodeInto(dst, br.scrat)
+	// owned=false: ReadInto's contract is that the caller must not retain dst
+	// past the next call, so QName/Seq may alias the reused buffers.
+	return br.decodeInto(dst, br.scrat, false)
 }
 
 // ReadShallowInto decodes only the fixed-prefix fields of the next record
@@ -473,7 +476,9 @@ func (br *BAMReader) decodeDepthInto(dst *Record, buf []byte, needQual bool) err
 // into a freshly allocated Record.
 func (br *BAMReader) decodeRecord(buf []byte) (*Record, error) {
 	rec := &Record{}
-	if err := br.decodeInto(rec, buf); err != nil {
+	// owned: Read returns this record to the caller, who may retain it, so its
+	// QName/Seq strings must own their memory.
+	if err := br.decodeInto(rec, buf, true); err != nil {
 		return nil, err
 	}
 	return rec, nil
@@ -482,7 +487,14 @@ func (br *BAMReader) decodeRecord(buf []byte) (*Record, error) {
 // decodeInto deserialises one BAM record body into rec, reusing rec's Cigar and
 // Qual backing arrays where they are large enough. Every field rec carries is
 // reset so a reused record never leaks stale data from a previous decode.
-func (br *BAMReader) decodeInto(rec *Record, buf []byte) error {
+// decodeInto decodes one BAM record body into rec. When owned is true the QName
+// and Seq strings are copied so the caller may retain rec (the Read path); when
+// false they alias the reader's reused buffers (br.scrat / br.seqScratch) with
+// no per-record string allocation — valid only until the next read, which is
+// exactly ReadInto's no-retain contract. QName and Seq are the two big
+// per-record allocations on the BAM hot path, so eliminating them for the
+// streaming consumers (samtools view/stats/depth, bcftools) is the memory win.
+func (br *BAMReader) decodeInto(rec *Record, buf []byte, owned bool) error {
 	if len(buf) < 32 {
 		return fmt.Errorf("sam: BAM record body too small (%d)", len(buf))
 	}
@@ -512,7 +524,12 @@ func (br *BAMReader) decodeInto(rec *Record, buf []byte) error {
 	if len(nameBytes) > 0 && nameBytes[len(nameBytes)-1] == 0 {
 		nameBytes = nameBytes[:len(nameBytes)-1]
 	}
-	rec.QName = string(nameBytes)
+	if owned || len(nameBytes) == 0 {
+		rec.QName = string(nameBytes)
+	} else {
+		// Alias the block buffer (reused on the next read) — no allocation.
+		rec.QName = unsafe.String(&nameBytes[0], len(nameBytes))
+	}
 	off += int(lReadName)
 
 	// CIGAR ops: nCigarOp uint32s. Reuse rec.Cigar's backing array.
@@ -552,7 +569,12 @@ func (br *BAMReader) decodeInto(rec *Record, buf []byte) error {
 			}
 			br.seqScratch[i] = seqLookup[nibble]
 		}
-		rec.Seq = string(br.seqScratch)
+		if owned {
+			rec.Seq = string(br.seqScratch)
+		} else {
+			// Alias seqScratch (reused on the next read) — no allocation.
+			rec.Seq = unsafe.String(&br.seqScratch[0], lSeq)
+		}
 	}
 	off += seqLen
 

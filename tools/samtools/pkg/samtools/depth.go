@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"runtime"
 	"sort"
 	"strconv"
 
@@ -17,22 +16,19 @@ import (
 
 // ReadDecodeThreads resolves the BGZF inflate worker count for a streaming
 // scan. A caller-supplied positive thread count (CLI -@) is honoured verbatim;
-// 0 — the default when no -@ is given — opts into parallel inflate across the
-// machine's cores (capped at 8 to avoid oversubscribing on many-core hosts).
-// Only BGZF block inflation is parallelised, so the decoded record stream — and
-// therefore every tool's output — is byte-identical for any thread count.
+// 0 — the default when no -@ is given — means single-threaded decode (1),
+// matching upstream samtools' default. Parallel inflate is faster in isolation,
+// but each worker carries its own block + decoded-record buffers, so defaulting
+// it on cost several times upstream's peak RSS — and for consumer-bound scans
+// (stats, depth, where the per-record computation, not inflate, is the
+// bottleneck) it was also slower than single-threaded because of the queueing
+// overhead. Callers who want parallel decode opt in with -@. Only BGZF block
+// inflation is parallelised, so output is byte-identical for any thread count.
 func ReadDecodeThreads(n int) int {
 	if n > 0 {
 		return n
 	}
-	c := runtime.NumCPU()
-	if c > 8 {
-		c = 8
-	}
-	if c < 1 {
-		c = 1
-	}
-	return c
+	return 1
 }
 
 // DefaultDepthExcludeFlags matches upstream samtools depth's default
