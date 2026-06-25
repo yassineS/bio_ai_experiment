@@ -11,15 +11,18 @@ uv run --with "git+https://github.com/yassineS/majorelle-py" \
 ```
 
 Source data: `bench_multiscale.json` (small/medium, `pipeline/bench`),
-`../large_tier/bench/*/bench.json` + `bench_large_bamvcf.json` (large tier); `bench_fastq.json` (sickle se/pe + seqtk seq/comp/trimfq/fqchk).
+`../large_tier/bench/*/bench.json` + `bench_large_bamvcf.json` (large tier);
+`bench_fastq.json` (sickle se/pe + seqtk seq/comp/trimfq/fqchk);
+`bench_oom_large.json` (the fat-node `mpileup` / `call` / `isec` cells at large,
+re-run with `TMPDIR` on a big disk — see the OOM note below).
 Convention: **speedup = upstream wall / ours**, so **> 1 = our port is faster**.
 Timings are the median over reps; CIs are the 95% bootstrap CI on the wall-time
 ratio (claim C3, `pipeline/stats`).
 
 | figure | what it shows |
 |---|---|
-| `fig_speedup` | Per-**subcommand** speedup, **grouped by tool** (samtools / bcftools / bedtools / seqtk / sickle), with one bar per tier (small / medium / large) and 95% CI. The headline: I/O conversions + `bedtools` intersect/coverage + `sickle` are faster; the compute-heavy variant cells (`mpileup`, `call`, `isec`) are slower and **OOM at the large tier** (no large bar). |
-| `fig_scaling` | Per-tier **dumbbell/arrow** plot (one facet per tier): for each subcommand an open marker at upstream's median wall time with an **arrow to ours** (filled, tool-coloured) and **IQR error bars**. Tiers are discrete, so nothing is connected across them; arrow pointing left = faster. The fat-node cells (`mpileup`, `call`, `isec`) are marked **OOM** at the large tier. |
+| `fig_speedup` | Per-**subcommand** speedup, **grouped by tool** (samtools / bcftools / bedtools / seqtk / sickle), with one bar per tier (small / medium / large) and 95% CI. The headline: I/O conversions + `bedtools` intersect/coverage + `sickle` are faster; the compute-heavy variant cells (`mpileup`, `call`) are modestly slower at the large tier, and `bcf_isec` is the lone outlier (~0.07×, 15× slower) — a streaming follow-up, not an OOM. |
+| `fig_scaling` | Per-tier **dumbbell/arrow** plot (one facet per tier): for each subcommand an open marker at upstream's median wall time with an **arrow to ours** (filled, tool-coloured) and **IQR error bars**. Tiers are discrete, so nothing is connected across them; arrow pointing left = faster. |
 | `fig_scatter` | Ours vs upstream wall time (log-log) with the `y=x` parity line; points below the line are faster (blue), above are slower (terracotta). |
 
 Each figure is emitted as both `.pdf` (vector, for the manuscript) and `.png`
@@ -29,3 +32,17 @@ Each figure is emitted as both `.pdf` (vector, for the manuscript) and `.png`
 > The numbers are from the laptop-class `linux/arm64` container
 > ([`../hardware.md`](../hardware.md)), read with the platform caveats there;
 > the large samtools/bcftools cells were captured at reps=5 (the rest reps=10).
+
+## The "OOM at large" cells were disk, not RAM
+
+An earlier run reported `sam_mpileup` / `bcf_call` / `bcf_isec` as out-of-memory
+at the large tier. That was a **scratch-disk** failure, not a memory one. Direct
+RSS measurement shows all three are bounded — peak RSS **106 / 18 / 464 MB**
+(ours) vs **42 / 10 / 11 MB** (upstream) — and they exit 0. The bench was
+writing the ~17 GB `mpileup`/`call` output to a temp file on a container overlay
+with ~5 GB free, so it aborted on `ENOSPC`. Re-running with `TMPDIR` pointed at
+the 205 GB host disk, all three complete; their real large numbers are in
+`bench_oom_large.json` and now appear in the figures. `bcf_isec` is the genuine
+follow-up: it is **bounded but slow + memory-heavy** at scale (wall ~15×, RSS
+~39× upstream), and should stream rather than buffer — tracked in the parity
+roadmap, but it is not an OOM.

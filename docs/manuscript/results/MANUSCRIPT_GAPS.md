@@ -18,7 +18,11 @@ page reconciles them.
   [`figures/`](figures/).
 - **C3 hardware/scale anchoring** — environment pinned
   ([`hardware.md`](hardware.md)); large tier run per-format-group
-  ([`large_tier/`](large_tier/README.md)) with the heavy >12 GB cells OOM-noted.
+  ([`large_tier/`](large_tier/README.md)). The heavy `mpileup`/`call`/`isec`
+  cells now have real large numbers: the earlier "OOM" was **scratch-disk
+  exhaustion** (a ~17 GB temp output on a 5 GB-free overlay), not memory — peak
+  RSS is bounded (106/18/464 MB ours vs 42/10/11 MB upstream). Re-run with a
+  big-disk `TMPDIR`, all three complete (see [`figures/`](figures/README.md)).
 - **12 correctness + 5 scalability/perf bugs** found via real data and fixed
   byte-exact (CRAM reference-free decode, M5/UR, aux ordering; stats CIGAR;
   depth OOM→indexed; faidx/fqidx; bcftools norm 436×→stream). Strengthens the
@@ -42,8 +46,10 @@ page reconciles them.
 | G1 | **Go branch coverage of the parity sweep** — what fraction of port branches the oracle actually exercises | C2 | low | `-coverprofile` over the parity matrix; report a single coverage %. The strongest answer to "untested input regions". |
 | G2 | **Max abs/rel FP deviation per tool** (not just within-ε) | C2 | low | the similarity comparator already emits per-cell deltas; aggregate the max per tool into a table. |
 | G3 | **Pipeline drop-in demo** — swap our binary into a real nf-core/Nextflow (or Snakemake) step, run end-to-end unchanged | C4 ★ | medium | concrete usability evidence; an nf-core samtools/bcftools step is the cleanest. |
-| G4 | **`samtools view` region→SAM speed** (~12×) and the remaining ~11× RSS cells | C3 | medium | correct today; perf optimisation (next task). |
+| G4 | **`samtools view` region→SAM speed** (~12×) and the remaining ~11× RSS cells | C3 | medium | fast path landed (BAM→SAM direct serialize, ~2.6×); the region→SAM path still trails. |
 | G5 | **GIAB biological concordance** (hap.py/vcfeval F1, GA4GH-stratified) | C2 ★ | high | **deliberately deferred** by the owner ("skip the official GIAB variant-calling test"); the byte-exact differential parity stands in for now. |
+| G6 | **`bcftools isec` streams instead of buffering** | C3 | medium | bounded but slow + memory-heavy at large (wall ~15×, RSS ~39× upstream: 464 vs 11 MB). It buffers; should merge the two tabix-indexed VCFs streaming. The lone large-tier perf outlier — not an OOM. |
+| G7 | **Parity-matrix streaming compare** | C2 | low | `pipeline/runner` buffers both outputs in RAM for the byte diff, so it would OOM on the ~17 GB heavy cells. Port the streaming-compare already used by `realparity`. |
 
 ## Out of this workstream (separate effort — agent-process / meta)
 

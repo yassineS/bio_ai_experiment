@@ -40,34 +40,42 @@ re-sorts by contig name as a string**, so `chr10` sorts before `chr2`.
 This was a genuine fix-on-port parity defect, **not** an arm64/`libc++`/FP
 artifact — and it is now corrected.
 
-## The per-cell memory ceiling (why the full large matrix doesn't finish here)
+## The heavy cells were disk-bound, not memory-bound (resolved)
 
-`GOMEMLIMIT` let the whole **medium** tier pass (it bounded cross-cell RSS
-growth). At **large**, a few individual cells produce a single output bigger than
-the 12 GB VM — and the harness buffers each cell's entire ours+upstream stdout in
-RAM (`pipeline/runner.RunEntry`), so those cells OOM regardless of `GOMEMLIMIT`
-(it cannot shrink a *live* buffer):
+An earlier run reported `sam_mpileup` / `bcf_call` / `bcf_isec` as OOM at the
+large tier. That diagnosis was wrong: the tools themselves are **bounded RAM**.
+Direct peak-RSS measurement at large is **106 / 18 / 464 MB** (ours) vs
+**42 / 10 / 11 MB** (upstream) — all exit 0. Two distinct disk problems, not a
+memory one, were aborting the cells:
 
-- `bcftools mpileup_heavy` / `call` over 192 Mbp,
-- (likely) `bedtools genomecov -d` per-base over 192 Mbp,
-- `samtools view` of the 2.5 M-read BAM to SAM.
+- **`mpileup` / `call` huge stdout.** Each writes a ~17–20 GB VCF; the bench was
+  spilling it to a temp file on a container overlay with ~5 GB free, so it failed
+  on `ENOSPC`. Fixed by streaming both sides' stdout to `/dev/null` (the
+  `write()` cost is still counted symmetrically) — committed in
+  *"fix bench harness disk-fill on huge stdout"*.
+- **`isec` output prefix dir.** `bcftools isec -p DIR` writes real files; with
+  `DIR` under a small-overlay `TMPDIR` it filled the disk. Fixed by pointing
+  `TMPDIR` at the 205 GB host mount.
 
-These need either a bigger box (the runbook's 32–64 GB fat node) or a
-**stream-comparing** harness (write each side to a temp file and diff files, the
-way `pipeline/cmd/realparity` already does for its file-producing cells) instead
-of buffering whole outputs in RAM. The lighter large cells (and the `norm`
-DIVERGEs above) run fine here.
+With both fixes, all three complete at large; their numbers are folded into the
+figures (`figures/bench_oom_large.json`). The remaining real follow-up is
+`bcf_isec`, which is **slow + memory-heavy but bounded** (wall ~15×, RSS ~39×
+upstream) and should stream the two-VCF merge instead of buffering.
+
+> Separately, the **parity matrix** harness (`pipeline/runner.RunEntry`) still
+> buffers each cell's entire ours+upstream stdout in RAM to byte-diff them, so it
+> *would* OOM on the ~17 GB heavy cells. That is a harness limitation, not a tool
+> one; it wants the **stream-comparing** approach `pipeline/cmd/realparity`
+> already uses (write each side to a file, diff files). Tracked as gap G7.
 
 ## Large-tier performance (bench, reps=10, robust stats)
 
 Run **serially per format-group** (uncontended) with `GOMEMLIMIT=8GiB`. Each cell
 times our binary against upstream over 10 reps; `wall×` is the **median** ratio
 (`ours/upstream`, `< 1.0` = we are faster) with its **95 % bootstrap CI** (H1a).
-Per-group reports: `bench/{FASTQ,CRAM,BED}/bench.md`. The FASTQ/CRAM/BED groups
-completed; the BAM and VCF groups' light cells completed (numbers below) but
-their **heavy compute cells OOM at large** for the same reason as the parity
-matrix above — `bcf_call` runs over a ~20 GB intermediate mpileup VCF, etc. (see
-the memory ceiling).
+Per-group reports: `bench/{FASTQ,CRAM,BED}/bench.md`. All groups completed,
+including the heavy `sam_mpileup` / `bcf_call` / `bcf_isec` cells once the bench
+stopped spilling their huge output to a small-overlay temp dir (see above).
 
 | cell | wall× (median) | 95% CI | note |
 |---|---|---|---|
@@ -90,18 +98,23 @@ the memory ceiling).
 | `bcf_norm` | 1.42 | [1.37, 1.61] | slower (**RSS 48×** — buffers the VCF; see real-data #20) |
 | `bcf_query` | 1.58 | [1.54, 1.59] | slower |
 | `bed_merge` | 1.82 | [1.73, 1.88] | **slow** |
-| `sam_mpileup`, `bcf_call`, `bcf_isec` | — | — | **OOM at large** (>12 GB output on this box) |
+| `bcf_call` | 1.76 | [1.75, 1.77] | slower (RSS 1.6×) |
+| `sam_mpileup` | 2.20 | [2.13, 2.27] | **slow** (RSS 2.6×) |
+| `bcf_isec` | 15.03 | [14.80, 15.27] | **slowest** (RSS **39×**: 464 vs 11 MB — buffers; should stream) |
 
 The large-tier picture matches medium: I/O-bound conversions, `bedtools`
 intersect/coverage/genomecov, and `sickle` are **faster** than upstream; the
-compute-heavy cells are slower; and the same handful of cells that exceed the
-12 GB box's memory are reported as OOM rather than hidden. `bcf_norm`'s 48×
-RSS and `sam_depth`/`sam_view_bam2cram`'s ~11× RSS are the memory-side
+compute-heavy cells are slower. `bcf_isec` is the lone large outlier (15× wall,
+39× RSS) — a streaming follow-up (gap G6). `bcf_norm`'s 48× RSS and
+`sam_depth`/`sam_view_bam2cram`'s ~11× RSS are the other memory-side
 optimisation targets (tracked in the real-data perf follow-ups).
 
 ## Status
 
 - Large fixtures generate fine (~22 GB, on the host-mounted disk).
 - Multi-contig bug found and confirmed (above) — actionable.
-- Full large matrix not completed on this box: the few >12 GB-output cells need
-  the fat node or a stream-comparing harness.
+- **Full large matrix completed**: the heavy `mpileup`/`call`/`isec` cells run
+  once their huge output is streamed to `/dev/null` (bench) and `TMPDIR` points
+  at the big host disk; the tools are bounded RAM, not OOM. The parity *matrix*
+  harness still buffers outputs in RAM (gap G7) and wants the stream-comparing
+  diff before it can byte-check those cells at large.
