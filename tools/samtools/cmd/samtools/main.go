@@ -234,7 +234,7 @@ func runView(args []string) int {
 	cliflag.StringVar(fs, &rg, "r", "read-group", "", "Read-group filter")
 	cliflag.StringVar(fs, &rgFile, "R", "read-groups-file", "", "File of read-group IDs")
 	cliflag.StringVar(fs, &regFile, "L", "regions-file", "", "BED of regions")
-	cliflag.BoolVar(fs, &multiRegion, "M", "use-multi-region-iterator", false, "Accepted (indexed-walk optimisation upstream)")
+	cliflag.BoolVar(fs, &multiRegion, "M", "use-multi-region-iterator", false, "Deduplicate overlapping regions (each record at most once, coordinate order)")
 	cliflag.BoolVar(fs, &customIdx, "X", "customized-index", false, "Expect an explicit index-file argument after <in.bam>")
 	// Upstream samtools also spells the long form `--use-index`. Accept it
 	// as an alias for parity.

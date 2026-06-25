@@ -88,6 +88,58 @@ func TestViewIndexedNoOverReadDuplicates(t *testing.T) {
 	}
 }
 
+// TestViewMultiRegionPerRegionVsDedup pins upstream's two multi-region modes.
+// Default `view reg1 reg2` walks each region in command-line order and emits its
+// overlapping records, so a record overlapping both regions is emitted once per
+// region (and the regions need not be coordinate-ordered). With -M the regions
+// are one deduplicated, coordinate-ordered set. The fixture has a read private
+// to A, one in the A∩B overlap, and one private to B.
+func TestViewMultiRegionPerRegionVsDedup(t *testing.T) {
+	sam := "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:chr1\tLN:100000\n" +
+		"a_only\t0\tchr1\t10\t60\t20M\t*\t0\t0\t" + strings.Repeat("A", 20) + "\t" + strings.Repeat("I", 20) + "\n" +
+		"overlap\t0\tchr1\t60\t60\t20M\t*\t0\t0\t" + strings.Repeat("C", 20) + "\t" + strings.Repeat("I", 20) + "\n" +
+		"b_only\t0\tchr1\t150\t60\t20M\t*\t0\t0\t" + strings.Repeat("G", 20) + "\t" + strings.Repeat("I", 20) + "\n"
+	bamPath := makeIndexedBAM(t, writeSAMFile(t, sam))
+
+	names := func(opts ViewOptions) []string {
+		var out bytes.Buffer
+		if _, err := ViewFile(bamPath, &out, opts, &bytes.Buffer{}); err != nil {
+			t.Fatalf("ViewFile: %v", err)
+		}
+		var ns []string
+		for _, line := range strings.Split(strings.TrimRight(out.String(), "\n"), "\n") {
+			if line != "" {
+				ns = append(ns, line[:strings.IndexByte(line, '\t')])
+			}
+		}
+		return ns
+	}
+	eq := func(got, want []string) bool {
+		if len(got) != len(want) {
+			return false
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				return false
+			}
+		}
+		return true
+	}
+
+	// Default, regions A then B: A emits {a_only, overlap}, B emits {overlap, b_only}.
+	if got := names(ViewOptions{Regions: []string{"chr1:1-100", "chr1:50-200"}}); !eq(got, []string{"a_only", "overlap", "overlap", "b_only"}) {
+		t.Errorf("default A,B order = %v, want [a_only overlap overlap b_only]", got)
+	}
+	// Default, regions reversed B then A: B's records lead.
+	if got := names(ViewOptions{Regions: []string{"chr1:50-200", "chr1:1-100"}}); !eq(got, []string{"overlap", "b_only", "a_only", "overlap"}) {
+		t.Errorf("default B,A order = %v, want [overlap b_only a_only overlap]", got)
+	}
+	// -M: deduplicated, coordinate order regardless of region order.
+	if got := names(ViewOptions{Regions: []string{"chr1:50-200", "chr1:1-100"}, MultiRegion: true}); !eq(got, []string{"a_only", "overlap", "b_only"}) {
+		t.Errorf("-M = %v, want [a_only overlap b_only]", got)
+	}
+}
+
 const sampleSAM = `@HD	VN:1.6	SO:coordinate
 @SQ	SN:chr1	LN:1000
 @SQ	SN:chr2	LN:500

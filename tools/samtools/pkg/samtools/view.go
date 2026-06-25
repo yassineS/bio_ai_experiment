@@ -84,11 +84,13 @@ type ViewOptions struct {
 	// set, records must satisfy BOTH predicates. Matches upstream samtools
 	// view's `-L/--regions-file`.
 	BedPath string
-	// MultiRegion is accept-and-ignore for upstream's
-	// `-M/--use-multi-region-iterator`. The flag controls whether upstream
-	// uses its multi-region iterator (an indexed-scan optimisation); the
-	// resulting filtered record set is identical, so we always perform the
-	// full intersection regardless.
+	// MultiRegion selects upstream's `-M/--use-multi-region-iterator`. It
+	// changes the *output*, not just performance: by default `samtools view
+	// reg1 reg2` walks each region in command-line order and emits its
+	// overlapping records, so a record overlapping two regions is emitted once
+	// per region (and the regions need not be coordinate-ordered). With -M the
+	// regions are walked as one deduplicated, coordinate-ordered set — each
+	// record at most once. See buildRegionScanPasses.
 	MultiRegion bool
 	// NoPG suppresses the @PG line emission (placeholder; the view pipeline
 	// does not currently inject an @PG line, so this is a no-op kept for
@@ -527,7 +529,13 @@ func viewIndexedChunks(f io.ReadSeeker, out io.Writer, opts ViewOptions, unionFn
 	if perr != nil {
 		return 0, perr
 	}
-	chunks := unionFn(hdr, resolved)
+	// Build the indexed-scan passes. Default `samtools view reg1 reg2 ...`
+	// processes each region in command-line order and emits its overlapping
+	// records, so a record overlapping two regions is emitted once per region;
+	// -M / --use-multi-region-iterator instead walks all regions as one
+	// deduplicated, coordinate-ordered set. A single region is one pass either
+	// way, so the common case is unchanged.
+	passes := buildRegionScanPasses(hdr, resolved, opts.MultiRegion, unionFn)
 
 	// Fast path: plain-SAM output with only fixed-prefix-decidable filters
 	// (flag/MAPQ/region/BED) serialises each survivor straight from the raw BAM
@@ -535,13 +543,9 @@ func viewIndexedChunks(f io.ReadSeeker, out io.Writer, opts ViewOptions, unionFn
 	// This is the dominant samtools-view workload (a region query to SAM) and
 	// the biggest win; output is byte-identical to the decode path below.
 	if samFastPathEligible(&opts) {
-		return viewIndexedChunksFast(f, out, &opts, hdr, chunks, resolved)
+		return viewIndexedChunksFast(f, out, &opts, hdr, passes)
 	}
 
-	regionFilter := buildRegionFilter(resolved, hdr)
-	if regionFilter == nil && len(opts.Regions) > 0 {
-		regionFilter = func(*sam.Record) bool { return false }
-	}
 	bedFilter, berr := loadBedFilter(opts.BedPath)
 	if berr != nil {
 		return 0, berr
@@ -557,6 +561,59 @@ func viewIndexedChunks(f io.ReadSeeker, out io.Writer, opts ViewOptions, unionFn
 
 	sub := newSubsampler(opts)
 	matched := 0
+	for i := range passes {
+		regionFilter := buildRegionFilter(passes[i].regions, hdr)
+		if regionFilter == nil && len(opts.Regions) > 0 {
+			regionFilter = func(*sam.Record) bool { return false }
+		}
+		n, serr := scanChunksDecode(f, passes[i].chunks, hdr, &opts, regionFilter, bedFilter, sub, w)
+		matched += n
+		if serr != nil {
+			return matched, serr
+		}
+	}
+	if opts.Count {
+		fmt.Fprintln(out, matched)
+		return matched, nil
+	}
+	if err := closeViewWriter(w); err != nil {
+		return matched, err
+	}
+	return matched, nil
+}
+
+// regionScanPass is one indexed-scan pass: the BAI/CSI chunks to walk and the
+// regions a record must overlap to be emitted. See buildRegionScanPasses.
+type regionScanPass struct {
+	regions []region.ResolvedRegion
+	chunks  []bam.BAIChunk
+}
+
+// buildRegionScanPasses splits the resolved regions into indexed-scan passes.
+// In the default (non -M) mode each region is its own pass, walked in
+// command-line order, reproducing upstream `samtools view reg1 reg2`'s
+// once-per-region emission (a record overlapping two regions is emitted twice).
+// With -M (or a single region) all regions collapse into one deduplicated,
+// coordinate-ordered pass over the union of their chunks.
+func buildRegionScanPasses(hdr *sam.Header, resolved []region.ResolvedRegion, multiRegion bool, unionFn func(*sam.Header, []region.ResolvedRegion) []bam.BAIChunk) []regionScanPass {
+	if multiRegion || len(resolved) <= 1 {
+		return []regionScanPass{{regions: resolved, chunks: unionFn(hdr, resolved)}}
+	}
+	passes := make([]regionScanPass, 0, len(resolved))
+	for i := range resolved {
+		one := resolved[i : i+1]
+		passes = append(passes, regionScanPass{regions: one, chunks: unionFn(hdr, one)})
+	}
+	return passes
+}
+
+// scanChunksDecode walks chunks, decoding each record and emitting those that
+// pass the flag/MAPQ filters, regionFilter, and bedFilter into w (or only
+// counting when opts.Count). It is the per-pass body of the decode-path indexed
+// scan: the caller opens and closes w (and the header) so several passes — one
+// per region in default multi-region mode — share a single output stream.
+func scanChunksDecode(f io.ReadSeeker, chunks []bam.BAIChunk, hdr *sam.Header, opts *ViewOptions, regionFilter, bedFilter func(*sam.Record) bool, sub *subsampler, w sam.Writer) (int, error) {
+	matched := 0
 	for _, c := range chunks {
 		if c.Beg >= c.End {
 			continue
@@ -566,9 +623,7 @@ func viewIndexedChunks(f io.ReadSeeker, out io.Writer, opts ViewOptions, unionFn
 			return matched, err
 		}
 		// NewReaderAt(startBlock) so the reader's VirtualOffset is absolute and
-		// the chunk-bounded wrapper stops exactly at c.End. With a base-0 reader
-		// the offsets would be relative to startBlock and the bound would
-		// over-read into later chunks, emitting duplicates.
+		// the chunk-bounded wrapper stops exactly at c.End (see bgzf.NewReaderAt).
 		bgz, err := bgzip.NewReaderAt(f, startBlock)
 		if err != nil {
 			return matched, err
@@ -580,9 +635,7 @@ func viewIndexedChunks(f io.ReadSeeker, out io.Writer, opts ViewOptions, unionFn
 				return matched, err
 			}
 		}
-		// Build a chunk-bounded reader so the BAM parser stops when the
-		// chunk ends; we use a custom wrapper that watches the underlying
-		// virtual offset.
+		// Chunk-bounded reader so the BAM parser stops when the chunk ends.
 		boundedSrc := &chunkBoundedReader{r: bgz, end: uint64(c.End)}
 		br := sam.NewBAMBodyReader(boundedSrc, hdr)
 		for {
@@ -593,7 +646,7 @@ func viewIndexedChunks(f io.ReadSeeker, out io.Writer, opts ViewOptions, unionFn
 			if err != nil {
 				return matched, err
 			}
-			if !keepRecord(rec, &opts, sub) {
+			if !keepRecord(rec, opts, sub) {
 				continue
 			}
 			if regionFilter != nil && !regionFilter(rec) {
@@ -612,13 +665,6 @@ func viewIndexedChunks(f io.ReadSeeker, out io.Writer, opts ViewOptions, unionFn
 		}
 		_ = bgz.Close()
 	}
-	if opts.Count {
-		fmt.Fprintln(out, matched)
-		return matched, nil
-	}
-	if err := closeViewWriter(w); err != nil {
-		return matched, err
-	}
 	return matched, nil
 }
 
@@ -628,11 +674,7 @@ func viewIndexedChunks(f io.ReadSeeker, out io.Writer, opts ViewOptions, unionFn
 // SAM line straight from the raw BAM bytes via sam.BAMReader.WriteSAMBody —
 // avoiding the intermediate Record and its per-field/per-aux string
 // allocations. Callers must have verified samFastPathEligible(opts).
-func viewIndexedChunksFast(f io.ReadSeeker, out io.Writer, opts *ViewOptions, hdr *sam.Header, chunks []bam.BAIChunk, resolved []region.ResolvedRegion) (int, error) {
-	regionPred := fastRegionPredicate(resolved)
-	if regionPred == nil && len(opts.Regions) > 0 {
-		regionPred = func(*sam.FastFields) bool { return false }
-	}
+func viewIndexedChunksFast(f io.ReadSeeker, out io.Writer, opts *ViewOptions, hdr *sam.Header, passes []regionScanPass) (int, error) {
 	bedPred, berr := fastBedFilter(opts.BedPath)
 	if berr != nil {
 		return 0, berr
@@ -655,6 +697,33 @@ func viewIndexedChunksFast(f io.ReadSeeker, out io.Writer, opts *ViewOptions, hd
 	}
 
 	matched := 0
+	for pi := range passes {
+		regionPred := fastRegionPredicate(passes[pi].regions)
+		if regionPred == nil && len(opts.Regions) > 0 {
+			regionPred = func(*sam.FastFields) bool { return false }
+		}
+		n, serr := scanChunksFast(f, passes[pi].chunks, hdr, opts, bw, regionPred, bedPred)
+		matched += n
+		if serr != nil {
+			return matched, serr
+		}
+	}
+	if opts.Count {
+		fmt.Fprintln(out, matched)
+		return matched, nil
+	}
+	if err := bw.Flush(); err != nil {
+		return matched, err
+	}
+	return matched, nil
+}
+
+// scanChunksFast is the per-pass body of the fast indexed scan: it walks chunks,
+// serialising each survivor straight from raw BAM bytes into bw (a nil bw counts
+// only). The caller writes the header and flushes bw once across all passes, so
+// default multi-region mode can run one pass per region into a single stream.
+func scanChunksFast(f io.ReadSeeker, chunks []bam.BAIChunk, hdr *sam.Header, opts *ViewOptions, bw *bufio.Writer, regionPred, bedPred func(*sam.FastFields) bool) (int, error) {
+	matched := 0
 	for _, c := range chunks {
 		if c.Beg >= c.End {
 			continue
@@ -663,10 +732,8 @@ func viewIndexedChunksFast(f io.ReadSeeker, out io.Writer, opts *ViewOptions, hd
 		if _, err := f.Seek(startBlock, io.SeekStart); err != nil {
 			return matched, err
 		}
-		// NewReaderAt(startBlock) so the reader's VirtualOffset is absolute and
-		// the chunk-bounded wrapper stops exactly at c.End. With a base-0 reader
-		// the offsets would be relative to startBlock and the bound would
-		// over-read into later chunks, emitting duplicates.
+		// NewReaderAt(startBlock) so VirtualOffset is absolute and the
+		// chunk-bounded wrapper stops exactly at c.End (see bgzf.NewReaderAt).
 		bgz, err := bgzip.NewReaderAt(f, startBlock)
 		if err != nil {
 			return matched, err
@@ -685,13 +752,6 @@ func viewIndexedChunksFast(f io.ReadSeeker, out io.Writer, opts *ViewOptions, hd
 		if scanErr != nil {
 			return matched, scanErr
 		}
-	}
-	if opts.Count {
-		fmt.Fprintln(out, matched)
-		return matched, nil
-	}
-	if err := bw.Flush(); err != nil {
-		return matched, err
 	}
 	return matched, nil
 }
