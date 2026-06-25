@@ -190,17 +190,8 @@ func runMpileup(readers []sam.Reader, out io.Writer, opts MpileupOptions, refFA 
 		opts.MaxDepth = DefaultMpileupMaxDepth
 	}
 
-	// Fast path: a single coordinate-sorted input with no region/positions
-	// restriction and no all-positions mode can be piled up by streaming the
-	// records tile by tile, so peak memory is O(tile width x depth) rather than
-	// the whole file. It feeds emitMpileupWindow exactly the per-tile record
-	// sets the buffered path below would, so the output is byte-identical.
-	if len(readers) == 1 && posFilter == nil && len(opts.Regions) == 0 &&
-		!opts.AllPositions && !opts.AllPositionsAllChroms && headerIsCoordinateSorted(hdr) {
-		return runMpileupStreaming(readers[0], out, opts, refFA)
-	}
-
-	// Resolve region restrictions.
+	// Resolve region restrictions up front so both the streaming and buffered
+	// walks share them.
 	regions, _, err := region.ResolveRegions(opts.Regions, func(name string) int { return hdr.RefIndex(name) })
 	if err != nil {
 		return err
@@ -214,6 +205,22 @@ func runMpileup(readers []sam.Reader, out io.Writer, opts MpileupOptions, refFA 
 			end0 = int(refLengthForName(hdr, r.Region.Chrom))
 		}
 		regionByChrom[r.Region.Chrom] = append(regionByChrom[r.Region.Chrom], [2]int{r.Beg0, end0})
+	}
+
+	// Fast path: a single coordinate-sorted input — WITH OR WITHOUT a region /
+	// positions restriction (but not all-positions mode) — is piled up by
+	// streaming the records tile by tile, so peak memory is O(tile width x
+	// depth) rather than the whole file. Previously any -r/-l restriction fell
+	// through to the buffered walk below, which loads every read of the file
+	// into memory first (an 11 GB OOM on a whole-genome BAM restricted to one
+	// chromosome). The streaming walk feeds emitMpileupWindow the same per-tile
+	// record sets and position filter, so the output is byte-identical.
+	if len(readers) == 1 && !opts.AllPositions && !opts.AllPositionsAllChroms && headerIsCoordinateSorted(hdr) {
+		var rbc map[string][][2]int
+		if len(regions) > 0 {
+			rbc = mergeRegionByChrom(regionByChrom)
+		}
+		return runMpileupStreaming(readers[0], out, opts, refFA, rbc, posFilter)
 	}
 
 	// Pull records from every input, bucketed by chrom in the order of
@@ -372,7 +379,31 @@ const mpileupTileWidth = 16 * 1024
 // pileup. The per-tile record sets handed to emitMpileupWindow are identical to
 // those the buffered path produces for a coordinate-sorted input, so output is
 // byte-for-byte the same.
-func runMpileupStreaming(rd sam.Reader, out io.Writer, opts MpileupOptions, refFA *fasta.RandomAccess) error {
+// mergeRegionByChrom returns the per-chrom windows sorted ascending and with
+// overlapping/adjacent intervals merged, so the forward-only streaming walk can
+// emit them in a single left-to-right pass (matching upstream's coordinate
+// order). The input map is left unmodified.
+func mergeRegionByChrom(in map[string][][2]int) map[string][][2]int {
+	out := make(map[string][][2]int, len(in))
+	for chrom, ws := range in {
+		cp := append([][2]int(nil), ws...)
+		sort.Slice(cp, func(i, j int) bool { return cp[i][0] < cp[j][0] })
+		merged := cp[:0]
+		for _, w := range cp {
+			if n := len(merged); n > 0 && w[0] <= merged[n-1][1] {
+				if w[1] > merged[n-1][1] {
+					merged[n-1][1] = w[1]
+				}
+				continue
+			}
+			merged = append(merged, w)
+		}
+		out[chrom] = merged
+	}
+	return out
+}
+
+func runMpileupStreaming(rd sam.Reader, out io.Writer, opts MpileupOptions, refFA *fasta.RandomAccess, regionByChrom map[string][][2]int, posFilter *positionFilter) error {
 	hdr := rd.Header()
 	bw := bufio.NewWriter(out)
 	defer bw.Flush()
@@ -381,6 +412,12 @@ func runMpileupStreaming(rd sam.Reader, out io.Writer, opts MpileupOptions, refF
 	baqFlag := textMpileupBAQFlag(opts)
 	src := newMpileupSource(rd, opts, hdr)
 	var sc mpileupScratch
+
+	dropChrom := func(chrom string) {
+		for p := src.peek(); p != nil && p.RName == chrom; p = src.peek() {
+			src.pop()
+		}
+	}
 
 	for {
 		head := src.peek()
@@ -392,10 +429,25 @@ func runMpileupStreaming(rd sam.Reader, out io.Writer, opts MpileupOptions, refF
 		if refLen <= 0 {
 			// Chromosome absent from the header (or zero length): its records
 			// are never emitted, exactly as in the buffered walk. Drop them.
-			for p := src.peek(); p != nil && p.RName == chrom; p = src.peek() {
-				src.pop()
-			}
+			dropChrom(chrom)
 			continue
+		}
+
+		// Determine the coordinate windows to emit on this chrom: the requested
+		// regions clamped to the contig (sorted, non-overlapping) when region-
+		// restricted, else the whole contig. A chrom outside every region is
+		// streamed past without emitting, so peak memory stays O(tile x depth)
+		// even with -r — the buffered walk would have loaded the whole file.
+		var windows [][2]int
+		if regionByChrom != nil {
+			ws, ok := regionByChrom[chrom]
+			if !ok {
+				dropChrom(chrom)
+				continue
+			}
+			windows = ws
+		} else {
+			windows = [][2]int{{0, refLen}}
 		}
 
 		// Fetch the whole contig once: it serves both BAQ and the per-row
@@ -410,35 +462,55 @@ func runMpileupStreaming(rd sam.Reader, out io.Writer, opts MpileupOptions, refF
 		}
 
 		var active []*sam.Record
-		for tBeg := 0; tBeg < refLen; tBeg += mpileupTileWidth {
-			tEnd := tBeg + mpileupTileWidth
-			if tEnd > refLen {
-				tEnd = refLen
+		for _, w := range windows {
+			wBeg, wEnd := w[0], w[1]
+			if wBeg < 0 {
+				wBeg = 0
 			}
-			active = pruneEndedBefore(active, tBeg)
-			for {
-				p := src.peek()
-				if p == nil || p.RName != chrom || int(p.Pos)-1 >= tEnd {
-					break
+			if wEnd > refLen {
+				wEnd = refLen
+			}
+			if wBeg >= wEnd {
+				continue
+			}
+			active = pruneEndedBefore(active, wBeg)
+			for tBeg := wBeg; tBeg < wEnd; tBeg += mpileupTileWidth {
+				tEnd := tBeg + mpileupTileWidth
+				if tEnd > wEnd {
+					tEnd = wEnd
 				}
-				if doBAQ {
-					if r := baq.SamProbRealn(p, contig, baqFlag); r < -3 {
-						return fmt.Errorf("samtools mpileup: BAQ alignment failed for read %q", p.QName)
+				active = pruneEndedBefore(active, tBeg)
+				for {
+					p := src.peek()
+					if p == nil || p.RName != chrom || int(p.Pos)-1 >= tEnd {
+						break
 					}
+					// Consume the record regardless, but only retain (and BAQ-
+					// realign) it when it actually overlaps this tile. Reads that
+					// ended before the tile — e.g. everything between the contig
+					// start and a deep -r region — are popped without being held,
+					// which is what keeps `active` small when streaming to a region
+					// that starts far into the contig.
+					if int(p.EndPosition()) > tBeg {
+						if doBAQ {
+							if r := baq.SamProbRealn(p, contig, baqFlag); r < -3 {
+								return fmt.Errorf("samtools mpileup: BAQ alignment failed for read %q", p.QName)
+							}
+						}
+						active = append(active, p)
+					}
+					src.pop()
 				}
-				active = append(active, p)
-				src.pop()
-			}
-			if err := emitMpileupWindow(bw, chrom, tBeg, tEnd, refLen,
-				[][]*sam.Record{active}, contig, refFA, nil, opts, &sc); err != nil {
-				return err
+				if err := emitMpileupWindow(bw, chrom, tBeg, tEnd, refLen,
+					[][]*sam.Record{active}, contig, refFA, posFilter, opts, &sc); err != nil {
+					return err
+				}
 			}
 		}
-		// Defensive: discard any stragglers positioned beyond the contig so the
-		// outer loop advances to the next chromosome rather than spinning.
-		for p := src.peek(); p != nil && p.RName == chrom; p = src.peek() {
-			src.pop()
-		}
+		// Discard any remaining records of this chrom (before the first window,
+		// between windows, or beyond the last) so the loop advances to the next
+		// chromosome rather than spinning.
+		dropChrom(chrom)
 		if src.err != nil {
 			return src.err
 		}
