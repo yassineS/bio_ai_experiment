@@ -147,10 +147,19 @@ func dropseFasta(in io.Reader, w io.Writer) error {
 				last = nil
 				continue
 			}
-			last = rec
+			last = snapshotFastaSeq(rec)
 			continue
 		}
-		last = rec
+		last = snapshotFastaSeq(rec)
 	}
 	return bw.Flush()
+}
+
+// snapshotFastaSeq detaches rec.Sequence from the fasta.Reader's reused buffer
+// by copying it, so a record held across the next Read (the lookahead paths
+// that compare a record with its predecessor) stays valid. The reader aliases
+// its sequence buffer between Reads, so a retained record must own its bytes.
+func snapshotFastaSeq(rec *fasta.Record) *fasta.Record {
+	rec.Sequence = append([]byte(nil), rec.Sequence...)
+	return rec
 }

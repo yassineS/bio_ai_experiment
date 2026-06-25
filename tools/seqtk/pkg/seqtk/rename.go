@@ -180,11 +180,11 @@ func renameFasta(in io.Reader, w io.Writer, prefix string) error {
 				return err
 			}
 			n++
-			last = rec
+			last = snapshotFastaSeq(rec)
 			sticky = updateSticky(sticky, commentOf(rec.Description, rec.ID))
 			continue
 		}
-		last = rec
+		last = snapshotFastaSeq(rec)
 		sticky = updateSticky(sticky, commentOf(rec.Description, rec.ID))
 	}
 	if last != nil {

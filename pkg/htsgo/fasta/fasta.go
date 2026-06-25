@@ -23,11 +23,21 @@ type Record struct {
 }
 
 // Reader provides sequential access to FASTA records.
+//
+// The Sequence of a Record returned by Read aliases an internal buffer that is
+// REUSED by the next Read call, so it must be consumed (or copied) before
+// calling Read again. This is what keeps the reader's peak memory at one
+// record's sequence rather than reallocating a fresh multi-hundred-MB buffer
+// per contig (a whole-chromosome FASTA otherwise cost ~5x upstream's RSS).
+// ReadAll, which retains every record, copies each Sequence so its results stay
+// independent; callers that retain a streamed Record's Sequence across a Read
+// must copy it themselves.
 type Reader struct {
 	scanner       *bufio.Scanner
 	err           error
 	nextHeader    string // Buffer for the next header when we read ahead
 	hasNextHeader bool
+	seqBuffer     bytes.Buffer // reused sequence accumulator (see the type doc)
 }
 
 // NewReader creates a new FASTA reader from an io.Reader.
@@ -83,18 +93,29 @@ func (r *Reader) Read() (*Record, error) {
 		id = fields[0]
 	}
 
-	// Read sequence lines until next header or EOF
-	var sequence bytes.Buffer
+	// Read sequence lines until next header or EOF. Use scanner.Bytes() (not
+	// Text()) and trim in place: a whole-chromosome record is millions of
+	// lines, and allocating a string per line — as Text()+TrimSpace did —
+	// churned hundreds of MB of short-lived garbage per contig, which (not the
+	// sequence itself) dominated this reader's peak heap. scanner.Bytes()
+	// returns the line backed by the scanner's buffer, so the header copy below
+	// is taken as a string to detach it before the next Scan overwrites it.
+	// Accumulate into the reader's reused buffer (Reset keeps its capacity), so
+	// the next record overwrites this one rather than allocating afresh — the
+	// returned Sequence therefore aliases the buffer and is valid only until the
+	// next Read (see the Reader type doc).
+	r.seqBuffer.Reset()
 	for r.scanner.Scan() {
-		line := r.scanner.Text()
-		if strings.HasPrefix(line, ">") {
-			// Save the header for next read
-			r.nextHeader = strings.TrimPrefix(line, ">")
+		line := r.scanner.Bytes()
+		if len(line) > 0 && line[0] == '>' {
+			// Save the header for next read.
+			r.nextHeader = string(line[1:])
 			r.hasNextHeader = true
 			break
 		}
-		// Trim whitespace and append sequence
-		sequence.WriteString(strings.TrimSpace(line))
+		// Trim whitespace and append sequence (TrimSpace returns a subslice,
+		// Write copies it into the buffer — no per-line allocation).
+		r.seqBuffer.Write(bytes.TrimSpace(line))
 	}
 
 	if err := r.scanner.Err(); err != nil {
@@ -105,11 +126,14 @@ func (r *Reader) Read() (*Record, error) {
 	return &Record{
 		ID:          id,
 		Description: description,
-		Sequence:    sequence.Bytes(),
+		Sequence:    r.seqBuffer.Bytes(),
 	}, nil
 }
 
-// ReadAll reads all FASTA records from the reader.
+// ReadAll reads all FASTA records from the reader. Because every record is
+// retained, each record's Sequence is copied out of the reader's reused buffer
+// so the returned records are fully independent (Read alone aliases that
+// buffer — see the Reader type doc).
 func (r *Reader) ReadAll() ([]*Record, error) {
 	var records []*Record
 	for {
@@ -120,6 +144,7 @@ func (r *Reader) ReadAll() ([]*Record, error) {
 		if err != nil {
 			return records, err
 		}
+		record.Sequence = append([]byte(nil), record.Sequence...)
 		records = append(records, record)
 	}
 	return records, nil
