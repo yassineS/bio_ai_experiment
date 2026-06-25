@@ -261,8 +261,9 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   record once per overlapping region (was a single deduplicated union scan, i.e.
   the `-M` semantics always); `-M` collapses to the dedup/coordinate-ordered
   union. Forward/reversed/overlapping queries byte-identical vs upstream in both
-  modes. **Remaining:** `-M` cross-region de-dup is not yet honoured for CRAM
-  (rare combo; default CRAM multi-region is correct).
+  modes. CRAM now honours `-M` too — it walks the regions merged into
+  non-overlapping coordinate-sorted intervals (`mergeResolvedRegions`),
+  byte-validated vs upstream for default + `-M`, overlapping + reversed.
 - **`bcftools isec` memory — FIXED** (commits `58efa79`, `25186a6`). Buffered a
   whole contig (2.7 GB peak on a 3-contig 2.4 M-record pair); now a streaming
   k-way position-window merge with a record+byte-bounded batch — peak RSS

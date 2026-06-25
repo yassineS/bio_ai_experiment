@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/region"
 )
 
 // TestViewIndexedNoOverReadDuplicates is a regression for the BGZF
@@ -137,6 +139,36 @@ func TestViewMultiRegionPerRegionVsDedup(t *testing.T) {
 	// -M: deduplicated, coordinate order regardless of region order.
 	if got := names(ViewOptions{Regions: []string{"chr1:50-200", "chr1:1-100"}, MultiRegion: true}); !eq(got, []string{"a_only", "overlap", "b_only"}) {
 		t.Errorf("-M = %v, want [a_only overlap b_only]", got)
+	}
+}
+
+// TestMergeResolvedRegions pins the -M region coalescing: overlapping/adjacent
+// intervals on a reference merge into their union, distinct references stay
+// separate, and the result is sorted by (reference, start).
+func TestMergeResolvedRegions(t *testing.T) {
+	R := func(ref, beg, end int) region.ResolvedRegion {
+		return region.ResolvedRegion{RefID: ref, Beg0: beg, End0: end}
+	}
+	got := mergeResolvedRegions([]region.ResolvedRegion{
+		R(0, 100, 200), R(0, 150, 300), // overlap -> [100,300]
+		R(0, 300, 400), // adjacent (beg==prev end) -> merges into [100,400]
+		R(0, 500, 600), // disjoint
+		R(1, 10, 20),   // different ref, given out of order
+		R(0, 0, 50),    // earliest, given last
+	})
+	want := []region.ResolvedRegion{R(0, 0, 50), R(0, 100, 400), R(0, 500, 600), R(1, 10, 20)}
+	if len(got) != len(want) {
+		t.Fatalf("merged to %d intervals %v, want %d %v", len(got), got, len(want), want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("interval %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	// A single region is returned untouched.
+	one := []region.ResolvedRegion{R(2, 5, 9)}
+	if g := mergeResolvedRegions(one); len(g) != 1 || g[0] != one[0] {
+		t.Errorf("single region = %v, want %v", g, one)
 	}
 }
 

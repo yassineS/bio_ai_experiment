@@ -449,15 +449,21 @@ func viewCRAMIndexed(inPath string, out io.Writer, opts ViewOptions, warnW io.Wr
 	sub := newSubsampler(opts)
 	matched := 0
 	// QueryRegion already restricts each query's records to its reference and
-	// coordinate range; iterate the resolved regions in command-line order and
-	// emit each region's overlapping records, applying the same per-record
-	// filters the BAM indexed path uses. Records are de-duplicated within a
-	// region by the RegionReader's container-overlap test; across regions a
-	// record appears once per overlapping region, matching upstream's default
-	// multi-region behaviour. (NB: -M's cross-region de-duplication is honoured
-	// for BAM/CSI but not yet for CRAM — a rare combination; see the parity
-	// roadmap.)
-	for _, reg := range resolved {
+	// coordinate range; iterate the regions and emit each one's overlapping
+	// records, applying the same per-record filters the BAM indexed path uses.
+	// Records are de-duplicated within a region by the RegionReader's
+	// container-overlap test. Default (non -M) walks the regions in command-line
+	// order, so a record overlapping two regions is emitted once per region —
+	// upstream's default. With -M we walk the regions merged into non-overlapping
+	// coordinate-sorted intervals, so each record is emitted at most once in
+	// coordinate order (a merged interval is the union of the originals it
+	// covers, so any record overlapping it overlaps an original) — upstream's
+	// multi-region-iterator behaviour, now honoured for CRAM as for BAM/CSI.
+	queryRegions := resolved
+	if opts.MultiRegion {
+		queryRegions = mergeResolvedRegions(resolved)
+	}
+	for _, reg := range queryRegions {
 		recs, qerr := rr.Query(reg)
 		if qerr != nil {
 			return matched, qerr
@@ -582,6 +588,37 @@ func viewIndexedChunks(f io.ReadSeeker, out io.Writer, opts ViewOptions, unionFn
 		return matched, err
 	}
 	return matched, nil
+}
+
+// mergeResolvedRegions collapses regions into non-overlapping intervals sorted
+// by (reference, start). Overlapping or adjacent intervals on the same reference
+// merge into one whose span is their union; intervals on different references
+// stay separate. It is the CRAM counterpart of UnionChunks: walking the merged
+// intervals emits every record overlapping the union of the originals exactly
+// once, in coordinate order (the -M / multi-region-iterator semantics).
+func mergeResolvedRegions(regs []region.ResolvedRegion) []region.ResolvedRegion {
+	if len(regs) <= 1 {
+		return regs
+	}
+	sorted := append([]region.ResolvedRegion(nil), regs...)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].RefID != sorted[j].RefID {
+			return sorted[i].RefID < sorted[j].RefID
+		}
+		return sorted[i].Beg0 < sorted[j].Beg0
+	})
+	out := []region.ResolvedRegion{sorted[0]}
+	for _, r := range sorted[1:] {
+		last := &out[len(out)-1]
+		if r.RefID == last.RefID && r.Beg0 <= last.End0 {
+			if r.End0 > last.End0 {
+				last.End0 = r.End0
+			}
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // regionScanPass is one indexed-scan pass: the BAI/CSI chunks to walk and the
