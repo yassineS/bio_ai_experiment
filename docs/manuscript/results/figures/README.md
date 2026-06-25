@@ -22,7 +22,7 @@ ratio (claim C3, `pipeline/stats`).
 
 | figure | what it shows |
 |---|---|
-| `fig_speedup` | Per-**subcommand** speedup, **grouped by tool** (samtools / bcftools / bedtools / seqtk / sickle), with one bar per tier (small / medium / large) and 95% CI. The headline: I/O conversions + `bedtools` intersect/coverage + `sickle` are faster; the compute-heavy variant cells (`mpileup`, `call`, `isec`) are a steady ~2–2.5× slower across tiers. (`bcf_isec` previously showed a spurious ~15× at large — a benchmarking artifact of writing its output to a slow bind mount with under-buffered writes; fixed, see below — it is really ~2.5×, gently rising with sample count.) |
+| `fig_speedup` | Per-**subcommand** speedup, **grouped by tool** (samtools / bcftools / bedtools / seqtk / sickle), with one bar per tier (small / medium / large) and 95% CI. The headline: I/O conversions + `bedtools` intersect/coverage + `sickle` are faster; the compute-heavy variant cells (`mpileup`, `call`) are ~2–2.5× slower; `isec` is now ~1.4–1.5× (after the verbatim-sample passthrough — see below; it had shown a spurious ~15× at large that was a slow-bind-mount + under-buffered-write artifact). |
 | `fig_scaling` | Per-tier **dumbbell/arrow** plot (one facet per tier): for each subcommand an open marker at upstream's median wall time with an **arrow to ours** (filled, tool-coloured) and **IQR error bars**. Tiers are discrete, so nothing is connected across them; arrow pointing left = faster. |
 | `fig_scatter` | Ours vs upstream wall time (log-log) with the `y=x` parity line; points below the line are faster, above are slower; colour = tool. |
 | `fig_memory` | Per-**subcommand** peak-RSS ratio (ours / upstream), same layout as `fig_speedup`. **< 1× = leaner than upstream.** The honest picture of the Go-vs-C memory trade: every cell uses *more* RAM (Go runtime + GC), from ~1.2× (`bcftools query`/`stats`) to ~13–14× on the streaming-histogram cells (`samtools depth`/`stats`, `bedtools genomecov`/`merge`). |
@@ -59,8 +59,9 @@ disk, and the large-tier bench ran with `TMPDIR` on the slow Docker bind mount
 unbuffered, one `fmt.Fprintf` per site — so the bind mount's per-`write()`
 latency dominated: isec on the medium fixture took **3.9 s on the bind mount vs
 0.5 s on tmpfs**. Buffering both paths (256 KiB) fixed it (3.9 s → 0.46 s on the
-slow mount, byte-identical). Re-measured on a fast disk, isec is a **steady
-~2.1–2.5×** across small→large (rising gently with sample count: 12→16→24), not
-15×. The figure now uses those fast-disk numbers. The residual ~2.5× is partly
-the multi-sample FORMAT decode the set op doesn't need — a minor follow-up
-(gap G6).
+slow mount, byte-identical). Re-measured on a fast disk, isec was ~2.1–2.5×
+across small→large; the remaining gap was the multi-sample FORMAT over-decode
+(gap G6), since fixed — the vcf reader's `KeepRawSamples` mode keeps the
+FORMAT+sample columns verbatim instead of parsing every sample into per-sample
+maps and rebuilding them on write. isec is now **~1.4–1.5×** upstream (the figure
+uses these numbers). RSS is ~3.5–11× (Go runtime + GC; see `fig_memory`).

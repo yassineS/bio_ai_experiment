@@ -63,8 +63,9 @@ fixed (streaming k-way merge + byte-bounded batch: RSS 39× → ~6.5×, multi-GB
 ~80 MB on a many-contig human-scale corpus). Its earlier ~15× **wall** turned
 out to be a benchmarking artifact: isec writes its `-p` output to disk, the bench
 used the slow Docker bind mount, and our VCF / `sites.txt` writers were
-under-buffered — fixed (256 KiB buffers), and on a fast disk isec is a steady
-**~2.1–2.5×** (gap G6 is now just the minor multi-sample FORMAT over-decode).
+under-buffered — fixed (256 KiB buffers). On a fast disk isec was then ~2.1–2.5×;
+the residual multi-sample FORMAT over-decode (gap G6) is since fixed too (the vcf
+reader's `KeepRawSamples` verbatim-sample passthrough), so isec is now **~1.4–1.5×**.
 
 > Separately, the **parity matrix** harness (`pipeline/runner.RunEntry`) still
 > buffers each cell's entire ours+upstream stdout in RAM to byte-diff them, so it
@@ -104,16 +105,17 @@ stopped spilling their huge output to a small-overlay temp dir (see above).
 | `bed_merge` | 1.82 | [1.73, 1.88] | **slow** |
 | `bcf_call` | 1.76 | [1.75, 1.77] | slower (RSS 1.6×) |
 | `sam_mpileup` | 2.20 | [2.13, 2.27] | **slow** (RSS 2.6×) |
-| `bcf_isec` | 2.48 | [2.44, 2.50] | slower (fast-disk; RSS ~6.5×). The earlier 15× was a slow-bind-mount + under-buffered-write artifact, now fixed. |
+| `bcf_isec` | 1.40 | [1.36, 1.43] | slower (fast-disk; RSS ~11×). The earlier 15× was a slow-bind-mount + under-buffered-write artifact, now fixed. |
 
 The large-tier picture matches medium: I/O-bound conversions, `bedtools`
 intersect/coverage/genomecov, and `sickle` are **faster** than upstream; the
 compute-heavy cells are slower. `bcf_isec`'s memory is bounded — the k-way
-position-window merge with a byte-bounded batch dropped its peak RSS from 39× to
-~6.5× upstream (multi-GB → ~80 MB on a many-contig human-scale corpus). Its
-**wall** is a steady **~2.1–2.5×** across tiers (it had looked 15× at large only
-because the bench wrote isec's `-p` output to the slow Docker bind mount with
-under-buffered writers; both are now buffered and the figure uses fast-disk
+position-window merge with a byte-bounded batch keeps peak RSS flat (~108 MB,
+~11× upstream's ~10 MB; multi-GB before the streaming fix). Its **wall** is now
+**~1.4–1.5×** across tiers after the verbatim-sample passthrough (it had looked
+15× at large only because the bench wrote isec's `-p` output to the slow Docker
+bind mount with under-buffered writers; both are now buffered and the figure uses
+fast-disk
 numbers). `bcf_norm`'s 48× RSS and `sam_depth`/`sam_view_bam2cram`'s ~11× RSS are
 the other memory-side optimisation targets (tracked in the real-data perf
 follow-ups).
