@@ -49,30 +49,6 @@ type record struct {
 	isBAM  bool     // true for BAM-derived records (empty -c fields print as ".")
 }
 
-// readInput reads every interval from r, auto-detecting BAM (by sniffing the
-// leading magic bytes) or a text format (BED/GFF/VCF). It returns the parsed
-// records and the detected format. Header/track/browser/blank lines are skipped
-// for text input. The text format is locked on the first data line, matching
-// upstream's per-file type detection.
-func readInput(r io.Reader, opts MergeOptions) ([]record, inputFormat, error) {
-	br := bufio.NewReaderSize(r, 64*1024)
-	magic, _ := br.Peek(4)
-	if len(magic) >= 4 && (magic[0] == 0x1f && magic[1] == 0x8b || string(magic) == "BAM\x01") {
-		recs, ok, err := readBAM(br)
-		if err != nil {
-			return nil, fmtBAM, err
-		}
-		if ok {
-			return recs, fmtBAM, nil
-		}
-		// Gzip magic but not BAM: iohelper.OpenReader already transparently
-		// decompresses plain-gzip text, so a still-compressed non-BAM stream is
-		// unexpected here. Fall through to the text reader.
-	}
-	recs, f, err := readText(br, opts)
-	return recs, f, err
-}
-
 // detectFormat classifies the first tokenized data line. BED takes precedence
 // (cols 2,3 integer), then VCF (col 2 integer with >= 8 cols), then GFF (8 or 9
 // cols with cols 4,5 integer), matching upstream BedFile::parseLine.
@@ -244,31 +220,60 @@ func fieldCount(line string) int {
 // chromosome then start. Malformed or unsorted input yields a *FieldCountError
 // or *SortOrderError, which the CLI renders with upstream-exact wording.
 func readText(br *bufio.Reader, opts MergeOptions) ([]record, inputFormat, error) {
+	src := newTextRecordSource(br, opts)
+	var out []record
+	for {
+		rec, ok := src.next()
+		if !ok {
+			break
+		}
+		out = append(out, rec)
+	}
+	if src.err != nil {
+		return nil, src.format, src.err
+	}
+	return out, src.format, nil
+}
+
+// textRecordSource yields BED/GFF/VCF records one at a time from a scanner,
+// running upstream bedtools merge's per-line validation (field-count parity,
+// format detection, coordinate sort order) as each record is read — exactly the
+// loop readText used to run before collecting into a slice. next returns
+// ok=false at end of input or when a validation error is hit (in s.err), so a
+// caller can stream records into the merge without materialising them all.
+type textRecordSource struct {
+	sc              *bufio.Scanner
+	opts            MergeOptions
+	keepFields      bool
+	ci              chromInterner
+	sorts           sortState
+	format          inputFormat
+	formatSet       bool
+	headerForcedVCF bool
+	expectFields    int
+	validData       int
+	lineNum         int
+	filename        string
+	err             error
+}
+
+func newTextRecordSource(br *bufio.Reader, opts MergeOptions) *textRecordSource {
 	sc := bufio.NewScanner(br)
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	var out []record
-	var format inputFormat
-	formatSet := false
-	headerForcedVCF := false
-	// The full field slice is retained per record only when a column operation
-	// (-c) or a field-echoing output mode needs it; otherwise the fast BED path
-	// avoids allocating and keeping it (see parseBEDFast).
-	keepFields := opts.needsFields()
-	var ci chromInterner
-	var sorts sortState
-	// Field-count parity state: expectFields is locked to the first valid data
-	// line's count; validData counts valid data lines so the first four use
-	// upstream's "type checker" message and later lines the per-line message.
-	expectFields := 0
-	validData := 0
-	lineNum := 0 // physical 1-based line number, including blank/comment lines.
-	filename := opts.Filename
-	if filename == "" {
-		filename = "-"
+	fn := opts.Filename
+	if fn == "" {
+		fn = "-"
 	}
-	for sc.Scan() {
-		lineNum++
-		lineB := bytes.TrimRight(sc.Bytes(), "\r")
+	return &textRecordSource{sc: sc, opts: opts, keepFields: opts.needsFields(), filename: fn}
+}
+
+func (s *textRecordSource) next() (record, bool) {
+	if s.err != nil {
+		return record{}, false
+	}
+	for s.sc.Scan() {
+		s.lineNum++
+		lineB := bytes.TrimRight(s.sc.Bytes(), "\r")
 		trimmed := bytes.TrimSpace(lineB)
 		if len(trimmed) == 0 {
 			continue
@@ -276,68 +281,65 @@ func readText(br *bufio.Reader, opts MergeOptions) ([]record, inputFormat, error
 		if trimmed[0] == '#' || bytes.HasPrefix(trimmed, trackPrefix) ||
 			bytes.HasPrefix(trimmed, browserPrefix) {
 			if bytes.HasPrefix(lineB, fileformatVCFPrefix) {
-				headerForcedVCF = true
+				s.headerForcedVCF = true
 			}
 			continue
 		}
 		rawLine := string(lineB)
-		// Field-count validation, mirroring upstream's type checker (first four
-		// valid data lines) and per-line reader (later lines).
 		nf := fieldCount(rawLine)
-		validData++
-		if expectFields == 0 {
-			expectFields = nf
-		} else if nf != expectFields {
-			if validData <= 4 {
-				return nil, format, &FieldCountError{TypeChecker: true, Filename: filename}
+		s.validData++
+		if s.expectFields == 0 {
+			s.expectFields = nf
+		} else if nf != s.expectFields {
+			if s.validData <= 4 {
+				s.err = &FieldCountError{TypeChecker: true, Filename: s.filename}
+			} else {
+				s.err = &FieldCountError{Filename: s.filename, LineNum: s.lineNum, Got: nf, Want: s.expectFields}
 			}
-			return nil, format, &FieldCountError{
-				Filename: filename, LineNum: lineNum, Got: nf, Want: expectFields,
-			}
+			return record{}, false
 		}
-		if !formatSet {
-			if headerForcedVCF {
-				format = fmtVCF
+		if !s.formatSet {
+			if s.headerForcedVCF {
+				s.format = fmtVCF
 			} else {
 				f, ok := detectFormat(strings.Split(rawLine, "\t"))
 				if !ok {
-					return nil, format, fmt.Errorf("unexpected file format: please use tab-delimited BED, GFF, or VCF (line: %q)", rawLine)
+					s.err = fmt.Errorf("unexpected file format: please use tab-delimited BED, GFF, or VCF (line: %q)", rawLine)
+					return record{}, false
 				}
-				format = f
+				s.format = f
 			}
-			// -s is not supported for VCF (matching upstream merge.t11).
-			if format == fmtVCF && opts.StrandSpec {
-				return nil, format, errStrandedVCF
+			if s.format == fmtVCF && s.opts.StrandSpec {
+				s.err = errStrandedVCF
+				return record{}, false
 			}
-			formatSet = true
+			s.formatSet = true
 		}
 		var (
 			rec record
 			err error
 		)
-		if keepFields || format != fmtBED {
-			// string(lineB) is a fresh copy, so fields retained by the record do
-			// not alias the reused scanner buffer.
-			rec, err = parseTextRecord(strings.Split(rawLine, "\t"), format)
+		if s.keepFields || s.format != fmtBED {
+			rec, err = parseTextRecord(strings.Split(rawLine, "\t"), s.format)
 		} else {
-			rec, err = parseBEDFast(lineB, opts.StrandSpec || opts.StrandFilter != "", &ci)
+			rec, err = parseBEDFast(lineB, s.opts.StrandSpec || s.opts.StrandFilter != "", &s.ci)
 		}
 		if err != nil {
-			return nil, format, err
+			s.err = err
+			return record{}, false
 		}
-		// Sort-order validation in input order, matching upstream's
-		// testInputSortOrder (run as each record is read, before the merge).
-		if serr := sorts.check(rec.chrom, rec.start, "", filename); serr != nil {
+		if serr := s.sorts.check(rec.chrom, rec.start, "", s.filename); serr != nil {
 			soErr := serr.(*SortOrderError)
-			soErr.Line = sortErrorLine(rec, format, rawLine)
-			return nil, format, soErr
+			soErr.Line = sortErrorLine(rec, s.format, rawLine)
+			s.err = soErr
+			return record{}, false
 		}
-		out = append(out, rec)
+		return rec, true
 	}
-	if err := sc.Err(); err != nil {
-		return nil, format, err
+	if e := s.sc.Err(); e != nil {
+		s.err = e
 	}
-	return out, format, nil
+	return record{}, false
 }
 
 // chromInterner caches the most recently interned chromosome name so a run of

@@ -198,11 +198,15 @@ func TestMergeWithStatsEmpty(t *testing.T) {
 	}
 }
 
-// TestMergeWithStatsTiebreakersAcrossChroms covers the chrom comparison and the
-// end tiebreaker of the sort across multiple chromosomes.
+// TestMergeWithStatsTiebreakersAcrossChroms merges across two chromosomes given
+// in non-lexical order (chr2 before chr1). bedtools merge does NOT re-sort
+// chromosomes — it processes them in input order as long as each chromosome's
+// records are contiguous — so the output stays chr2-then-chr1 (verified against
+// upstream `bedtools merge`). The streaming merge matches that; the previous
+// in-memory path re-sorted lexically, which diverged from upstream here.
 func TestMergeWithStatsTiebreakersAcrossChroms(t *testing.T) {
 	input := "chr2\t10\t20\nchr1\t100\t150\nchr1\t100\t200\n"
-	expected := "chr1\t100\t200\nchr2\t10\t20\n"
+	expected := "chr2\t10\t20\nchr1\t100\t200\n"
 	var buf bytes.Buffer
 	stats, err := MergeWithStats(strings.NewReader(input), &buf, MergeOptions{})
 	if err != nil {

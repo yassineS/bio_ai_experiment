@@ -78,14 +78,74 @@ func Merge(reader io.Reader, writer io.Writer, opts MergeOptions) (int, error) {
 	if err := validateStrandOptions(opts); err != nil {
 		return 0, err
 	}
-	recs, format, err := readInput(reader, opts)
+	bamRecs, isBAM, br, err := dispatchInput(reader)
 	if err != nil {
 		return 0, err
 	}
-	if err := validateBAMColumns(format, opts.ColumnOps); err != nil {
-		return 0, err
+	if isBAM {
+		if err := validateBAMColumns(fmtBAM, opts.ColumnOps); err != nil {
+			return 0, err
+		}
+		return mergeRecords(bamRecs, writer, opts)
 	}
-	return mergeRecords(recs, writer, opts)
+	out, _, err := mergeTextStreaming(br, writer, opts)
+	return out, err
+}
+
+// dispatchInput peeks the input's magic to route BAM through the buffered
+// readBAM path and everything else (BED/GFF/VCF text) to the streaming text
+// merge. For BAM it returns the parsed records; otherwise it returns the
+// buffered reader positioned at the first byte for the text source to consume.
+func dispatchInput(reader io.Reader) (bamRecs []record, isBAM bool, br *bufio.Reader, err error) {
+	br = bufio.NewReaderSize(reader, 64*1024)
+	magic, _ := br.Peek(4)
+	if len(magic) >= 4 && (magic[0] == 0x1f && magic[1] == 0x8b || string(magic) == "BAM\x01") {
+		recs, ok, berr := readBAM(br)
+		if berr != nil {
+			return nil, false, nil, berr
+		}
+		if ok {
+			return recs, true, br, nil
+		}
+		// Gzip magic but not BAM: iohelper already decompressed plain-gzip text,
+		// so fall through to the text source over the same reader.
+	}
+	return nil, false, br, nil
+}
+
+// mergeTextStreaming streams BED/GFF/VCF records through the merge without
+// holding the whole input or all output groups in memory: it pulls one
+// validated record at a time and writes each merged group as it completes. It
+// returns the output-interval count and the input-interval count (for stats).
+func mergeTextStreaming(br *bufio.Reader, writer io.Writer, opts MergeOptions) (outCount, inCount int, err error) {
+	src := newTextRecordSource(br, opts)
+	// The -S strand filter dropped non-matching records before the merge in the
+	// buffered path; do it in the pull here. Input intervals are counted before
+	// the filter, matching the buffered path's len(recs).
+	pull := func() (record, bool, error) {
+		for {
+			r, ok := src.next()
+			if !ok {
+				return record{}, false, src.err
+			}
+			inCount++
+			if opts.StrandFilter != "" && r.strand != opts.StrandFilter {
+				continue
+			}
+			return r, true, nil
+		}
+	}
+	bw := bufio.NewWriter(writer)
+	if serr := mergeStreamSrc(pull, func(g []record) error {
+		outCount++
+		return writeGroup(bw, g, opts)
+	}, opts); serr != nil {
+		return 0, 0, serr
+	}
+	if ferr := bw.Flush(); ferr != nil {
+		return 0, 0, fmt.Errorf("error flushing output: %w", ferr)
+	}
+	return outCount, inCount, nil
 }
 
 // bamNumFields is the number of SAM fields a BAM record exposes to -c column
@@ -181,30 +241,66 @@ func buildGroups(recs []record, opts MergeOptions) [][]record {
 // never used and the result is a straightforward positional merge in stream
 // order. Unknown-strand records are dropped under any strand requirement.
 func mergeStream(recs []record, opts MergeOptions) [][]record {
+	idx := 0
+	pull := func() (record, bool, error) {
+		if idx < len(recs) {
+			r := recs[idx]
+			idx++
+			return r, true, nil
+		}
+		return record{}, false, nil
+	}
+	var out [][]record
+	// emit cannot fail when collecting into a slice; the slice pull never errors.
+	_ = mergeStreamSrc(pull, func(g []record) error { out = append(out, g); return nil }, opts)
+	return out
+}
+
+// mergeStreamSrc is the streaming heart of mergeStream: it pulls already
+// stream-sorted records from pull (which returns ok=false at end of input) and
+// invokes emit once per completed merged group, so neither the input records nor
+// the output groups need to be held in memory all at once. mergeStream wraps it
+// over a slice (and is what the unit tests exercise); Merge wraps it over a
+// streaming reader. The record-to-record logic is identical to the original
+// slice-indexed loop.
+func mergeStreamSrc(pull func() (record, bool, error), emit func([]record) error, opts MergeOptions) error {
 	mustMatchStrand := opts.StrandSpec
 	st := &strandQueue{}
-	idx := 0
-	// next returns the next record to consider, preferring storage (which is
-	// ordered by (chrom, start, end)) over the file stream, mirroring the
-	// tryToTakeFromStorage()/getNextRecord() precedence. When restrictStrand is
-	// set, only storage records of that strand are eligible to be pulled.
+	// srcErr latches the first pull error. Once set, the loops unwind without
+	// emitting the in-progress group: upstream rejects e.g. an out-of-order
+	// record before flushing the open merge group, so it writes nothing on error.
+	var srcErr error
+	pullc := func() (record, bool) {
+		if srcErr != nil {
+			return record{}, false
+		}
+		r, ok, err := pull()
+		if err != nil {
+			srcErr = err
+			return record{}, false
+		}
+		return r, ok
+	}
+	// nextStart returns the next group seed, preferring storage (ordered by
+	// (chrom, start, end)) over the file stream, and dropping unknown-strand file
+	// records under -s — mirroring tryToTakeFromStorage()/getNextRecord().
 	nextStart := func() (record, bool) {
 		if r, ok := st.top(); ok {
 			st.pop()
 			return r, true
 		}
-		for idx < len(recs) {
-			r := recs[idx]
-			idx++
+		for {
+			r, ok := pullc()
+			if !ok {
+				return record{}, false
+			}
 			if mustMatchStrand && strandUnknown(r.strand) {
-				continue // drop unknown-strand records under -s
+				continue
 			}
 			return r, true
 		}
-		return record{}, false
 	}
 
-	var out [][]record
 	for {
 		start, ok := nextStart()
 		if !ok {
@@ -235,14 +331,13 @@ func mergeStream(recs []record, opts MergeOptions) [][]record {
 				}
 			}
 			if !have {
-				if idx < len(recs) {
-					nextRec = recs[idx]
-					idx++
+				if r, ok2 := pullc(); ok2 {
+					nextRec = r
 					have = true
 				}
 			}
 			if !have {
-				break // EOF
+				break // EOF or pull error (handled after the loop)
 			}
 
 			mustDelete := mustMatchStrand && strandUnknown(nextRec.strand)
@@ -273,9 +368,14 @@ func mergeStream(recs []record, opts MergeOptions) [][]record {
 				curEnd = nextRec.end
 			}
 		}
-		out = append(out, group)
+		if srcErr != nil {
+			return srcErr // pull errored mid-group: do not emit the partial group
+		}
+		if err := emit(group); err != nil {
+			return err
+		}
 	}
-	return out
+	return srcErr // nil on a clean EOF; the latched error if nextStart's pull failed
 }
 
 // strandUnknown reports whether a strand value is neither '+' nor '-' (i.e. '.'
@@ -409,19 +509,26 @@ func MergeWithStats(reader io.Reader, writer io.Writer, opts MergeOptions) (*Sta
 	if err := validateStrandOptions(opts); err != nil {
 		return nil, err
 	}
-	recs, format, err := readInput(reader, opts)
+	bamRecs, isBAM, br, err := dispatchInput(reader)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateBAMColumns(format, opts.ColumnOps); err != nil {
-		return nil, err
+	if isBAM {
+		if err := validateBAMColumns(fmtBAM, opts.ColumnOps); err != nil {
+			return nil, err
+		}
+		stats := &Stats{InputIntervals: len(bamRecs)}
+		out, err := mergeRecords(bamRecs, writer, opts)
+		if err != nil {
+			return nil, err
+		}
+		stats.OutputIntervals = out
+		stats.MergedCount = stats.InputIntervals - stats.OutputIntervals
+		return stats, nil
 	}
-	stats := &Stats{InputIntervals: len(recs)}
-	out, err := mergeRecords(recs, writer, opts)
+	out, in, err := mergeTextStreaming(br, writer, opts)
 	if err != nil {
 		return nil, err
 	}
-	stats.OutputIntervals = out
-	stats.MergedCount = stats.InputIntervals - stats.OutputIntervals
-	return stats, nil
+	return &Stats{InputIntervals: in, OutputIntervals: out, MergedCount: in - out}, nil
 }
