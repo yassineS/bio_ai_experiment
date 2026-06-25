@@ -78,7 +78,11 @@ CELL = {
     "bed_genomecov": ("bedtools", "genomecov"),
     "bed_sort": ("bedtools", "sort"),
     "seqtk_seq": ("seqtk", "seq"),
+    "seqtk_comp": ("seqtk", "comp"),
+    "seqtk_trimfq": ("seqtk", "trimfq"),
+    "seqtk_fqchk": ("seqtk", "fqchk"),
     "sickle_se": ("sickle", "se"),
+    "sickle_pe": ("sickle", "pe"),
 }
 TOOL_ORDER = ["samtools", "bcftools", "bedtools", "seqtk", "sickle"]
 # Maximally-distinct Majorelle hues per tool — sickle is violet (not a blue) so
@@ -186,7 +190,8 @@ def fig_speedup(cells):
     ax.set_xscale("log")
     ax.set_xlim(0.3, 3.6)
     ax.xaxis.set_major_locator(matplotlib.ticker.FixedLocator([1 / 3, 0.5, 1, 2, 3]))
-    ax.xaxis.set_minor_locator(matplotlib.ticker.NullLocator())
+    ax.xaxis.set_minor_locator(matplotlib.ticker.LogLocator(base=10, subs=(0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9)))
+    ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
     ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(
         lambda v, _: ("0.33×" if abs(v - 1 / 3) < 0.01 else f"{v:g}×")))
     ax.set_xlabel("speedup  =  upstream wall / ours   (>1 means our port is faster)")
@@ -197,7 +202,7 @@ def fig_speedup(cells):
         fam_rows[tool].append(yb)
     for tool, ys in fam_rows.items():
         ymid = sum(ys) / len(ys)
-        ax.text(-0.215, ymid, tool, transform=ax.get_yaxis_transform(),
+        ax.text(-0.34, ymid, tool, transform=ax.get_yaxis_transform(),
                 rotation=90, va="center", ha="center", fontsize=10,
                 fontweight="bold", color=COLOURS["primary"])
     for sy in sep:
@@ -205,10 +210,10 @@ def fig_speedup(cells):
 
     ax.legend(title="tier", loc="upper right", frameon=True, framealpha=0.95,
               edgecolor=COLOURS["gray_16"], fontsize=9, ncol=1, title_fontsize=9)
-    fig.subplots_adjust(left=0.30, right=0.97, bottom=0.07, top=0.91)
+    fig.subplots_adjust(left=0.36, right=0.97, bottom=0.07, top=0.91)
     mj.title_block(fig, "Per-subcommand speedup vs upstream",
                    "median over reps · 95% bootstrap CI · grouped by tool",
-                   left=0.30, tighten=False)
+                   left=0.36, tighten=False)
     for ext in ("pdf", "png"):
         fig.savefig(os.path.join(FIGS, f"fig_speedup.{ext}"), dpi=200)
     plt.close(fig)
@@ -260,7 +265,8 @@ def fig_scaling(cells):
                         color=col, ecolor=col, elinewidth=0.8, capsize=1.5, zorder=5)
         ax.set_xscale("log")
         ax.xaxis.set_major_locator(matplotlib.ticker.LogLocator(base=10, numticks=5))
-        ax.xaxis.set_minor_locator(matplotlib.ticker.NullLocator())
+        ax.xaxis.set_minor_locator(matplotlib.ticker.LogLocator(base=10, subs=(0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9)))
+        ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
         ax.text(0.5, 1.01, tier, transform=ax.transAxes, va="bottom", ha="center",
                 fontsize=11, fontweight="bold", color=COLOURS["near_black"])
         ax.set_xlabel("wall time (ms)")
@@ -314,7 +320,8 @@ def fig_scatter(cells):
     # decade ticks only — no minor labels.
     for axis in (ax.xaxis, ax.yaxis):
         axis.set_major_locator(matplotlib.ticker.LogLocator(base=10, numticks=7))
-        axis.set_minor_locator(matplotlib.ticker.NullLocator())
+        axis.set_minor_locator(matplotlib.ticker.LogLocator(base=10, subs=(0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9)))
+        axis.set_minor_formatter(matplotlib.ticker.NullFormatter())
     ax.set_xlim(lim); ax.set_ylim(lim)
     ax.set_aspect("equal")
     ax.set_xlabel("upstream wall time (ms)")
