@@ -266,10 +266,20 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
 - **`bcftools isec` memory — FIXED** (commits `58efa79`, `25186a6`). Buffered a
   whole contig (2.7 GB peak on a 3-contig 2.4 M-record pair); now a streaming
   k-way position-window merge with a record+byte-bounded batch — peak RSS
-  **2.7 GB → 128 MB** (and 39× → **6.3×** upstream on the 24-sample large fixture,
-  492 → 81 MB). Byte-identical, and a colocated-`sites.txt` ordering parity bug
-  was fixed alongside (commit `a669525`). **Remaining (G6):** wall still ~15× at
-  large because isec decodes multi-sample FORMAT columns the set op never reads.
+  **2.7 GB → 128 MB** (and 39× → ~6.5× upstream on the 24-sample large fixture,
+  492 → ~80 MB). Byte-identical, and a colocated-`sites.txt` ordering parity bug
+  was fixed alongside (commit `a669525`).
+- **`bcftools isec` "15× wall" was an artifact — FIXED** (commit `ff46358`).
+  `isec -p` writes its projection VCFs + `sites.txt` to disk; the large-tier
+  bench ran with `TMPDIR` on the slow Docker bind mount, and our plain-VCF writer
+  used the default 4 KiB `bufio` while `sites.txt` was written unbuffered (one
+  `fmt.Fprintf` per site) — a per-`write()` syscall storm that the bind mount's
+  latency dominated (medium fixture 3.9 s on the mount vs 0.5 s on tmpfs).
+  256 KiB buffers on both paths: **3.9 s → 0.46 s** on the slow mount,
+  byte-identical. On a fast disk isec is a steady **~2.1–2.5×** across tiers
+  (rising gently with sample count), not 15×; the figures use the fast-disk
+  numbers. **Remaining (G6, low):** the residual ~2.5× is partly the multi-sample
+  FORMAT decode the set op doesn't need.
 - The large-tier heavy cells (`sam_mpileup`, `bcf_call`, `bcf_isec`) were
   mis-reported as OOM; that was **disk exhaustion** (a ~17 GB temp output on a
   5 GB-free overlay), not RAM — all three are bounded and run with a big-disk

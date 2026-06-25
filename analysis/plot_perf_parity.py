@@ -203,8 +203,8 @@ def fig_speedup(cells):
     ax.set_yticklabels(ylabels, fontsize=9)
     ax.invert_yaxis()
     ax.set_xscale("log")
-    ax.set_xlim(0.06, 3.6)   # left tail reaches bcf_isec large (~0.07×, 15× slower)
-    ax.xaxis.set_major_locator(matplotlib.ticker.FixedLocator([0.1, 1 / 3, 1, 2, 3]))
+    ax.set_xlim(0.3, 3.6)
+    ax.xaxis.set_major_locator(matplotlib.ticker.FixedLocator([1 / 3, 0.5, 1, 2, 3]))
     ax.xaxis.set_minor_locator(matplotlib.ticker.LogLocator(base=10, subs=(0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9)))
     ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
     ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(

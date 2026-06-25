@@ -15,7 +15,7 @@ inter-quartile range; the 95% CI is a bootstrap on the wall ratio (H1a).
 | small | bcftools | `query` | 9.4 ± 0.7 | 6.2 ± 0.3 | 0.66× | [0.61, 0.69] | 0.79 | slower |
 | small | bcftools | `view` | 14.6 ± 5.7 | 9.2 ± 0.5 | 0.63× | [0.47, 0.76] | 0.81 | slower |
 | small | bcftools | `call` | 2141.2 ± 205.3 | 1171.6 ± 17.7 | 0.55× | [0.51, 0.57] | 0.54 | slower |
-| small | bcftools | `isec` | 81.9 ± 4.4 | 27.6 ± 1.5 | 0.34× | [0.32, 0.36] | 0.24 | **slow** |
+| small | bcftools | `isec` | 55.9 ± 3.6 | 26.4 ± 2.6 | 0.47× | [0.42, 0.61] | 0.31 | **slow** |
 | small | bedtools | `intersect (self)` | 18.4 ± 1.2 | 24.4 ± 0.3 | 1.32× | [1.28, 1.38] | 1.42 | faster |
 | small | bedtools | `intersect` | 21.5 ± 3.5 | 25.8 ± 0.3 | 1.20× | [1.13, 1.39] | 1.41 | faster |
 | small | bedtools | `coverage` | 34.0 ± 1.2 | 39.2 ± 0.4 | 1.15× | [1.12, 1.19] | 1.15 | faster |
@@ -41,7 +41,7 @@ inter-quartile range; the 95% CI is a bootstrap on the wall ratio (H1a).
 | medium | bcftools | `query` | 32.6 ± 9.1 | 20.7 ± 1.9 | 0.64× | [0.51, 0.72] | 0.66 | slower |
 | medium | bcftools | `norm` | 98.2 ± 8.8 | 60.7 ± 1.0 | 0.62× | [0.58, 0.65] | 0.62 | slower |
 | medium | bcftools | `call` | 31412.7 ± 1281.6 | 17551.6 ± 317.6 | 0.56× | [0.54, 0.57] | 0.56 | slower |
-| medium | bcftools | `isec` | 550.9 ± 34.3 | 176.0 ± 5.6 | 0.32× | [0.30, 0.34] | 0.20 | **slow** |
+| medium | bcftools | `isec` | 428.7 ± 5.5 | 187.1 ± 5.2 | 0.44× | [0.43, 0.46] | 0.25 | **slow** |
 | medium | bedtools | `intersect` | 71.0 ± 17.6 | 100.4 ± 2.1 | 1.41× | [1.06, 1.61] | 1.18 | faster |
 | medium | bedtools | `intersect (self)` | 61.5 ± 11.3 | 86.7 ± 1.7 | 1.41× | [1.21, 1.50] | 1.11 | faster |
 | medium | bedtools | `coverage` | 123.1 ± 2.2 | 162.8 ± 1.8 | 1.32× | [1.29, 1.34] | 1.18 | faster |
@@ -67,7 +67,7 @@ inter-quartile range; the 95% CI is a bootstrap on the wall ratio (H1a).
 | large | bcftools | `norm` | 621.1 ± 53.3 | 405.8 ± 12.1 | 0.65× | [0.57, 0.69] | 0.63 | slower |
 | large | bcftools | `query` | 160.5 ± 0.7 | 99.9 ± 3.2 | 0.62× | [0.61, 0.64] | 0.63 | slower |
 | large | bcftools | `call` | 332196.1 ± 724.6 | 188732.6 ± 764.0 | 0.57× | [0.56, 0.57] | 0.56 | slower |
-| large | bcftools | `isec` | 33550.3 ± 508.6 | 2227.5 ± 274.8 | 0.07× | [0.06, 0.07] | 0.11 | **slow** |
+| large | bcftools | `isec` | 3682.0 ± 15.2 | 1486.0 ± 23.5 | 0.40× | [0.40, 0.41] | 0.24 | **slow** |
 | large | bedtools | `intersect` | 286.0 ± 9.1 | 445.0 ± 5.2 | 1.56× | [1.52, 1.58] | 0.94 | faster |
 | large | bedtools | `intersect (self)` | 278.5 ± 11.8 | 394.1 ± 7.3 | 1.41× | [1.39, 1.48] | 0.86 | faster |
 | large | bedtools | `coverage` | 631.7 ± 41.1 | 839.0 ± 19.6 | 1.33× | [1.28, 1.39] | 1.01 | faster |

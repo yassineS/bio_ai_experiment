@@ -21,7 +21,7 @@ ratio (claim C3, `pipeline/stats`).
 
 | figure | what it shows |
 |---|---|
-| `fig_speedup` | Per-**subcommand** speedup, **grouped by tool** (samtools / bcftools / bedtools / seqtk / sickle), with one bar per tier (small / medium / large) and 95% CI. The headline: I/O conversions + `bedtools` intersect/coverage + `sickle` are faster; the compute-heavy variant cells (`mpileup`, `call`) are modestly slower at the large tier, and `bcf_isec` is the lone outlier (~0.07×, 15× slower) — its memory is fixed (39×→6.3× RSS); the remaining wall cost is multi-sample FORMAT over-decode (gap G6), not an OOM. |
+| `fig_speedup` | Per-**subcommand** speedup, **grouped by tool** (samtools / bcftools / bedtools / seqtk / sickle), with one bar per tier (small / medium / large) and 95% CI. The headline: I/O conversions + `bedtools` intersect/coverage + `sickle` are faster; the compute-heavy variant cells (`mpileup`, `call`, `isec`) are a steady ~2–2.5× slower across tiers. (`bcf_isec` previously showed a spurious ~15× at large — a benchmarking artifact of writing its output to a slow bind mount with under-buffered writes; fixed, see below — it is really ~2.5×, gently rising with sample count.) |
 | `fig_scaling` | Per-tier **dumbbell/arrow** plot (one facet per tier): for each subcommand an open marker at upstream's median wall time with an **arrow to ours** (filled, tool-coloured) and **IQR error bars**. Tiers are discrete, so nothing is connected across them; arrow pointing left = faster. |
 | `fig_scatter` | Ours vs upstream wall time (log-log) with the `y=x` parity line; points below the line are faster (blue), above are slower (terracotta). |
 
@@ -43,9 +43,21 @@ with ~5 GB free, so it aborted on `ENOSPC`. Re-running with `TMPDIR` pointed at
 the 205 GB host disk, all three complete; their real large numbers are in
 `bench_oom_large.json` and appear in the figures.
 
-`bcf_isec` was the heaviest (then 464 MB, 39× upstream) and has since been
-**fixed**: a streaming k-way position-window merge with a byte-bounded batch
-(so fat multi-sample records flush early) cut its peak RSS to **81 MB / 6.3×**,
-and from multi-GB to ~80 MB on a many-contig human-scale corpus. Its **wall** is
-still ~15× because isec decodes every multi-sample FORMAT column the set
-operation never reads — the remaining isec follow-up (gap G6), not an OOM.
+`bcf_isec`'s **memory** was the heaviest (then 464 MB, 39× upstream) and is
+**fixed**: a streaming k-way position-window merge with a byte-bounded batch (so
+fat multi-sample records flush early) cut its peak RSS to ~80 MB (multi-GB → flat
+on a many-contig human-scale corpus).
+
+Its **wall** then looked ~15× slower, which was a **benchmarking artifact**, not
+real slowness. `isec -p` writes its per-input projection VCFs and `sites.txt` to
+disk, and the large-tier bench ran with `TMPDIR` on the slow Docker bind mount
+(set for the disk-hungry `mpileup`/`call` cells). Our writers were under-buffered
+— plain VCF used the default 4 KiB `bufio`, and `sites.txt` was written
+unbuffered, one `fmt.Fprintf` per site — so the bind mount's per-`write()`
+latency dominated: isec on the medium fixture took **3.9 s on the bind mount vs
+0.5 s on tmpfs**. Buffering both paths (256 KiB) fixed it (3.9 s → 0.46 s on the
+slow mount, byte-identical). Re-measured on a fast disk, isec is a **steady
+~2.1–2.5×** across small→large (rising gently with sample count: 12→16→24), not
+15×. The figure now uses those fast-disk numbers. The residual ~2.5× is partly
+the multi-sample FORMAT decode the set op doesn't need — a minor follow-up
+(gap G6).
