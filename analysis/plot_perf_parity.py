@@ -96,6 +96,18 @@ TOOL_COLOUR = {
 }
 # Cells that exceed the 12 GB box at the large tier (fat-node cells).
 OOM_AT_LARGE = {"sam_mpileup", "bcf_call", "bcf_isec"}
+# Tier is shown as a shade of the tool's hue (so the speedup figure shares the
+# scaling figure's per-tool colours): small = lightened, large = darkened.
+TIER_SHADE = {"small": 0.55, "medium": 0.0, "large": -0.40}
+
+
+def shade(hexc, amt):
+    """Lighten (amt>0, toward white) or darken (amt<0, toward black) a colour."""
+    import matplotlib.colors as mcolors
+    r, g, b = mcolors.to_rgb(hexc)
+    if amt >= 0:
+        return (r + (1 - r) * amt, g + (1 - g) * amt, b + (1 - b) * amt)
+    return (r * (1 + amt), g * (1 + amt), b * (1 + amt))
 
 
 def load_cells():
@@ -161,7 +173,7 @@ def fig_speedup(cells):
     bar_h = 0.78 / n_t
     fig, ax = plt.subplots(figsize=(7.4, max(6.5, 0.42 * len(rows) + 1.2)))
     for ti, tier in enumerate(TIERS):
-        ys, xs, los, his = [], [], [], []
+        ys, xs, los, his, cols = [], [], [], [], []
         for (tool, name), yb in zip(rows, ypos):
             c = by[name].get(tier)
             if not c:
@@ -172,9 +184,10 @@ def fig_speedup(cells):
             xs.append(s)
             los.append(max(s - lo, 0))
             his.append(max(hi - s, 0))
-        ax.barh(ys, xs, height=bar_h * 0.92, color=TIER_COLOUR[tier],
+            cols.append(shade(TOOL_COLOUR[tool], TIER_SHADE[tier]))   # tool hue, tier shade
+        ax.barh(ys, xs, height=bar_h * 0.92, color=cols,
                 xerr=[los, his], ecolor=COLOURS["gray_48"], capsize=1.5,
-                error_kw={"lw": 0.8}, label=tier, zorder=3)
+                error_kw={"lw": 0.8}, zorder=3)
 
     # mark the cells that OOM at the large tier (fat-node cells) so the absent
     # large bar reads as intentional, not a data gap.
@@ -205,12 +218,17 @@ def fig_speedup(cells):
         ymid = sum(ys) / len(ys)
         ax.text(-0.34, ymid, tool, transform=ax.get_yaxis_transform(),
                 rotation=90, va="center", ha="center", fontsize=10,
-                fontweight="bold", color=COLOURS["primary"])
+                fontweight="bold", color=TOOL_COLOUR[tool])   # match the bar hue
     for sy in sep:
         ax.axhline(sy, color=COLOURS["gray_16"], lw=0.7, zorder=1)
 
-    ax.legend(title="tier", loc="upper right", frameon=True, framealpha=0.95,
-              edgecolor=COLOURS["gray_16"], fontsize=9, ncol=1, title_fontsize=9)
+    # tier legend: a neutral grey ramp conveys "lighter = small, darker = large"
+    # (each tool keeps its own hue; the shade encodes the tier).
+    import matplotlib.patches as mpatches
+    handles = [mpatches.Patch(color=shade("#86868B", TIER_SHADE[t]), label=t) for t in TIERS]
+    ax.legend(handles=handles, title="tier (shade)", loc="upper right", frameon=True,
+              framealpha=0.95, edgecolor=COLOURS["gray_16"], fontsize=9,
+              ncol=1, title_fontsize=9)
     fig.subplots_adjust(left=0.36, right=0.97, bottom=0.07, top=0.91)
     mj.title_block(fig, "Per-subcommand speedup vs upstream",
                    "median over reps · 95% bootstrap CI · grouped by tool",
