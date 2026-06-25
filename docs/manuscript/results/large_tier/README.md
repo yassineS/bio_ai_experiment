@@ -58,9 +58,11 @@ memory one, were aborting the cells:
   `TMPDIR` at the 205 GB host mount.
 
 With both fixes, all three complete at large; their numbers are folded into the
-figures (`figures/bench_oom_large.json`). The remaining real follow-up is
-`bcf_isec`, which is **slow + memory-heavy but bounded** (wall ~15×, RSS ~39×
-upstream) and should stream the two-VCF merge instead of buffering.
+figures (`figures/bench_oom_large.json`). `bcf_isec`'s memory has since been
+fixed (streaming k-way merge + byte-bounded batch: RSS 39× → **6.3×**, and
+multi-GB → ~80 MB on a many-contig human-scale corpus); its **wall** is still
+~15× because it decodes multi-sample FORMAT columns the set operation never uses
+(gap G6).
 
 > Separately, the **parity matrix** harness (`pipeline/runner.RunEntry`) still
 > buffers each cell's entire ours+upstream stdout in RAM to byte-diff them, so it
@@ -100,13 +102,16 @@ stopped spilling their huge output to a small-overlay temp dir (see above).
 | `bed_merge` | 1.82 | [1.73, 1.88] | **slow** |
 | `bcf_call` | 1.76 | [1.75, 1.77] | slower (RSS 1.6×) |
 | `sam_mpileup` | 2.20 | [2.13, 2.27] | **slow** (RSS 2.6×) |
-| `bcf_isec` | 15.03 | [14.80, 15.27] | **slowest** (RSS **39×**: 464 vs 11 MB — buffers; should stream) |
+| `bcf_isec` | 15.06 | [13.46, 15.55] | **slow wall**; RSS now **6.3×** (81 vs 13 MB) after the streaming + byte-bound fix (was 39×) |
 
 The large-tier picture matches medium: I/O-bound conversions, `bedtools`
 intersect/coverage/genomecov, and `sickle` are **faster** than upstream; the
-compute-heavy cells are slower. `bcf_isec` is the lone large outlier (15× wall,
-39× RSS) — a streaming follow-up (gap G6). `bcf_norm`'s 48× RSS and
-`sam_depth`/`sam_view_bam2cram`'s ~11× RSS are the other memory-side
+compute-heavy cells are slower. `bcf_isec`'s memory is now bounded — the k-way
+position-window merge with a byte-bounded batch dropped its peak RSS from 39× to
+**6.3×** upstream (and from multi-GB to ~80 MB on a many-contig human-scale
+corpus). Its **wall** is still ~15×: isec decodes every multi-sample FORMAT
+column it never uses, the remaining isec follow-up (gap G6). `bcf_norm`'s 48× RSS
+and `sam_depth`/`sam_view_bam2cram`'s ~11× RSS are the other memory-side
 optimisation targets (tracked in the real-data perf follow-ups).
 
 ## Status

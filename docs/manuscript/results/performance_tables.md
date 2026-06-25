@@ -67,7 +67,7 @@ inter-quartile range; the 95% CI is a bootstrap on the wall ratio (H1a).
 | large | bcftools | `norm` | 621.1 ± 53.3 | 405.8 ± 12.1 | 0.65× | [0.57, 0.69] | 0.63 | slower |
 | large | bcftools | `query` | 160.5 ± 0.7 | 99.9 ± 3.2 | 0.62× | [0.61, 0.64] | 0.63 | slower |
 | large | bcftools | `call` | 332196.1 ± 724.6 | 188732.6 ± 764.0 | 0.57× | [0.56, 0.57] | 0.56 | slower |
-| large | bcftools | `isec` | 32884.4 ± 125.6 | 2188.1 ± 25.7 | 0.07× | [0.07, 0.07] | 0.11 | **slow** |
+| large | bcftools | `isec` | 33550.3 ± 508.6 | 2227.5 ± 274.8 | 0.07× | [0.06, 0.07] | 0.11 | **slow** |
 | large | bedtools | `intersect` | 286.0 ± 9.1 | 445.0 ± 5.2 | 1.56× | [1.52, 1.58] | 0.94 | faster |
 | large | bedtools | `intersect (self)` | 278.5 ± 11.8 | 394.1 ± 7.3 | 1.41× | [1.39, 1.48] | 0.86 | faster |
 | large | bedtools | `coverage` | 631.7 ± 41.1 | 839.0 ± 19.6 | 1.33× | [1.28, 1.39] | 1.01 | faster |

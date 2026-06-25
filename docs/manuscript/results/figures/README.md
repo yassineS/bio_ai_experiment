@@ -21,7 +21,7 @@ ratio (claim C3, `pipeline/stats`).
 
 | figure | what it shows |
 |---|---|
-| `fig_speedup` | Per-**subcommand** speedup, **grouped by tool** (samtools / bcftools / bedtools / seqtk / sickle), with one bar per tier (small / medium / large) and 95% CI. The headline: I/O conversions + `bedtools` intersect/coverage + `sickle` are faster; the compute-heavy variant cells (`mpileup`, `call`) are modestly slower at the large tier, and `bcf_isec` is the lone outlier (~0.07×, 15× slower) — a streaming follow-up, not an OOM. |
+| `fig_speedup` | Per-**subcommand** speedup, **grouped by tool** (samtools / bcftools / bedtools / seqtk / sickle), with one bar per tier (small / medium / large) and 95% CI. The headline: I/O conversions + `bedtools` intersect/coverage + `sickle` are faster; the compute-heavy variant cells (`mpileup`, `call`) are modestly slower at the large tier, and `bcf_isec` is the lone outlier (~0.07×, 15× slower) — its memory is fixed (39×→6.3× RSS); the remaining wall cost is multi-sample FORMAT over-decode (gap G6), not an OOM. |
 | `fig_scaling` | Per-tier **dumbbell/arrow** plot (one facet per tier): for each subcommand an open marker at upstream's median wall time with an **arrow to ours** (filled, tool-coloured) and **IQR error bars**. Tiers are discrete, so nothing is connected across them; arrow pointing left = faster. |
 | `fig_scatter` | Ours vs upstream wall time (log-log) with the `y=x` parity line; points below the line are faster (blue), above are slower (terracotta). |
 
@@ -37,12 +37,15 @@ Each figure is emitted as both `.pdf` (vector, for the manuscript) and `.png`
 
 An earlier run reported `sam_mpileup` / `bcf_call` / `bcf_isec` as out-of-memory
 at the large tier. That was a **scratch-disk** failure, not a memory one. Direct
-RSS measurement shows all three are bounded — peak RSS **106 / 18 / 464 MB**
-(ours) vs **42 / 10 / 11 MB** (upstream) — and they exit 0. The bench was
+RSS measurement showed all three bounded (and they exit 0). The bench was
 writing the ~17 GB `mpileup`/`call` output to a temp file on a container overlay
 with ~5 GB free, so it aborted on `ENOSPC`. Re-running with `TMPDIR` pointed at
 the 205 GB host disk, all three complete; their real large numbers are in
-`bench_oom_large.json` and now appear in the figures. `bcf_isec` is the genuine
-follow-up: it is **bounded but slow + memory-heavy** at scale (wall ~15×, RSS
-~39× upstream), and should stream rather than buffer — tracked in the parity
-roadmap, but it is not an OOM.
+`bench_oom_large.json` and appear in the figures.
+
+`bcf_isec` was the heaviest (then 464 MB, 39× upstream) and has since been
+**fixed**: a streaming k-way position-window merge with a byte-bounded batch
+(so fat multi-sample records flush early) cut its peak RSS to **81 MB / 6.3×**,
+and from multi-GB to ~80 MB on a many-contig human-scale corpus. Its **wall** is
+still ~15× because isec decodes every multi-sample FORMAT column the set
+operation never reads — the remaining isec follow-up (gap G6), not an OOM.
