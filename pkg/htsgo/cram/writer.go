@@ -833,14 +833,28 @@ func chooseBlockCompression(version Version, payload []byte) (CompressionMethod,
 	if gz := gzipCompress(payload); len(gz) < len(stored) {
 		method, stored = CompGzip, gz
 	}
-	if version == VersionV31 {
-		// rANS 4x16 is a v3.1-only codec; never offer it for v3.0. Order 0
-		// is used — correctness and round-trip matter here, not ratio, and
-		// the order-0 model round-trips every input including the empty
-		// one.
-		if r, err := codec.RANS4x16Encode(payload, 0); err == nil && len(r) < len(stored) {
-			method, stored = CompRANS4x16, r
+	// rANS: the entropy coder upstream leans on for CRAM. v3.0 uses rANS 4x8,
+	// v3.1 the newer rANS 4x16; offer the version-appropriate codec at both
+	// orders and keep whichever is smallest. order 0 (frequency model) is
+	// trusted — it is corpus-validated and round-trips every input including the
+	// empty/degenerate blocks. order 1 (context model) usually wins big on
+	// quality scores and base calls, but it does NOT round-trip every degenerate
+	// input, so each order-1 candidate is decoded back and only kept if it
+	// reproduces the payload exactly.
+	tryRANS := func(m CompressionMethod, enc func([]byte, int) ([]byte, error), dec func([]byte) ([]byte, error)) {
+		if r, err := enc(payload, 0); err == nil && len(r) < len(stored) {
+			method, stored = m, r
 		}
+		if r, err := enc(payload, 1); err == nil && len(r) < len(stored) {
+			if back, derr := dec(r); derr == nil && bytes.Equal(back, payload) {
+				method, stored = m, r
+			}
+		}
+	}
+	if version == VersionV31 {
+		tryRANS(CompRANS4x16, codec.RANS4x16Encode, codec.RANS4x16Decode)
+	} else {
+		tryRANS(CompRANS4x8, codec.RANS4x8Encode, codec.RANS4x8Decode)
 	}
 	return method, stored
 }

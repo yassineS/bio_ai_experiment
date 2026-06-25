@@ -270,13 +270,17 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   **2.7 GB → 128 MB** (and 39× → ~6.5× upstream on the 24-sample large fixture,
   492 → ~80 MB). Byte-identical, and a colocated-`sites.txt` ordering parity bug
   was fixed alongside (commit `a669525`).
-- **CRAM compression ~1.87× larger than upstream** (NEW, from `fig_compression`).
-  On a synthetic medium fixture (ref-aligned reads) our `samtools view -C` output
-  is ~1.87× upstream's (62× vs 116× raw→CRAM); BAM is actually *smaller* than
-  upstream (15.0× vs 14.3×) and the deflate formats (VCF.gz/BCF/BGZF) are within
-  ~6% (klauspost vs libdeflate). CRAM is the outlier — likely better
-  quality-score / codec selection upstream. Output is valid CRAM (decode is
-  byte-validated); this is compression *efficiency*, not correctness. Tracked.
+- **CRAM compression ~1.87× larger — FIXED** (NEW). The v3.0 block-compression
+  chooser only tried raw/gzip; it never offered **rANS 4x8**, the entropy coder
+  upstream leans on for CRAM (gzip loses badly to rANS on quality scores and base
+  calls). `chooseBlockCompression` now offers the version-appropriate rANS codec
+  (4x8 for v3.0, 4x16 for v3.1) at order 0 (trusted) and order 1 (round-trip
+  verified, since order-1 doesn't round-trip every degenerate block) and keeps
+  the smallest. On the synthetic medium fixture our `view -C` output went from
+  **1.87× → 1.019×** upstream (within 2%), decodes byte-identically to upstream's
+  own CRAM, and encode stayed *faster* (0.15 s vs 0.25 s). The deflate formats
+  (VCF.gz/BCF/BGZF) remain ~6% larger (klauspost vs libdeflate — a deliberate
+  speed/ratio trade, see CLAUDE.md); BAM is already smaller than upstream.
 - **`bcftools isec` "15× wall" was an artifact — FIXED** (commit `ff46358`).
   `isec -p` writes its projection VCFs + `sites.txt` to disk; the large-tier
   bench ran with `TMPDIR` on the slow Docker bind mount, and our plain-VCF writer
