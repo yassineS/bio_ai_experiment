@@ -359,71 +359,37 @@ func runCoreBlocks(src recordSource, genome *GenomeSize, writer io.Writer, opts 
 		opts.Scale = 1.0
 	}
 
-	// Allocate per-chromosome depth arrays in genome-declared order.
-	depth := make(map[string][]int, len(genome.Order))
-	for _, chrom := range genome.Order {
-		depth[chrom] = make([]int, genome.Length[chrom])
-	}
-
 	bw := bufio.NewWriter(writer)
 	defer bw.Flush()
 
-	// Ingest records and bump counts.
-	br := src
+	// Coverage is computed one chromosome at a time so peak memory is bounded by
+	// the largest chromosome's depth array (plus the buffered coverage events),
+	// not the whole genome — upstream genomecov has the same per-chromosome
+	// footprint. The read pass groups each record's coverage intervals by
+	// chromosome (per-base increments are commutative, so grouping does not
+	// change the resulting depth array); the write pass then materialises one
+	// chromosome's array at a time. Records on chromosomes absent from the genome
+	// file are dropped (matching bedtools).
+	events := make(map[string][]covEvent, len(genome.Order))
 	for {
-		rec, err := br.Read()
+		rec, err := src.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			return fmt.Errorf("reading input: %w", err)
 		}
-		arr, ok := depth[rec.Chrom]
+		length, ok := genome.Length[rec.Chrom]
 		if !ok {
-			// Skip silently: chromosome not in genome file (matches bedtools).
 			continue
 		}
 		if opts.Strand != "" && rec.Strand != opts.Strand {
 			continue
 		}
-		start, end := clamp(rec.ChromStart, rec.ChromEnd, len(arr))
-		if start >= end {
-			continue
-		}
-		switch {
-		case opts.FivePrime:
-			// End-only counting works on the whole-record extent, not the
-			// per-block split (upstream applies -5/-3 to the read, not blocks).
-			pos := start
-			if rec.Strand == "-" {
-				pos = end - 1
-			}
-			if pos >= 0 && pos < len(arr) {
-				arr[pos]++
-			}
-		case opts.ThreePrime:
-			pos := end - 1
-			if rec.Strand == "-" {
-				pos = start
-			}
-			if pos >= 0 && pos < len(arr) {
-				arr[pos]++
-			}
-		default:
-			// Under -split a BED12 record contributes coverage over each of
-			// its blocks; otherwise the whole [start,end) span. For alignment
-			// input (alwaysBlocks) the blocks already encode the genomecov
-			// D/N-split semantics, so they are always honoured.
-			for _, iv := range recordCoverIntervals(rec, opts.Split || alwaysBlocks) {
-				s, e := clamp(iv[0], iv[1], len(arr))
-				for i := s; i < e; i++ {
-					arr[i]++
-				}
-			}
-		}
+		appendCovEvents(events, rec, opts, alwaysBlocks, length)
 	}
 
-	// Trackline for bedGraph modes.
+	// Trackline for bedGraph modes (emitted once, before the per-chromosome rows).
 	if opts.TrackLine && (opts.Mode == ModeBedGraph || opts.Mode == ModeBedGraphAll) {
 		line := "track type=bedGraph"
 		if opts.TrackOpts != "" {
@@ -434,13 +400,96 @@ func runCoreBlocks(src recordSource, genome *GenomeSize, writer io.Writer, opts 
 		}
 	}
 
-	switch opts.Mode {
-	case ModeBedGraph, ModeBedGraphAll:
-		return writeBedGraph(bw, depth, genome, opts)
-	case ModePerBase, ModePerBaseNonZero:
-		return writePerBase(bw, depth, genome, opts)
+	isHist := opts.Mode != ModeBedGraph && opts.Mode != ModeBedGraphAll &&
+		opts.Mode != ModePerBase && opts.Mode != ModePerBaseNonZero
+	genomeHist := map[int]int{}
+	genomeSize := 0
+	// One depth buffer sized to the largest chromosome, cleared and reused for
+	// each chromosome — so peak heap is a single chromosome's array, with no
+	// per-chromosome alloc/free churn for the GC to lag behind.
+	maxLen := 0
+	for _, l := range genome.Length {
+		if l > maxLen {
+			maxLen = l
+		}
+	}
+	scratch := make([]int, maxLen)
+	for _, chrom := range genome.Order {
+		arr := scratch[:genome.Length[chrom]]
+		clear(arr)
+		for _, ev := range events[chrom] {
+			for i := ev.start; i < ev.end; i++ {
+				arr[i]++
+			}
+		}
+		var err error
+		switch opts.Mode {
+		case ModeBedGraph, ModeBedGraphAll:
+			err = writeBedGraph(bw, map[string][]int{chrom: arr}, oneChrom(chrom, genome), opts)
+		case ModePerBase, ModePerBaseNonZero:
+			err = writePerBase(bw, map[string][]int{chrom: arr}, oneChrom(chrom, genome), opts)
+		default:
+			err = writeHistogramChrom(bw, chrom, arr, opts, genomeHist, &genomeSize)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if isHist {
+		return writeHistogramGenome(bw, genomeHist, genomeSize)
+	}
+	return nil
+}
+
+// covEvent is a half-open [start,end) coverage interval on a chromosome; an
+// end-only (-5/-3) event is the single base [pos, pos+1).
+type covEvent struct{ start, end int }
+
+// oneChrom returns a GenomeSize describing just chrom, for the per-chromosome
+// bedGraph/per-base writers (which iterate Order × Length).
+func oneChrom(chrom string, g *GenomeSize) *GenomeSize {
+	return &GenomeSize{Order: []string{chrom}, Length: map[string]int{chrom: g.Length[chrom]}}
+}
+
+// appendCovEvents extracts a record's coverage intervals (honouring -5/-3,
+// -split and the alignment-block semantics) and appends them, clamped to
+// [0, length), to its chromosome's slice. It mirrors the per-record bump in the
+// previous single-pass accumulator exactly.
+func appendCovEvents(events map[string][]covEvent, rec *bed.Record, opts Options, alwaysBlocks bool, length int) {
+	start, end := clamp(rec.ChromStart, rec.ChromEnd, length)
+	if start >= end {
+		return
+	}
+	switch {
+	case opts.FivePrime:
+		// End-only counting works on the whole-record extent, not the per-block
+		// split (upstream applies -5/-3 to the read, not blocks).
+		pos := start
+		if rec.Strand == "-" {
+			pos = end - 1
+		}
+		if pos >= 0 && pos < length {
+			events[rec.Chrom] = append(events[rec.Chrom], covEvent{pos, pos + 1})
+		}
+	case opts.ThreePrime:
+		pos := end - 1
+		if rec.Strand == "-" {
+			pos = start
+		}
+		if pos >= 0 && pos < length {
+			events[rec.Chrom] = append(events[rec.Chrom], covEvent{pos, pos + 1})
+		}
 	default:
-		return writeHistogram(bw, depth, genome, opts)
+		// Under -split a BED12 record contributes coverage over each of its
+		// blocks; otherwise the whole [start,end) span. For alignment input
+		// (alwaysBlocks) the blocks already encode genomecov's D/N-split
+		// semantics, so they are always honoured.
+		for _, iv := range recordCoverIntervals(rec, opts.Split || alwaysBlocks) {
+			s, e := clamp(iv[0], iv[1], length)
+			if s < e {
+				events[rec.Chrom] = append(events[rec.Chrom], covEvent{s, e})
+			}
+		}
 	}
 }
 
@@ -580,32 +629,37 @@ func appendDepth(buf []byte, d float64, intScale bool) []byte {
 
 // writeHistogram emits per-chromosome histograms followed by a `genome` row,
 // matching the exact column layout of `bedtools genomecov`.
-func writeHistogram(w *bufio.Writer, depth map[string][]int, g *GenomeSize, opts Options) error {
-	genome := map[int]int{}
-	genomeSize := 0
+// writeHistogramChrom emits one chromosome's histogram rows and folds its depth
+// counts into the running genome-wide histogram (genome / genomeSize), which
+// writeHistogramGenome flushes as the trailing `genome` rows once every
+// chromosome has been processed.
+func writeHistogramChrom(w *bufio.Writer, chrom string, arr []int, opts Options, genome map[int]int, genomeSize *int) error {
+	counts := map[int]int{}
+	for _, raw := range arr {
+		d := histogramKey(raw, opts)
+		counts[d]++
+		genome[d]++
+	}
+	chromSize := len(arr)
+	*genomeSize += chromSize
 	var buf []byte
-	for _, chrom := range g.Order {
-		arr := depth[chrom]
-		counts := map[int]int{}
-		for _, raw := range arr {
-			d := histogramKey(raw, opts)
-			counts[d]++
-			genome[d]++
+	for _, d := range sortedKeys(counts) {
+		n := counts[d]
+		frac := 0.0
+		if chromSize > 0 {
+			frac = float64(n) / float64(chromSize)
 		}
-		chromSize := len(arr)
-		genomeSize += chromSize
-		for _, d := range sortedKeys(counts) {
-			n := counts[d]
-			frac := 0.0
-			if chromSize > 0 {
-				frac = float64(n) / float64(chromSize)
-			}
-			buf = appendHistLine(buf[:0], chrom, d, n, chromSize, frac)
-			if _, err := w.Write(buf); err != nil {
-				return err
-			}
+		buf = appendHistLine(buf[:0], chrom, d, n, chromSize, frac)
+		if _, err := w.Write(buf); err != nil {
+			return err
 		}
 	}
+	return nil
+}
+
+// writeHistogramGenome emits the trailing genome-wide histogram rows.
+func writeHistogramGenome(w *bufio.Writer, genome map[int]int, genomeSize int) error {
+	var buf []byte
 	for _, d := range sortedKeys(genome) {
 		n := genome[d]
 		frac := 0.0
