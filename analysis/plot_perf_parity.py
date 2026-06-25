@@ -162,8 +162,8 @@ def fig_speedup(cells):
     y = 0.0
     for tool, name in rows:
         if prev is not None and tool != prev:
-            y += 0.8
-            sep.append(y - 0.4)
+            y += 0.45
+            sep.append(y - 0.22)
         ypos.append(y)
         ylabels.append(CELL[name][1])
         prev = tool
@@ -308,8 +308,10 @@ def fig_scaling(cells):
                                  mec=COLOURS["gray_48"], ms=7, label="upstream"),
          matplotlib.lines.Line2D([], [], marker="o", ls="", color=COLOURS["gray_48"],
                                  ms=7, label="ours (arrow ← faster)")]
-    axes[-1].legend(handles=h, title="median (bars = IQR)", fontsize=9,
-                    title_fontsize=9, frameon=False, loc="lower right")
+    # framed legend in the figure's top-right margin, clear of the data.
+    fig.legend(handles=h, title="median (bars = IQR)", fontsize=9, title_fontsize=9,
+               frameon=True, framealpha=0.95, edgecolor=COLOURS["gray_16"],
+               loc="upper right", bbox_to_anchor=(0.985, 0.985))
     fig.subplots_adjust(left=0.17, right=0.985, bottom=0.11, top=0.88, wspace=0.08)
     fig.text(0.035, 0.965, "Per-tier wall time: upstream vs ours",
              fontsize=15, fontweight="bold", color=COLOURS["near_black"], va="top")
@@ -321,22 +323,19 @@ def fig_scaling(cells):
 
 def fig_scatter(cells):
     marker = {"small": "o", "medium": "s", "large": "D"}
-    fig, ax = plt.subplots(figsize=(6.2, 6.2))
+    fig, ax = plt.subplots(figsize=(6.4, 6.4))
     for tier in TIERS:
         pts = [c for c in cells if c["scale"] == tier]
         if not pts:
             continue
         x = [c["up_wall_med"] for c in pts]
         y = [c["our_wall_med"] for c in pts]
-        col = [COLOURS["primary"] if c["our_wall_med"] <= c["up_wall_med"]
-               else COLOURS["tertiary"] for c in pts]
-        ax.scatter(x, y, c=col, marker=marker[tier], s=40, alpha=0.85,
-                   edgecolors=COLOURS["near_black"], linewidths=0.4,
-                   label=tier, zorder=3)
+        col = [TOOL_COLOUR[CELL[c["cell"]][0]] for c in pts]   # colour = tool
+        ax.scatter(x, y, c=col, marker=marker[tier], s=42, alpha=0.9,
+                   edgecolors=COLOURS["near_black"], linewidths=0.4, zorder=3)
     lim = [1, 1e6]
     ax.plot(lim, lim, ls="--", color=COLOURS["near_black"], lw=1, alpha=0.8, zorder=2)
     ax.set_xscale("log"); ax.set_yscale("log")
-    # decade ticks only — no minor labels.
     for axis in (ax.xaxis, ax.yaxis):
         axis.set_major_locator(matplotlib.ticker.LogLocator(base=10, numticks=7))
         axis.set_minor_locator(matplotlib.ticker.LogLocator(base=10, subs=(0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9)))
@@ -345,14 +344,20 @@ def fig_scatter(cells):
     ax.set_aspect("equal")
     ax.set_xlabel("upstream wall time (ms)")
     ax.set_ylabel("our wall time (ms)")
-    # one legend: tier marker shape; colour meaning explained in the subtitle.
-    handles = [matplotlib.lines.Line2D([], [], marker=marker[t], ls="", color=COLOURS["gray_48"],
-                          ms=7, label=t) for t in TIERS if any(c["scale"] == t for c in cells)]
-    ax.legend(handles=handles, title="tier", fontsize=9, frameon=False,
-              loc="lower right", title_fontsize=9)
+    # two framed legends in the empty corners: tool colour (upper-left) +
+    # tier shape (lower-right).
+    import matplotlib.patches as mpatches
+    tool_h = [mpatches.Patch(color=TOOL_COLOUR[t], label=t) for t in TOOL_ORDER]
+    tier_h = [matplotlib.lines.Line2D([], [], marker=marker[t], ls="", color=COLOURS["gray_48"],
+                                      ms=7, label=t) for t in TIERS if any(c["scale"] == t for c in cells)]
+    leg1 = ax.legend(handles=tool_h, title="tool", fontsize=8.5, title_fontsize=8.5,
+                     frameon=True, framealpha=0.95, edgecolor=COLOURS["gray_16"], loc="upper left")
+    ax.add_artist(leg1)
+    ax.legend(handles=tier_h, title="tier", fontsize=8.5, title_fontsize=8.5,
+              frameon=True, framealpha=0.95, edgecolor=COLOURS["gray_16"], loc="lower right")
     fig.subplots_adjust(left=0.14, right=0.97, bottom=0.16, top=0.85)
     mj.title_block(fig, "Our wall time vs upstream",
-                   "below the parity line = faster (blue); above = slower (terracotta)",
+                   "below the parity line = faster, above = slower; colour = tool",
                    left=0.13, tighten=False)
     for ext in ("pdf", "png"):
         fig.savefig(os.path.join(FIGS, f"fig_scatter.{ext}"), dpi=200)
