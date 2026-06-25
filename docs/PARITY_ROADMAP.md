@@ -233,19 +233,19 @@ The H2a real-data GIAB run and the large-tier bench (all **byte-exact** vs
 upstream) surfaced memory-scalability gaps — correctness is fine, but a few
 cells hold O(file) state where upstream streams. These would OOM at WGS scale:
 
-- **`bcftools norm` buffers the whole VCF** — `norm.go:238 readVCFAll` reads
-  every record into `[]*vcf.Variant` and `:365 sortVariants` globally sorts
-  them, so RSS is ~9.1 GiB vs upstream's 21 MiB (436×) on the HG002 VCF (48×
-  at large). Upstream `vcfnorm.c` streams with only a small same-CHROM/POS
-  `mrows` buffer (already mirrored at `norm.go:683`) plus a bounded left-align
-  reorder window. **Fix:** replace the read-all + global sort with that
-  streaming window. Delicate — must stay byte-exact across `-m-/-m+`,
-  `--check-ref`, left-align, `--rm-dup`; and verify behaviour on *unsorted*
-  input (the global sort may currently reorder where upstream would not).
-- **`samtools depth` ~27× slower** than upstream's pileup (now correct and
-  bounded at 73 MB after the streaming fix; profile the ring-buffer engine).
-- **`samtools view` region→SAM ~12×**, and the ~11× RSS on `sam_depth` /
-  `sam_view_bam2cram` — secondary optimisation targets.
+- **`bcftools norm` buffers the whole VCF — FIXED** (commit `4e53d2f`). Was
+  `readVCFAll` + global `sortVariants` → ~9.1 GiB on the HG002 VCF (436×). Now
+  streams through a bounded `normWindow` reorder buffer (port of upstream
+  `vcfnorm.c`'s `rbuf`): peak RSS **18 MB**, byte-exact across every mode on
+  synthetic + the real HG002 VCF (4.0 M rows), and unsorted-input behaviour now
+  matches upstream (the earlier global-sort `TestNormOrdersByHeaderContigNot…`
+  was superseded — upstream streams cross-contig, it does not header-reorder).
+- **`samtools depth` ~27× slower — FIXED** (commit `9766251`). It scanned the
+  whole BAM even for `-r chr20`; now an indexed BGZF seek (`.csi`/`.bai`) +
+  a lean depth-only decode (`ReadDepthInto`). `depth -a -r chr20` on the real
+  BAM: **~72 s → ~10 s** (upstream ~8 s), byte-identical, 26 MB.
+- **`samtools view` region→SAM ~12×**, and the ~11× RSS on `sam_view_bam2cram`
+  — remaining secondary optimisation targets (lower priority; correct today).
 - The large-tier heavy cells (`sam_mpileup`, `bcf_call`, `bcf_isec`) OOM on
   the 12 GB box because the bench/parity harness buffers each side's whole
   output; a stream-comparing bench (like `realparity`) or a fat node would

@@ -228,9 +228,14 @@ optimisation targets (not defects):
 | `samtools_depth_a` | 27.7 | **slow** — correct + bounded (73 MB) but slow vs upstream pileup |
 
 `bcftools_stats` (123×) is the empty `-r chr20` cell (the VCF is GRCh37-named
-`20`, not `chr20`), so its ratio is noise. The three flagged cells —
-`bcftools norm` memory, `depth` and region-`view` speed — are recorded as
-performance follow-ups (see `docs/PARITY_ROADMAP.md`); none affects correctness.
+`20`, not `chr20`), so its ratio is noise.
+
+> **Update (subsequently fixed, still byte-exact):** `bcftools norm`'s 9.1 GiB
+> RSS is gone — it now streams with a bounded reorder window at **18 MB**
+> (commit `4e53d2f`); and `samtools depth -a -r chr20` dropped from **~72 s to
+> ~10 s** (≈ upstream) via an indexed BGZF seek + lean decode (`9766251`). The
+> remaining `view` region→SAM speed is a lower-priority follow-up
+> (`docs/PARITY_ROADMAP.md`).
 
 ## Status — real-data bugs found
 
