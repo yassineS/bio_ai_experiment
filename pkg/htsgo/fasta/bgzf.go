@@ -205,6 +205,55 @@ func newGZIReaderAt(path string) (*gziReaderAt, error) {
 	return &gziReaderAt{sr: bgzip.NewSeekReader(f, index), src: f}, nil
 }
 
+// OpenPayloadReaderAt opens path and returns an io.ReaderAt over its
+// *decompressed* payload, together with a closer for the underlying handle.
+// It never holds the whole payload in memory:
+//
+//   - A plain (non-BGZF) file is returned as its own *os.File (ReadAt reads the
+//     bytes directly — the payload is the file).
+//   - A BGZF file is served through a partial-decompression SeekReader that
+//     inflates only the blocks overlapping each ReadAt. When a sibling .gzi is
+//     present it is used as the block index; otherwise the block index is built
+//     once by scanning the compressed stream (cheap — Scan never decodes the
+//     deflate payloads), so genome-scale FASTQ quality fetches stay bounded.
+//
+// It is the streaming counterpart of decompressBGZF for callers (e.g. the
+// fqidx quality accessor) that need byte-offset random access into the
+// uncompressed stream without slurping the whole file. ReadAt follows
+// os.File.ReadAt semantics: a short read at end of stream returns io.EOF.
+func OpenPayloadReaderAt(path string) (io.ReaderAt, io.Closer, error) {
+	isBgzf, err := isBGZFFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !isBgzf {
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, nil, err
+		}
+		return f, f, nil
+	}
+	// BGZF: prefer the sidecar .gzi block index (no scan needed); otherwise
+	// build the block index by scanning the compressed stream once. Neither
+	// path decodes the payload eagerly.
+	if ra, gerr := newGZIReaderAt(path); gerr != nil {
+		return nil, nil, gerr
+	} else if ra != nil {
+		return ra, ra, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	offsets, err := bgzip.Scan(f)
+	if err != nil {
+		f.Close()
+		return nil, nil, fmt.Errorf("fasta: scanning BGZF blocks: %w", err)
+	}
+	sr := bgzip.NewSeekReader(f, offsets)
+	return &gziReaderAt{sr: sr, src: f}, f, nil
+}
+
 // OpenRandomAccessBGZF opens a BGZF-compressed FASTA (`.fa.gz`) for
 // random-access fetches. It uses the same on-disk conventions as
 // `samtools faidx` on a bgzipped FASTA:

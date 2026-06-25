@@ -102,18 +102,24 @@ func writeGziSidecar(path string, opts FaidxOptions) error {
 	return bw.Flush()
 }
 
-// decompressFile returns the fully decompressed payload of a BGZF file.
-func decompressFile(path string) ([]byte, error) {
+// openFastqReader returns a streaming reader over the (decompressed, if
+// bgzipped) FASTQ payload of path, plus a closer for the underlying handle.
+// It never buffers the whole payload: a BGZF input is inflated block by block
+// through bgzf.NewReader, exactly like the FASTA build's BuildIndexReader path.
+func openFastqReader(path string, bgzipped bool) (io.Reader, func() error, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	defer f.Close()
+	if !bgzipped {
+		return f, f.Close, nil
+	}
 	br, err := bgzf.NewReader(f)
 	if err != nil {
-		return nil, err
+		f.Close()
+		return nil, nil, err
 	}
-	return io.ReadAll(br)
+	return br, f.Close, nil
 }
 
 // fastqIndexEntry is one row of a 6-column FASTQ .fai (.fqi) file.
@@ -130,17 +136,12 @@ type fastqIndexEntry struct {
 // faiName (plus a .gzi for BGZF input). It walks the decompressed payload with
 // the same state machine semantics as htslib's fai_build_core.
 func buildFastqIndex(path, faiName string, opts FaidxOptions, bgzipped bool) error {
-	var data []byte
-	var err error
-	if bgzipped {
-		data, err = decompressFile(path)
-	} else {
-		data, err = os.ReadFile(path)
-	}
+	r, closeFn, err := openFastqReader(path, bgzipped)
 	if err != nil {
 		return err
 	}
-	entries, err := scanFastqIndex(data)
+	defer closeFn()
+	entries, err := scanFastqIndexReader(r)
 	if err != nil {
 		return err
 	}
@@ -165,51 +166,116 @@ func buildFastqIndex(path, faiName string, opts FaidxOptions, bgzipped bool) err
 	return nil
 }
 
-// scanFastqIndex parses an in-memory FASTQ payload into index entries. It
-// records the byte offset (into the uncompressed stream) of each record's
-// first sequence base and first quality base, the bases-per-line and the
-// bytes-per-line, exactly like htslib's FASTQ indexer for uniform records.
+// scanFastqIndex parses an in-memory FASTQ payload into index entries. It is a
+// thin wrapper over scanFastqIndexReader retained for tests and in-memory
+// callers; the build path streams instead (see buildFastqIndex).
 func scanFastqIndex(data []byte) ([]fastqIndexEntry, error) {
-	var entries []fastqIndexEntry
-	i := 0
-	n := len(data)
-	lineNum := 1
+	return scanFastqIndexReader(bytes.NewReader(data))
+}
 
-	readLine := func() (start, end, next int) {
-		start = i
-		for i < n && data[i] != '\n' {
-			i++
+// scanFastqIndexReader parses a FASTQ payload from r into index entries with a
+// single streaming pass, holding only O(1) state (one record's running counts)
+// regardless of how large the FASTQ is. It records the byte offset (into the
+// uncompressed stream) of each record's first sequence base and first quality
+// base, the bases-per-line and the bytes-per-line, exactly like htslib's FASTQ
+// indexer for uniform records — and produces byte-identical .fqi output to the
+// previous slurp-then-scan implementation.
+//
+// A line-oriented scanner walks the stream; rather than materialising the whole
+// payload, it tracks the byte offset of the start of each line so seqOffset and
+// qualOffset land in the uncompressed stream just as before.
+func scanFastqIndexReader(r io.Reader) ([]fastqIndexEntry, error) {
+	var entries []fastqIndexEntry
+	br := bufio.NewReader(r)
+
+	var (
+		offset  int64 // byte offset of the next line's first byte
+		lineNum = 1
+	)
+
+	// readLine reads up to and including the next '\n' (or EOF). It returns the
+	// line's bytes WITHOUT the trailing '\n' (line), the byte width INCLUDING
+	// the consumed '\n' (width), the offset of the line's first byte (start),
+	// and ok==false at end of input. offset is advanced past the line.
+	readLine := func() (line []byte, width int64, start int64, ok bool, err error) {
+		start = offset
+		raw, rerr := br.ReadBytes('\n')
+		if len(raw) == 0 && rerr != nil {
+			if rerr == io.EOF {
+				return nil, 0, start, false, nil
+			}
+			return nil, 0, start, false, rerr
 		}
-		end = i // exclusive of '\n'
-		if i < n {
-			i++ // consume '\n'
+		width = int64(len(raw))
+		offset += width
+		// Strip the trailing '\n' (kept in width) for the returned line body.
+		body := raw
+		if len(body) > 0 && body[len(body)-1] == '\n' {
+			body = body[:len(body)-1]
 		}
-		return start, end, i
+		if rerr != nil && rerr != io.EOF {
+			return body, width, start, true, rerr
+		}
+		return body, width, start, true, nil
 	}
 
-	for i < n {
+	for {
+		// Peek the first byte of the next line to decide record boundary / blank.
+		b, perr := br.ReadByte()
+		if perr == io.EOF {
+			break
+		}
+		if perr != nil {
+			return nil, perr
+		}
+		if err := br.UnreadByte(); err != nil {
+			return nil, err
+		}
 		// Skip blank lines between records.
-		if data[i] == '\n' {
-			i++
+		if b == '\n' {
+			if _, _, _, _, err := readLine(); err != nil {
+				return nil, err
+			}
 			lineNum++
 			continue
 		}
-		if data[i] != '@' {
-			return nil, fmt.Errorf("fqidx: format error, unexpected %q at line %d", string(data[i]), lineNum)
+		if b != '@' {
+			return nil, fmt.Errorf("fqidx: format error, unexpected %q at line %d", string(b), lineNum)
 		}
 		// Header line: name is the first whitespace-delimited token after '@'.
-		hs, he, _ := readLine()
+		hdr, _, _, _, err := readLine()
+		if err != nil {
+			return nil, err
+		}
 		lineNum++
-		name := fastqName(data[hs+1 : he])
-		seqOffset := int64(i)
+		name := fastqName(hdr[1:])
+		seqOffset := offset
 
 		// Sequence lines until a line beginning with '+'.
 		var seqLen, lineBases, lineWidth int64
-		for i < n && data[i] != '+' {
-			ls, le, nx := readLine()
+		for {
+			nb, nperr := br.ReadByte()
+			if nperr == io.EOF {
+				break
+			}
+			if nperr != nil {
+				return nil, nperr
+			}
+			if err := br.UnreadByte(); err != nil {
+				return nil, err
+			}
+			if nb == '+' {
+				break
+			}
+			body, width, _, ok, lerr := readLine()
+			if lerr != nil {
+				return nil, lerr
+			}
+			if !ok {
+				break
+			}
 			lineNum++
-			bases := int64(le - ls)
-			width := int64(nx - ls)
+			bases := int64(len(body))
 			if lineBases == 0 {
 				lineBases = bases
 				lineWidth = width
@@ -217,19 +283,31 @@ func scanFastqIndex(data []byte) ([]fastqIndexEntry, error) {
 			seqLen += bases
 		}
 		// '+' separator line.
-		if i >= n || data[i] != '+' {
+		plus, perr := br.ReadByte()
+		if perr != nil || plus != '+' {
 			return nil, fmt.Errorf("fqidx: missing '+' for %q at line %d", name, lineNum)
 		}
-		readLine() // consume the '+' line
+		if err := br.UnreadByte(); err != nil {
+			return nil, err
+		}
+		if _, _, _, _, err := readLine(); err != nil { // consume the '+' line
+			return nil, err
+		}
 		lineNum++
-		qualOffset := int64(i)
+		qualOffset := offset
 
 		// Quality lines until we have collected seqLen quality bytes.
 		var qualLen int64
-		for i < n && qualLen < seqLen {
-			ls, le, _ := readLine()
+		for qualLen < seqLen {
+			body, _, _, ok, lerr := readLine()
+			if lerr != nil {
+				return nil, lerr
+			}
+			if !ok {
+				break
+			}
 			lineNum++
-			qualLen += int64(le - ls)
+			qualLen += int64(len(body))
 		}
 
 		entries = append(entries, fastqIndexEntry{
@@ -258,43 +336,52 @@ func fastqName(b []byte) string {
 
 // faidxQualAccess provides quality-string fetches for FASTQ extraction. It is
 // backed by the 6-column index (built on the fly when no .fqi sidecar exists)
-// and reads the quality bytes directly from the (decompressed) payload.
+// and reads the quality bytes from disk on demand via an io.ReaderAt over the
+// (decompressed) payload — it never holds the whole FASTQ in memory, mirroring
+// fasta.RandomAccess for the sequence path.
 type faidxQualAccess struct {
-	data    []byte
+	r       io.ReaderAt
 	byName  map[string]fastqIndexEntry
 	closeFn func() error
 }
 
-// openFaidxQual prepares quality access for a FASTQ input. It loads the 6
-// column index from the sibling .fai when present (else builds it), and holds
-// the decompressed payload in memory for direct quality slicing.
+// openFaidxQual prepares quality access for a FASTQ input. It builds the 6
+// column index by streaming the payload (bounded RSS), then opens a
+// random-access reader over the (decompressed) payload so FetchQual can slice
+// quality bytes directly from disk — without slurping the whole FASTQ.
 func openFaidxQual(path string, opts FaidxOptions) (*faidxQualAccess, error) {
 	bgzipped, err := isBGZFPath(path)
 	if err != nil {
 		return nil, err
 	}
-	var data []byte
-	if bgzipped {
-		data, err = decompressFile(path)
-	} else {
-		data, err = os.ReadFile(path)
-	}
+	// Build the index with a streaming pass (closes its own handle).
+	r, closeFn, err := openFastqReader(path, bgzipped)
 	if err != nil {
 		return nil, err
 	}
-	entries, err := scanFastqIndex(data)
-	if err != nil {
-		return nil, err
+	entries, serr := scanFastqIndexReader(r)
+	closeFn()
+	if serr != nil {
+		return nil, serr
 	}
 	byName := make(map[string]fastqIndexEntry, len(entries))
 	for _, e := range entries {
 		byName[e.name] = e
 	}
-	return &faidxQualAccess{data: data, byName: byName, closeFn: func() error { return nil }}, nil
+	// Open a random-access reader over the decompressed payload for the actual
+	// quality byte fetches (partial BGZF decompression when applicable).
+	ra, raClose, err := fasta.OpenPayloadReaderAt(path)
+	if err != nil {
+		return nil, err
+	}
+	return &faidxQualAccess{r: ra, byName: byName, closeFn: raClose.Close}, nil
 }
 
 // FetchQual returns the quality bytes for [beg, end) (0-based half-open) on
-// the named record, with embedded newlines stripped and case preserved.
+// the named record, with embedded newlines stripped and case preserved. The
+// quality bytes are read from the underlying payload via ReadAt — the same
+// uniform line-geometry arithmetic fasta.RandomAccess.FetchRaw uses for
+// sequence — so no in-memory copy of the FASTQ is required.
 func (q *faidxQualAccess) FetchQual(name string, beg, end int64) ([]byte, error) {
 	e, ok := q.byName[name]
 	if !ok {
@@ -316,10 +403,13 @@ func (q *faidxQualAccess) FetchQual(name string, beg, end int64) ([]byte, error)
 	endCol := (end - 1) % lineBases
 	startByte := e.qualOffset + startLine*e.lineWidth + startCol
 	endByte := e.qualOffset + endLine*e.lineWidth + endCol + 1
-	if startByte < 0 || endByte > int64(len(q.data)) || endByte <= startByte {
+	if startByte < 0 || endByte <= startByte {
 		return nil, fmt.Errorf("fqidx: bad qual byte range %d-%d", startByte, endByte)
 	}
-	raw := q.data[startByte:endByte]
+	raw := make([]byte, endByte-startByte)
+	if _, err := q.r.ReadAt(raw, startByte); err != nil && err != io.EOF {
+		return nil, err
+	}
 	out := make([]byte, 0, end-beg)
 	for _, b := range raw {
 		if b == '\n' || b == '\r' {

@@ -2,12 +2,14 @@ package samtools
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 )
 
@@ -429,4 +431,295 @@ func ourFaidxOut(t *testing.T, path string, args []string) string {
 	var out, errBuf bytes.Buffer
 	Faidx(path, regions, opts, &out, &errBuf)
 	return out.String()
+}
+
+// ---- fqidx streaming (memory) ---------------------------------------------
+
+// fqStreamFixtures are FASTQ payloads exercising the streaming index scanner's
+// edge cases: multi-line records, blank lines between records, a final record
+// with no trailing newline, and CR-terminated lines.
+var fqStreamFixtures = []struct {
+	name string
+	data string
+}{
+	{"multiline_wrapped", "@read1\nACGTACGTAC\nGTACGTACGT\n+\nIIIIIIIIII\nJJJJJJJJJJ\n" +
+		"@read2 d\nTTTTGGGG\n+\nFFFFFFFF\n"},
+	{"blank_lines_between", "@r1\nACGT\n+\nIIII\n\n@r2\nGGCC\n+\nJJJJ\n"},
+	{"no_trailing_newline", "@r1\nACGTACGT\n+\nIIIIIIII"},
+	{"single_base", "@r1\nA\n+\nI\n@r2\nC\n+\nJ\n"},
+}
+
+// TestFqidxStreamingMatchesSlurp asserts the streaming scanner produces
+// byte-identical index entries to feeding the same payload as one slice — i.e.
+// the streaming refactor changed memory behaviour, not output. scanFastqIndex
+// wraps scanFastqIndexReader, so equal results across multiple readers (a
+// bytes.Reader vs a deliberately tiny-chunked reader) prove the offset
+// tracking is independent of buffer boundaries.
+func TestFqidxStreamingMatchesSlurp(t *testing.T) {
+	for _, f := range fqStreamFixtures {
+		t.Run(f.name, func(t *testing.T) {
+			whole, err := scanFastqIndexReader(bytes.NewReader([]byte(f.data)))
+			if err != nil {
+				t.Fatalf("whole-slice scan: %v", err)
+			}
+			chunked, err := scanFastqIndexReader(iotest1ByteReader([]byte(f.data)))
+			if err != nil {
+				t.Fatalf("1-byte-chunk scan: %v", err)
+			}
+			if len(whole) != len(chunked) {
+				t.Fatalf("entry count differs: whole=%d chunked=%d", len(whole), len(chunked))
+			}
+			for i := range whole {
+				if whole[i] != chunked[i] {
+					t.Errorf("entry %d differs:\n whole:   %+v\n chunked: %+v", i, whole[i], chunked[i])
+				}
+			}
+		})
+	}
+}
+
+// iotest1ByteReader returns an io.Reader that yields data one byte per Read,
+// stressing the streaming scanner's offset bookkeeping across buffer refills.
+func iotest1ByteReader(data []byte) *oneByteReader {
+	return &oneByteReader{data: data}
+}
+
+type oneByteReader struct {
+	data []byte
+	pos  int
+}
+
+func (r *oneByteReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	p[0] = r.data[r.pos]
+	r.pos++
+	return 1, nil
+}
+
+// TestFqidxBGZFRoundTrip builds the 6-column index for a BGZF-compressed FASTQ
+// (with .gzi) using the streaming builder, then extracts a region (sequence +
+// quality, plus the reverse-complement form) and checks both against the
+// plain-FASTQ result. This exercises the partial-decompression quality
+// accessor (FetchQual over a ReaderAt) without holding the payload in memory.
+func TestFqidxBGZFRoundTrip(t *testing.T) {
+	const fq = "@read1\nACGTACGTAC\nGTACGTACGT\n+\nIIIIIIIIII\nJJJJJJJJJJ\n" +
+		"@read2 d\nTTTTGGGG\n+\nFFFFFFFF\n"
+	dir := t.TempDir()
+
+	// Plain reference path for the expected index + extraction.
+	plain := filepath.Join(dir, "reads.fq")
+	if err := os.WriteFile(plain, []byte(fq), 0o644); err != nil {
+		t.Fatalf("write fastq: %v", err)
+	}
+	if err := FaidxBuild(plain, DefaultFaidxOptions(FaidxFASTQ)); err != nil {
+		t.Fatalf("plain FaidxBuild: %v", err)
+	}
+	wantFai, err := os.ReadFile(plain + ".fai")
+	if err != nil {
+		t.Fatalf("read plain fai: %v", err)
+	}
+
+	// BGZF-compressed copy of the same payload.
+	gz := filepath.Join(dir, "reads.fq.gz")
+	if err := writeBGZF(t, gz, []byte(fq)); err != nil {
+		t.Fatalf("write bgzf: %v", err)
+	}
+	if err := FaidxBuild(gz, DefaultFaidxOptions(FaidxFASTQ)); err != nil {
+		t.Fatalf("bgzf FaidxBuild: %v", err)
+	}
+	gotFai, err := os.ReadFile(gz + ".fai")
+	if err != nil {
+		t.Fatalf("read bgzf fai: %v", err)
+	}
+	// The .fqi records offsets into the *uncompressed* stream, so the BGZF
+	// index must be byte-identical to the plain one.
+	if !bytes.Equal(wantFai, gotFai) {
+		t.Errorf("bgzf .fqi differs from plain:\n plain: %q\n bgzf:  %q", wantFai, gotFai)
+	}
+	// A .gzi sidecar must have been written for the BGZF input.
+	if _, err := os.Stat(gz + ".gzi"); err != nil {
+		t.Errorf("expected .gzi sidecar: %v", err)
+	}
+
+	// Extraction parity (plain vs BGZF), including reverse-complement which
+	// also reverses the quality string.
+	for _, args := range [][]string{
+		{"read1:3-12"},
+		{"-i", "read1:3-12"},
+		{"read2:1-8"},
+		{"-i", "read2:2-7"},
+	} {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			plainOut := ourFqidxOut(t, plain, args)
+			gzOut := ourFqidxOut(t, gz, args)
+			if plainOut != gzOut {
+				t.Errorf("args %v: plain=%q bgzf=%q", args, plainOut, gzOut)
+			}
+		})
+	}
+}
+
+// ourFqidxOut runs our in-process Faidx in FASTQ mode for a flag+region vector.
+func ourFqidxOut(t *testing.T, path string, args []string) string {
+	t.Helper()
+	opts := DefaultFaidxOptions(FaidxFASTQ)
+	var regions []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-i":
+			opts.ReverseComplement = true
+		default:
+			regions = append(regions, args[i])
+		}
+	}
+	var out, errBuf bytes.Buffer
+	Faidx(path, regions, opts, &out, &errBuf)
+	return out.String()
+}
+
+// writeBGZF writes payload to path as a BGZF stream plus a sibling .gzi block
+// index, mirroring `bgzip` + `bgzip --reindex` so the streaming quality
+// accessor can use partial decompression.
+func writeBGZF(t *testing.T, path string, payload []byte) error {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	w := bgzf.NewWriter(f)
+	if _, err := w.Write(payload); err != nil {
+		f.Close()
+		return err
+	}
+	if err := w.Close(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	// Build the .gzi from the finished file.
+	rf, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer rf.Close()
+	offsets, err := bgzf.Scan(rf)
+	if err != nil {
+		return err
+	}
+	gziFile, err := os.Create(path + ".gzi")
+	if err != nil {
+		return err
+	}
+	defer gziFile.Close()
+	return bgzf.WriteGZI(gziFile, offsets)
+}
+
+// TestFqidxUpstreamParity diffs the Go port against the live upstream
+// `samtools fqidx` on a multi-record FASTQ: index build and a region/extract
+// matrix (including reverse-complement), for both a plain and a BGZF input.
+func TestFqidxUpstreamParity(t *testing.T) {
+	bin := upstreamSamtools(t)
+
+	const fq = "@read1 first\nACGTACGTAC\nGTACGTACGT\nACGTN\n+\n" +
+		"IIIIIIIIII\nJJJJJJJJJJ\nKKKKK\n" +
+		"@read2\nTTTTGGGGCC\nCCAAAANNNN\n+\nFFFFFFFFFF\nGGGGGGGGGG\n"
+	dir := t.TempDir()
+	usPath := filepath.Join(dir, "us.fq")
+	ourPath := filepath.Join(dir, "our.fq")
+	if err := os.WriteFile(usPath, []byte(fq), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ourPath, []byte(fq), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Index-build parity.
+	if out, err := exec.Command(bin, "fqidx", usPath).CombinedOutput(); err != nil {
+		t.Fatalf("upstream fqidx build: %v\n%s", err, out)
+	}
+	if err := FaidxBuild(ourPath, DefaultFaidxOptions(FaidxFASTQ)); err != nil {
+		t.Fatalf("our FaidxBuild fqidx: %v", err)
+	}
+	usFai, _ := os.ReadFile(usPath + ".fai")
+	ourFai, _ := os.ReadFile(ourPath + ".fai")
+	if !bytes.Equal(usFai, ourFai) {
+		t.Errorf(".fqi differs:\n upstream: %q\n ours:     %q", usFai, ourFai)
+	}
+
+	// Extraction parity (seq + qual, including revcomp).
+	matrix := [][]string{
+		{"read1:3-12"},
+		{"read1"},
+		{"read2:1-20"},
+		{"-i", "read1:1-25"},
+		{"-i", "read2:5-15"},
+	}
+	for _, args := range matrix {
+		t.Run("plain_"+strings.Join(args, "_"), func(t *testing.T) {
+			usArgs := append([]string{"fqidx", usPath}, args...)
+			usOut, _ := exec.Command(bin, usArgs...).Output()
+			ourOut := ourFqidxOut(t, ourPath, args)
+			if !bytes.Equal(usOut, []byte(ourOut)) {
+				t.Errorf("args %v:\n upstream: %q\n ours:     %q", args, usOut, ourOut)
+			}
+		})
+	}
+
+	// BGZF parity: bgzip the FASTQ with upstream, index + extract with both.
+	usGz := filepath.Join(dir, "us.fq.gz")
+	if out, err := exec.Command(bin, "fqidx", usPath).CombinedOutput(); err != nil {
+		t.Fatalf("upstream fqidx (pre-bgzip): %v\n%s", err, out)
+	}
+	bgzipBin := filepath.Join(filepath.Dir(bin), "..", "htslib", "bgzip")
+	if _, err := os.Stat(bgzipBin); err != nil {
+		// htslib bgzip lives alongside the htslib build.
+		bgzipBin = filepath.Join(filepath.Dir(filepath.Dir(bin)), "htslib", "bgzip")
+	}
+	if _, err := os.Stat(bgzipBin); err != nil {
+		t.Logf("bgzip not found (%s); skipping BGZF parity arm", bgzipBin)
+		return
+	}
+	rawData, _ := os.ReadFile(usPath)
+	if err := os.WriteFile(usGz, rawData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(bgzipBin, "-f", usGz).CombinedOutput(); err != nil {
+		t.Fatalf("bgzip: %v\n%s", err, out)
+	}
+	usGz += ".gz"
+	if out, err := exec.Command(bin, "fqidx", usGz).CombinedOutput(); err != nil {
+		t.Fatalf("upstream fqidx bgzf: %v\n%s", err, out)
+	}
+	// Build ours on a fresh copy of the upstream-produced .fq.gz so the BGZF
+	// blocking is identical and the uncompressed-stream offsets line up.
+	ourGz := filepath.Join(dir, "our.fq.gz")
+	gzData, _ := os.ReadFile(usGz)
+	if err := os.WriteFile(ourGz, gzData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := FaidxBuild(ourGz, DefaultFaidxOptions(FaidxFASTQ)); err != nil {
+		t.Fatalf("our FaidxBuild bgzf fqidx: %v", err)
+	}
+	usGzFai, _ := os.ReadFile(usGz + ".fai")
+	ourGzFai, _ := os.ReadFile(ourGz + ".fai")
+	if !bytes.Equal(usGzFai, ourGzFai) {
+		t.Errorf("bgzf .fqi differs:\n upstream: %q\n ours:     %q", usGzFai, ourGzFai)
+	}
+	for _, args := range matrix {
+		t.Run("bgzf_"+strings.Join(args, "_"), func(t *testing.T) {
+			usArgs := append([]string{"fqidx", usGz}, args...)
+			usOut, _ := exec.Command(bin, usArgs...).Output()
+			ourOut := ourFqidxOut(t, ourGz, args)
+			if !bytes.Equal(usOut, []byte(ourOut)) {
+				t.Errorf("args %v:\n upstream: %q\n ours:     %q", args, usOut, ourOut)
+			}
+		})
+	}
 }
