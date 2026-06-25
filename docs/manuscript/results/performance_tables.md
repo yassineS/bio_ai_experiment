@@ -66,6 +66,8 @@ inter-quartile range; the 95% CI is a bootstrap on the wall ratio (H1a).
 | large | bcftools | `view` | 246.4 ± 22.4 | 214.4 ± 3.1 | 0.87× | [0.54, 0.92] | 0.88 | slower |
 | large | bcftools | `norm` | 621.1 ± 53.3 | 405.8 ± 12.1 | 0.65× | [0.57, 0.69] | 0.63 | slower |
 | large | bcftools | `query` | 160.5 ± 0.7 | 99.9 ± 3.2 | 0.62× | [0.61, 0.64] | 0.63 | slower |
+| large | bcftools | `call` | 332196.1 ± 724.6 | 188732.6 ± 764.0 | 0.57× | [0.56, 0.57] | 0.56 | slower |
+| large | bcftools | `isec` | 32884.4 ± 125.6 | 2188.1 ± 25.7 | 0.07× | [0.07, 0.07] | 0.11 | **slow** |
 | large | bedtools | `intersect` | 286.0 ± 9.1 | 445.0 ± 5.2 | 1.56× | [1.52, 1.58] | 0.94 | faster |
 | large | bedtools | `intersect (self)` | 278.5 ± 11.8 | 394.1 ± 7.3 | 1.41× | [1.39, 1.48] | 0.86 | faster |
 | large | bedtools | `coverage` | 631.7 ± 41.1 | 839.0 ± 19.6 | 1.33× | [1.28, 1.39] | 1.01 | faster |
@@ -79,6 +81,7 @@ inter-quartile range; the 95% CI is a bootstrap on the wall ratio (H1a).
 | large | samtools | `depth` | 7176.4 ± 185.5 | 5828.5 ± 104.5 | 0.81× | [0.71, 0.91] | 0.60 | slower |
 | large | samtools | `view (cram$\to$bam)` | 27520.4 ± 343.9 | 21802.7 ± 187.7 | 0.79× | [0.79, 0.80] | 0.73 | slower |
 | large | samtools | `flagstat` | 3280.6 ± 101.3 | 2529.9 ± 35.4 | 0.77× | [0.74, 0.78] | 0.77 | slower |
+| large | samtools | `mpileup` | 168946.3 ± 1597.0 | 76872.2 ± 1851.6 | 0.46× | [0.44, 0.47] | 0.34 | **slow** |
 | large | seqtk | `seq` | 423.7 ± 52.0 | 323.3 ± 4.0 | 0.76× | [0.65, 0.78] | 0.75 | slower |
 | large | seqtk | `comp` | 1430.6 ± 83.0 | 951.1 ± 5.3 | 0.66× | [0.64, 0.69] | 0.65 | slower |
 | large | seqtk | `fqchk` | 923.6 ± 24.2 | 529.9 ± 19.7 | 0.57× | [0.56, 0.59] | 0.55 | slower |

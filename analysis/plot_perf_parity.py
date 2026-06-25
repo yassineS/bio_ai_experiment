@@ -95,7 +95,7 @@ TOOL_COLOUR = {
     "sickle":   "#7A4FB5",   # Aubergine Violet
 }
 # Cells that exceed the 12 GB box at the large tier (fat-node cells).
-OOM_AT_LARGE = {"sam_mpileup", "bcf_call", "bcf_isec"}
+OOM_AT_LARGE = set()  # the heavy cells run at large given enough scratch disk
 # Tier is shown as a shade of the tool's hue (so the speedup figure shares the
 # scaling figure's per-tool colours): small = lightened, large = darkened.
 TIER_SHADE = {"small": 0.55, "medium": 0.0, "large": -0.40}
@@ -131,6 +131,7 @@ def load_cells():
             add(os.path.join(lt, grp, "bench.json"))
     add(os.path.join(FIGS, "bench_large_bamvcf.json"))    # large BAM/VCF light
     add(os.path.join(FIGS, "bench_fastq.json"))           # sickle pe + seqtk comp/trimfq/fqchk
+    add(os.path.join(FIGS, "bench_oom_large.json"))       # mpileup/call/isec at large (big-disk temp)
     return [c for c in cells if c["scale"] in TIERS and c["cell"] in CELL]
 
 
@@ -202,8 +203,8 @@ def fig_speedup(cells):
     ax.set_yticklabels(ylabels, fontsize=9)
     ax.invert_yaxis()
     ax.set_xscale("log")
-    ax.set_xlim(0.3, 3.6)
-    ax.xaxis.set_major_locator(matplotlib.ticker.FixedLocator([1 / 3, 0.5, 1, 2, 3]))
+    ax.set_xlim(0.06, 3.6)   # left tail reaches bcf_isec large (~0.07×, 15× slower)
+    ax.xaxis.set_major_locator(matplotlib.ticker.FixedLocator([0.1, 1 / 3, 1, 2, 3]))
     ax.xaxis.set_minor_locator(matplotlib.ticker.LogLocator(base=10, subs=(0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9)))
     ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
     ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(
