@@ -11,7 +11,7 @@ uv run --with "git+https://github.com/yassineS/majorelle-py" \
 ```
 
 Source data: `bench_multiscale.json` (small/medium, `pipeline/bench`),
-`../large_tier/bench/*/bench.json` + `bench_large_bamvcf.json` (large tier).
+`../large_tier/bench/*/bench.json` + `bench_large_bamvcf.json` (large tier); `bench_fastq.json` (sickle se/pe + seqtk seq/comp/trimfq/fqchk).
 Convention: **speedup = upstream wall / ours**, so **> 1 = our port is faster**.
 Timings are the median over reps; CIs are the 95% bootstrap CI on the wall-time
 ratio (claim C3, `pipeline/stats`).

@@ -118,6 +118,7 @@ def load_cells():
         for grp in sorted(os.listdir(lt)):
             add(os.path.join(lt, grp, "bench.json"))
     add(os.path.join(FIGS, "bench_large_bamvcf.json"))    # large BAM/VCF light
+    add(os.path.join(FIGS, "bench_fastq.json"))           # sickle pe + seqtk comp/trimfq/fqchk
     return [c for c in cells if c["scale"] in TIERS and c["cell"] in CELL]
 
 

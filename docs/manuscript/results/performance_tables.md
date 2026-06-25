@@ -31,6 +31,10 @@ inter-quartile range; the 95% CI is a bootstrap on the wall ratio (H1a).
 | small | samtools | `flagstat` | 55.8 ± 1.0 | 40.9 ± 0.5 | 0.73× | [0.72, 0.74] | 0.75 | slower |
 | small | samtools | `mpileup` | 2701.8 ± 140.3 | 1006.2 ± 4.8 | 0.37× | [0.36, 0.39] | 0.25 | **slow** |
 | small | seqtk | `seq` | 10.9 ± 0.3 | 7.3 ± 0.1 | 0.67× | [0.66, 0.68] | 0.71 | slower |
+| small | seqtk | `comp` | 8.9 ± 0.2 | 5.7 ± 0.1 | 0.63× | [0.63, 0.64] | 0.67 | slower |
+| small | seqtk | `fqchk` | 20.6 ± 0.9 | 11.7 ± 0.4 | 0.57× | [0.54, 0.58] | 0.55 | slower |
+| small | seqtk | `trimfq` | 28.0 ± 1.5 | 14.4 ± 0.3 | 0.52× | [0.50, 0.53] | 0.52 | slower |
+| small | sickle | `pe` | 71.9 ± 4.2 | 141.0 ± 9.0 | 1.96× | [1.87, 2.09] | 2.04 | faster |
 | small | sickle | `se` | 37.7 ± 5.4 | 64.7 ± 1.6 | 1.72× | [1.52, 1.82] | 2.01 | faster |
 | medium | bcftools | `stats` | 29.1 ± 1.5 | 25.5 ± 0.5 | 0.87× | [0.83, 0.90] | 0.94 | slower |
 | medium | bcftools | `view` | 46.0 ± 5.9 | 35.4 ± 0.6 | 0.77× | [0.74, 0.88] | 0.88 | slower |
@@ -53,7 +57,11 @@ inter-quartile range; the 95% CI is a bootstrap on the wall ratio (H1a).
 | medium | samtools | `view (cram$\to$bam)` | 3488.7 ± 94.9 | 2501.7 ± 48.6 | 0.72× | [0.70, 0.73] | 0.64 | slower |
 | medium | samtools | `mpileup` | 20986.1 ± 370.6 | 8870.1 ± 646.7 | 0.42× | [0.41, 0.45] | 0.29 | **slow** |
 | medium | seqtk | `seq` | 67.6 ± 1.4 | 52.2 ± 1.3 | 0.77× | [0.72, 0.79] | 0.77 | slower |
+| medium | seqtk | `comp` | 133.9 ± 4.2 | 83.5 ± 1.3 | 0.62× | [0.62, 0.64] | 0.63 | slower |
+| medium | seqtk | `fqchk` | 144.9 ± 2.5 | 85.6 ± 3.8 | 0.59× | [0.57, 0.60] | 0.57 | slower |
+| medium | seqtk | `trimfq` | 197.1 ± 3.6 | 108.9 ± 0.9 | 0.55× | [0.54, 0.56] | 0.54 | slower |
 | medium | sickle | `se` | 247.7 ± 18.4 | 511.9 ± 64.9 | 2.07× | [1.88, 2.24] | 2.27 | faster |
+| medium | sickle | `pe` | 511.0 ± 41.0 | 994.0 ± 91.4 | 1.95× | [1.80, 2.11] | 2.22 | faster |
 | large | bcftools | `stats` | 153.4 ± 1.9 | 145.8 ± 2.4 | 0.95× | [0.91, 1.03] | 0.96 | par |
 | large | bcftools | `view` | 246.4 ± 22.4 | 214.4 ± 3.1 | 0.87× | [0.54, 0.92] | 0.88 | slower |
 | large | bcftools | `norm` | 621.1 ± 53.3 | 405.8 ± 12.1 | 0.65× | [0.57, 0.69] | 0.63 | slower |
@@ -72,9 +80,13 @@ inter-quartile range; the 95% CI is a bootstrap on the wall ratio (H1a).
 | large | samtools | `view (cram$\to$bam)` | 27520.4 ± 343.9 | 21802.7 ± 187.7 | 0.79× | [0.79, 0.80] | 0.73 | slower |
 | large | samtools | `flagstat` | 3280.6 ± 101.3 | 2529.9 ± 35.4 | 0.77× | [0.74, 0.78] | 0.77 | slower |
 | large | seqtk | `seq` | 423.7 ± 52.0 | 323.3 ± 4.0 | 0.76× | [0.65, 0.78] | 0.75 | slower |
+| large | seqtk | `comp` | 1430.6 ± 83.0 | 951.1 ± 5.3 | 0.66× | [0.64, 0.69] | 0.65 | slower |
+| large | seqtk | `fqchk` | 923.6 ± 24.2 | 529.9 ± 19.7 | 0.57× | [0.56, 0.59] | 0.55 | slower |
+| large | seqtk | `trimfq` | 1273.7 ± 24.4 | 683.1 ± 38.3 | 0.54× | [0.53, 0.57] | 0.52 | slower |
 | large | sickle | `se` | 1885.0 ± 430.9 | 3156.0 ± 146.3 | 1.67× | [1.45, 1.98] | 2.09 | faster |
+| large | sickle | `pe` | 4602.6 ± 418.0 | 7564.2 ± 1198.5 | 1.64× | [1.47, 1.83] | 2.02 | faster |
 
-**Medium-tier summary (22 cells):** 7 faster (≥1.1×), 2 at par, 13 slower. The I/O-bound conversions and `bedtools` intersect/coverage/genomecov + `sickle` are faster; the compute-heavy variant cells (`mpileup`, `call`, `isec`) are slower and reported plainly (and OOM at the large tier on the 12 GB box).
+**Medium-tier summary (26 cells):** 8 faster (≥1.1×), 2 at par, 16 slower. The I/O-bound conversions and `bedtools` intersect/coverage/genomecov + `sickle` are faster; the compute-heavy variant cells (`mpileup`, `call`, `isec`) are slower and reported plainly (and OOM at the large tier on the 12 GB box).
 
 ## C2 — Parity rates (byte-exact vs upstream) with 95% CIs
 
