@@ -214,73 +214,89 @@ func NormFile(path string, out io.Writer, opts NormOptions, stderr io.Writer) (i
 }
 
 // Norm runs the normalize pipeline on the supplied reader.
+//
+// The pipeline streams: rather than buffering the whole VCF/BCF into memory and
+// globally sorting it (which made peak RSS O(file) — ~9 GiB on a 168 MB GIAB
+// VCF), it mirrors upstream vcfnorm.c's bounded buffering. Records flow through
+// the per-record transforms (region/strict-filter, atomize, split, left-align +
+// REF-check) and into a small reorder window; only records whose position can
+// no longer be overtaken by a left-shift are flushed onward to the stateful
+// rmdup / multiallelic-join / lax-filter sink. Memory is O(window), not
+// O(file). See normStreamRun.
 func Norm(in io.Reader, out io.Writer, opts NormOptions, stderr io.Writer) (int, error) {
 	br := bufio.NewReader(in)
 	head, err := br.Peek(5)
 	if err != nil && err != io.EOF {
 		return 0, err
 	}
-	var (
-		hdr      *vcf.Header
-		variants []*vcf.Variant
-	)
-	if len(head) >= 5 && head[0] == 'B' && head[1] == 'C' && head[2] == 'F' {
-		hdr, variants, err = readBCFAll(br)
-	} else {
-		hdr, variants, err = readVCFAll(br)
-	}
+	src, hdr, err := openVariantSource(br, head)
 	if err != nil {
 		return 0, err
 	}
-	return normRun(hdr, variants, out, opts, stderr)
+	return normStreamRun(hdr, src, out, opts, stderr)
 }
 
-// readVCFAll buffers a VCF stream into memory. norm needs random-ish
-// access (for `-m +` joining we need to look at adjacent records), and the
-// memory cost is dominated by the variant slice — a few MB even for a
-// whole-exome VCF.
-func readVCFAll(in io.Reader) (*vcf.Header, []*vcf.Variant, error) {
+// variantSource yields the input variants one at a time. next returns
+// (nil, io.EOF) when the stream is exhausted. It abstracts the VCF and BCF
+// readers so the streaming driver is format-agnostic.
+type variantSource interface {
+	next() (*vcf.Variant, error)
+}
+
+// openVariantSource sniffs the magic bytes and returns the matching streaming
+// source plus the parsed header.
+func openVariantSource(in io.Reader, head []byte) (variantSource, *vcf.Header, error) {
+	if len(head) >= 5 && head[0] == 'B' && head[1] == 'C' && head[2] == 'F' {
+		br, err := bcf.NewReader(in)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &bcfSource{r: br, hdr: br.Header()}, br.Header().VCF, nil
+	}
 	r := vcf.NewReader(in)
 	hdr, err := r.ReadHeader()
 	if err != nil {
 		return nil, nil, err
 	}
-	var out []*vcf.Variant
-	for {
-		v, err := r.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, nil, err
-		}
-		out = append(out, v)
-	}
-	return hdr, out, nil
+	return &vcfSource{r: r}, hdr, nil
 }
 
-// readBCFAll buffers a BCF stream into memory as []*vcf.Variant.
-func readBCFAll(in io.Reader) (*vcf.Header, []*vcf.Variant, error) {
-	br, err := bcf.NewReader(in)
+// vcfSource streams *vcf.Variant from a text VCF reader.
+type vcfSource struct{ r *vcf.Reader }
+
+func (s *vcfSource) next() (*vcf.Variant, error) { return s.r.Read() }
+
+// bcfSource streams *vcf.Variant from a BCF reader, converting each record.
+type bcfSource struct {
+	r   *bcf.Reader
+	hdr *bcf.Header
+}
+
+func (s *bcfSource) next() (*vcf.Variant, error) {
+	rec, err := s.r.Read()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	hdr := br.Header()
-	var out []*vcf.Variant
-	for {
-		rec, err := br.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, nil, err
-		}
-		out = append(out, rec.ToVariant(hdr))
-	}
-	return hdr.VCF, out, nil
+	return rec.ToVariant(s.hdr), nil
 }
 
-// normRun glues all the optional transforms together in the order:
+// normBufWin is the reorder-window width in base pairs, mirroring upstream
+// vcfnorm.c's buf_win default (the -w/--site-win option, default 1000). A
+// record can only be flushed once every still-buffered record on the same
+// contig sits at least this many bases ahead of it, because left-alignment can
+// shift a variant's POS left by at most a bounded amount. Holding the window
+// (rather than the whole file) is what keeps norm's memory O(window).
+const normBufWin = 1000
+
+// normStreamRun is the streaming entry point. It mirrors upstream
+// vcfnorm.c::normalize_vcf: each record flows through the per-record transforms
+// (region/strict-filter, atomize, split, left-align + REF-check) and into a
+// bounded reorder window. When the window's span exceeds normBufWin (or a new
+// contig appears) the settled prefix is flushed in (rid, pos) order to a
+// stateful sink that applies duplicate removal, multiallelic join, and
+// lax-mode filtering before emitting. Peak memory is O(window), not O(file).
+//
+// The transform order matches the former slice pipeline exactly:
 //
 //  1. region / target filter
 //  2. strict-filter (if -s)
@@ -291,10 +307,7 @@ func readBCFAll(in io.Reader) (*vcf.Header, []*vcf.Variant, error) {
 //  7. multiallelic join
 //  8. non-strict filter
 //  9. emit
-//
-// Each stage is a pure function on the slice so they're easy to unit-test
-// in isolation.
-func normRun(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts NormOptions, stderr io.Writer) (int, error) {
+func normStreamRun(hdr *vcf.Header, src variantSource, out io.Writer, opts NormOptions, stderr io.Writer) (int, error) {
 	regions, err := parseRegions(opts.Regions)
 	if err != nil {
 		return 0, err
@@ -303,6 +316,9 @@ func normRun(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts NormO
 	if err != nil {
 		return 0, err
 	}
+	regionFilter := append([]region{}, regions...)
+	regionFilter = append(regionFilter, targets...)
+
 	// Open the reference once if we need it for normalize or REF check.
 	var ref *fasta.RandomAccess
 	if opts.FastaRef != "" {
@@ -313,63 +329,10 @@ func normRun(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts NormO
 		defer ref.Close()
 	}
 
-	// 1. region/target filtering.
-	variants = filterByRegions(variants, regions, targets)
-
-	// 2. strict-filter mode runs the FILTER list before any splitting.
-	if opts.StrictFilter && len(opts.ApplyFilters) > 0 {
-		variants = applyFilterList(variants, opts.ApplyFilters)
-	}
-
-	// 3. atomize.
-	if opts.Atomize {
-		variants = atomizeVariants(variants)
-	}
-
 	// Per-field Number= lookup, used to re-index Number=A/R/G INFO and FORMAT
 	// vectors when splitting or joining multiallelic sites.
 	numbers := headerNumberMapsFrom(hdr.MetaInfo)
 
-	// 4. split multi-allelics.
-	if opts.Multiallelics.Active && opts.Multiallelics.Split {
-		variants = splitMultiallelics(variants, opts.Multiallelics, numbers)
-	}
-
-	// 5. left-align and REF-check.
-	if ref != nil {
-		variants, err = normalizeVariants(variants, ref, opts, stderr)
-		if err != nil {
-			return 0, err
-		}
-	}
-
-	// 6. duplicate removal.
-	if opts.RmDup != RmDupNone {
-		variants = removeDuplicates(variants, opts.RmDup)
-	}
-
-	// 7. join biallelics back into a multiallelic.
-	if opts.Multiallelics.Active && !opts.Multiallelics.Split {
-		variants = joinMultiallelics(variants, opts.Multiallelics, numbers)
-	}
-
-	// 8. lax-mode filtering happens after splitting.
-	if !opts.StrictFilter && len(opts.ApplyFilters) > 0 {
-		variants = applyFilterList(variants, opts.ApplyFilters)
-	}
-
-	// 9. sort + emit. After left-align the records may need re-sorting
-	// (an indel can move upstream of its neighbours); we sort by header
-	// contig order + pos, preserving original order on ties to keep tests
-	// deterministic.
-	sortVariants(variants, contigOrder(hdr))
-
-	return emit(hdr, variants, out, opts)
-}
-
-// emit writes variants through whichever variantWriter matches the
-// requested output format.
-func emit(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts NormOptions) (int, error) {
 	w, finish, err := openOutput(out, ViewOptions{
 		OutputFormat:  opts.OutputFormat,
 		CompressLevel: opts.CompressLevel,
@@ -382,29 +345,270 @@ func emit(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts NormOpti
 	if err := w.WriteHeader(); err != nil {
 		return 0, err
 	}
-	for _, v := range variants {
-		if err := w.Write(v); err != nil {
+
+	sink := newNormSink(w, opts, numbers)
+	win := &normWindow{}
+
+	// flushSettled drains every settled prefix of the reorder window, feeding
+	// each to the stateful sink. It loops because flushing one contig's prefix
+	// can expose a second contig that is now also fully settled (the window may
+	// hold records from more than two contigs after a contig switch). Records
+	// dropped earlier (region/filter/skip) never reach the window.
+	flushSettled := func() error {
+		for {
+			settled := win.popSettled()
+			if len(settled) == 0 {
+				return nil
+			}
+			for _, v := range settled {
+				if err := sink.push(v); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	for {
+		v, rerr := src.next()
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return 0, rerr
+		}
+
+		// 1. region/target filtering.
+		if len(regionFilter) > 0 && !overlapsAny(v, regionFilter) {
+			continue
+		}
+		// 2. strict-filter mode runs the FILTER list before any splitting.
+		if opts.StrictFilter && len(opts.ApplyFilters) > 0 && !filterMatches(v, opts.ApplyFilters) {
+			continue
+		}
+
+		// 3. atomize, 4. split — each can fan one input record into several.
+		expanded := []*vcf.Variant{v}
+		if opts.Atomize {
+			expanded = atomizeVariants(expanded)
+		}
+		if opts.Multiallelics.Active && opts.Multiallelics.Split {
+			expanded = splitMultiallelics(expanded, opts.Multiallelics, numbers)
+		}
+
+		// 5. left-align + REF-check, then 6/7/8/9 happen at flush time.
+		for _, e := range expanded {
+			if ref != nil {
+				kept, nerr := normalizeOne(e, ref, opts, stderr)
+				if nerr != nil {
+					return 0, nerr
+				}
+				if !kept {
+					continue
+				}
+			}
+			win.push(e)
+		}
+		if err := flushSettled(); err != nil {
 			return 0, err
 		}
 	}
-	return len(variants), w.Flush()
-}
 
-// filterByRegions keeps variants that fall inside any region/target slot.
-// Empty slices mean "no filter on this dimension".
-func filterByRegions(variants []*vcf.Variant, regions, targets []region) []*vcf.Variant {
-	if len(regions) == 0 && len(targets) == 0 {
-		return variants
-	}
-	combined := append([]region{}, regions...)
-	combined = append(combined, targets...)
-	out := variants[:0:0]
-	for _, v := range variants {
-		if overlapsAny(v, combined) {
-			out = append(out, v)
+	// Drain the window, then the sink's pending join buffer.
+	for _, v := range win.drain() {
+		if err := sink.push(v); err != nil {
+			return 0, err
 		}
 	}
+	if err := sink.flush(); err != nil {
+		return 0, err
+	}
+	if err := w.Flush(); err != nil {
+		return 0, err
+	}
+	return sink.written, nil
+}
+
+// filterMatches reports whether v's FILTER column names any of the requested
+// filters (the per-record predicate behind applyFilterList).
+func filterMatches(v *vcf.Variant, filters []string) bool {
+	for _, want := range filters {
+		for _, f := range v.Filter {
+			if f == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// normalizeOne left-aligns one variant and applies the --check-ref policy. It
+// returns ok=false when the record is dropped (the skip bit on a REF mismatch).
+//
+// The order mirrors upstream vcfnorm.c::normalize_line: when the `s` (fix) bit
+// is set the REF is repaired first, then the realignment REF check runs; a
+// residual mismatch is reported per the remaining bits (error / warn / skip).
+// This is why `-c s` (or `-c ws`) emits no warning for a record it could fix:
+// by the time the check runs, the REF already matches.
+func normalizeOne(v *vcf.Variant, ref *fasta.RandomAccess, opts NormOptions, stderr io.Writer) (bool, error) {
+	if opts.CheckRef&CheckRefFix != 0 {
+		if err := fixRef(v, ref); err != nil {
+			return false, err
+		}
+	}
+	ok, err := checkRef(v, ref, opts.CheckRef, stderr)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	if !opts.DoNotNormalize && needsLeftAlign(v) {
+		if err := leftAlignInPlace(v, ref); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// normWindow is the bounded reorder buffer (the port of upstream's rbuf). It
+// holds variants in (rid, pos) order via stable insertion — a left-aligned
+// indel that shifts upstream is moved back to its sorted slot among same-contig
+// neighbours, while records on different contigs keep their arrival order
+// (upstream streams across contigs rather than globally reordering).
+type normWindow struct {
+	buf []*vcf.Variant
+}
+
+// push inserts v into the window, restoring (rid, pos) order within v's contig.
+// The insertion is stable: records sharing a contig and position keep arrival
+// order, and records on a different contig are never reordered past it.
+func (w *normWindow) push(v *vcf.Variant) {
+	i := len(w.buf)
+	w.buf = append(w.buf, v)
+	for i > 0 {
+		prev := w.buf[i-1]
+		if prev.Chrom != v.Chrom {
+			break // do not reorder across contigs
+		}
+		if prev.Pos <= v.Pos {
+			break
+		}
+		w.buf[i-1], w.buf[i] = w.buf[i], w.buf[i-1]
+		i--
+	}
+}
+
+// popSettled removes and returns the prefix of the window that can no longer be
+// overtaken by a later record. It mirrors upstream normalize_vcf's flush count:
+// when two contigs are buffered, every record on the first contig is settled;
+// otherwise a record is settled once the last buffered record sits at least
+// normBufWin bases ahead of it on the same contig.
+func (w *normWindow) popSettled() []*vcf.Variant {
+	if len(w.buf) == 0 {
+		return nil
+	}
+	last := w.buf[len(w.buf)-1]
+	first := w.buf[0]
+	n := 0
+	if first.Chrom != last.Chrom {
+		// Flush everything on the first contig.
+		for n < len(w.buf) && w.buf[n].Chrom == first.Chrom {
+			n++
+		}
+	} else {
+		for n < len(w.buf) && last.Pos-w.buf[n].Pos >= normBufWin {
+			n++
+		}
+	}
+	if n == 0 {
+		return nil
+	}
+	// Copy the settled prefix out before compacting: reslicing the shared
+	// backing array and then shifting the tail over it would corrupt the
+	// returned records.
+	out := make([]*vcf.Variant, n)
+	copy(out, w.buf[:n])
+	w.buf = append(w.buf[:0], w.buf[n:]...)
 	return out
+}
+
+// drain returns and clears every remaining buffered record (the final flush).
+func (w *normWindow) drain() []*vcf.Variant {
+	out := w.buf
+	w.buf = nil
+	return out
+}
+
+// normSink is the stateful output stage. It receives records in final
+// (rid, pos) order from the reorder window and applies the position-local
+// transforms — duplicate removal, multiallelic join, and lax-mode filtering —
+// before writing them. Because rmdup and join are both confined to a single
+// CHROM+POS group upstream (the rmdup dup test resets at each new position and
+// the mrows join buffer flushes when the position changes), buffering exactly
+// one position group at a time reproduces the slice pipeline byte-for-byte
+// while keeping memory bounded.
+type normSink struct {
+	w       variantWriter
+	opts    NormOptions
+	numbers headerNumberMaps
+
+	group   []*vcf.Variant // records buffered at the current CHROM+POS
+	written int
+}
+
+// newNormSink builds a sink writing through w.
+func newNormSink(w variantWriter, opts NormOptions, numbers headerNumberMaps) *normSink {
+	return &normSink{w: w, opts: opts, numbers: numbers}
+}
+
+// push adds v to the sink. Records are accumulated into the current CHROM+POS
+// group; when v opens a new group the previous one is processed and emitted.
+func (s *normSink) push(v *vcf.Variant) error {
+	if len(s.group) > 0 {
+		g := s.group[0]
+		if g.Chrom != v.Chrom || g.Pos != v.Pos {
+			if err := s.flushGroup(); err != nil {
+				return err
+			}
+		}
+	}
+	s.group = append(s.group, v)
+	return nil
+}
+
+// flush processes any pending group (the final drain).
+func (s *normSink) flush() error {
+	return s.flushGroup()
+}
+
+// flushGroup applies duplicate removal, multiallelic join, and lax-mode
+// filtering to the buffered position group, then writes the survivors.
+func (s *normSink) flushGroup() error {
+	if len(s.group) == 0 {
+		return nil
+	}
+	group := s.group
+	s.group = nil
+
+	// 6. duplicate removal.
+	if s.opts.RmDup != RmDupNone {
+		group = removeDuplicates(group, s.opts.RmDup)
+	}
+	// 7. join biallelics back into a multiallelic.
+	if s.opts.Multiallelics.Active && !s.opts.Multiallelics.Split {
+		group = joinMultiallelics(group, s.opts.Multiallelics, s.numbers)
+	}
+	// 8. lax-mode filtering happens after splitting.
+	if !s.opts.StrictFilter && len(s.opts.ApplyFilters) > 0 {
+		group = applyFilterList(group, s.opts.ApplyFilters)
+	}
+	for _, v := range group {
+		if err := s.w.Write(v); err != nil {
+			return err
+		}
+		s.written++
+	}
+	return nil
 }
 
 // applyFilterList keeps variants whose FILTER column matches one of the
@@ -1445,39 +1649,6 @@ func atomizeVariants(variants []*vcf.Variant) []*vcf.Variant {
 	return out
 }
 
-// normalizeVariants left-aligns indels and applies the --check-ref policy.
-//
-// The order mirrors upstream vcfnorm.c::normalize_line: when the `s` (fix)
-// bit is set the REF is repaired first, then the realignment REF check runs;
-// a residual mismatch is reported per the remaining bits (error / warn /
-// skip). This is why `-c s` (or `-c ws`) emits no warning for a record it
-// could fix: by the time the check runs, the REF already matches.
-func normalizeVariants(variants []*vcf.Variant, ref *fasta.RandomAccess, opts NormOptions, stderr io.Writer) ([]*vcf.Variant, error) {
-	out := make([]*vcf.Variant, 0, len(variants))
-	for _, v := range variants {
-		if opts.CheckRef&CheckRefFix != 0 {
-			if err := fixRef(v, ref); err != nil {
-				return nil, err
-			}
-		}
-		// REF-check before left-alignment moves coordinates.
-		ok, err := checkRef(v, ref, opts.CheckRef, stderr)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			continue
-		}
-		if !opts.DoNotNormalize && needsLeftAlign(v) {
-			if err := leftAlignInPlace(v, ref); err != nil {
-				return nil, err
-			}
-		}
-		out = append(out, v)
-	}
-	return out, nil
-}
-
 // fixRef rewrites v.Ref (and, for a simple allele swap, the ALT list and the
 // per-sample GT) so the record agrees with the FASTA. It implements the
 // common branches of upstream vcfnorm.c::fix_ref:
@@ -1836,29 +2007,4 @@ func exactKey(v *vcf.Variant) string {
 		v.Ref,
 		strings.Join(v.Alt, ","),
 	}, "\x00")
-}
-
-// sortVariants stable-sorts by (contig, pos) so left-alignment doesn't
-// leave the stream out of order. Contigs are ordered by their position in the
-// VCF header's ##contig declarations (matching upstream's rid order), NOT
-// lexically — so e.g. chr2 precedes chr10. Contigs absent from the header sort
-// after declared ones, in lexical order (mirroring contigOrder's contract).
-// The order between same-(contig,pos) records is preserved.
-func sortVariants(variants []*vcf.Variant, order map[string]int) {
-	sort.SliceStable(variants, func(i, j int) bool {
-		ci, cj := variants[i].Chrom, variants[j].Chrom
-		if ci != cj {
-			ri, oki := order[ci]
-			rj, okj := order[cj]
-			switch {
-			case oki && okj:
-				return ri < rj
-			case oki != okj:
-				return oki // declared contigs sort before undeclared ones
-			default:
-				return ci < cj // both undeclared: lexical
-			}
-		}
-		return variants[i].Pos < variants[j].Pos
-	})
 }

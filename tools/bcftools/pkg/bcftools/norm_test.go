@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -140,14 +141,20 @@ func TestNormPassthroughNoFlags(t *testing.T) {
 	}
 }
 
-// TestNormOrdersByHeaderContigNotLexical is a regression test for the
-// multi-contig ordering bug the 16-contig validation tier surfaced: norm must
-// order output records by the VCF header's ##contig declaration order (rid),
-// not by contig name as a string. With >=10 contigs, "chr10" sorts before
-// "chr2" lexically, so a string sort wrongly emits chr10 before chr2; upstream
-// bcftools preserves header order (chr1, chr2, ..., chr10). The records are fed
-// out of header order to prove the sort actively reorders to header order.
-func TestNormOrdersByHeaderContigNotLexical(t *testing.T) {
+// TestNormStreamsContigsInArrivalOrder pins norm's cross-contig behaviour to
+// upstream bcftools: norm streams, it does NOT globally reorder records across
+// contigs. Upstream vcfnorm.c buffers only a bounded same-contig reorder window
+// (rbuf) and flushes a whole contig the moment a new rid appears, so records on
+// different contigs leave in arrival order — verified directly against the
+// upstream binary, which emits chr10,chr2,chr1 for this exact input.
+//
+// This reconciles (and supersedes) the earlier TestNormOrdersByHeaderContigNot
+// Lexical regression, which asserted a global header-order sort (chr1,chr2,
+// chr10). That was a divergence from upstream introduced by buffering the whole
+// file and sorting it; the streaming pipeline removes the global sort, so we now
+// match upstream's streaming order instead. (norm requires the input already be
+// coordinate-sorted; reordering across contigs is `bcftools sort`'s job.)
+func TestNormStreamsContigsInArrivalOrder(t *testing.T) {
 	input := strings.Join([]string{
 		"##fileformat=VCFv4.2",
 		"##contig=<ID=chr1>",
@@ -167,8 +174,80 @@ func TestNormOrdersByHeaderContigNotLexical(t *testing.T) {
 		}
 		got = append(got, strings.SplitN(line, "\t", 2)[0])
 	}
-	if order := strings.Join(got, ","); order != "chr1,chr2,chr10" {
-		t.Fatalf("contig order = %q, want \"chr1,chr2,chr10\" (header order, not lexical)", order)
+	if order := strings.Join(got, ","); order != "chr10,chr2,chr1" {
+		t.Fatalf("contig order = %q, want \"chr10,chr2,chr1\" (arrival order, matching upstream streaming)", order)
+	}
+}
+
+// TestNormReorderWindowRestoresOrder checks that the bounded reorder window
+// puts a left-aligned indel back into (pos) order ahead of a same-contig
+// neighbour it shifted past. Reference "TACACACACACACG": a CAC->C deletion at
+// pos 11 left-aligns to pos 1 (TAC->T), which is now upstream of the SNP at
+// pos 5. The streaming window must emit them sorted (pos 1, then pos 5),
+// matching upstream bcftools, even though the indel arrived second.
+func TestNormReorderWindowRestoresOrder(t *testing.T) {
+	ref := writeRefFasta(t, map[string]string{"c1": "TACACACACACACG"})
+	input := strings.Join([]string{
+		"##fileformat=VCFv4.2",
+		"##contig=<ID=c1>",
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO",
+		"c1\t5\t.\tC\tT\t.\tPASS\t.",
+		"c1\t11\t.\tCAC\tC\t.\tPASS\t.",
+		"",
+	}, "\n")
+	out, _, _ := runNorm(t, input, NormOptions{FastaRef: ref})
+	var coords []string
+	for _, line := range strings.Split(out, "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		f := strings.Split(line, "\t")
+		coords = append(coords, f[1])
+	}
+	if got := strings.Join(coords, ","); got != "1,5" {
+		t.Fatalf("reorder window POS order = %q, want \"1,5\" (left-aligned indel must precede the pos-5 SNP)", got)
+	}
+}
+
+// TestNormStreamsBoundedMemory is a behavioural guard that norm does not buffer
+// the whole input: it feeds far more records than the reorder window holds
+// (well past normBufWin positions) and asserts every record still streams out
+// in order. A regression to whole-file buffering would still pass this, so it
+// is paired with the live VmRSS measurement in the parity harness (our norm on
+// the 168 MB GIAB VCF peaks ~20 MiB vs the previous ~9.1 GiB); this test pins
+// the functional contract — a long single-contig stream sorts correctly across
+// many window flushes.
+func TestNormStreamsBoundedMemory(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("##fileformat=VCFv4.2\n")
+	b.WriteString("##contig=<ID=c1>\n")
+	b.WriteString("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
+	const n = normBufWin * 5 // many more positions than the window width
+	for i := 1; i <= n; i++ {
+		b.WriteString("c1\t")
+		b.WriteString(strconv.Itoa(i))
+		b.WriteString("\t.\tA\tG\t.\tPASS\t.\n")
+	}
+	out, _, got := runNorm(t, b.String(), NormOptions{})
+	if got != n {
+		t.Fatalf("emitted %d records, want %d", got, n)
+	}
+	prev := 0
+	for _, line := range strings.Split(out, "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		pos, err := strconv.Atoi(strings.Split(line, "\t")[1])
+		if err != nil {
+			t.Fatalf("bad POS in %q: %v", line, err)
+		}
+		if pos <= prev {
+			t.Fatalf("output not sorted: POS %d after %d", pos, prev)
+		}
+		prev = pos
+	}
+	if prev != n {
+		t.Fatalf("last POS = %d, want %d", prev, n)
 	}
 }
 
