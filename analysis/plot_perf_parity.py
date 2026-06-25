@@ -81,6 +81,17 @@ CELL = {
     "sickle_se": ("sickle", "se"),
 }
 TOOL_ORDER = ["samtools", "bcftools", "bedtools", "seqtk", "sickle"]
+# Maximally-distinct Majorelle hues per tool — sickle is violet (not a blue) so
+# it never collides with samtools' Majorelle Blue.
+TOOL_COLOUR = {
+    "samtools": "#3820ED",   # Majorelle Blue
+    "bcftools": "#FFD700",   # Gold
+    "bedtools": "#E2725B",   # Terracotta
+    "seqtk":    "#2D6A4F",   # Lush Green
+    "sickle":   "#7A4FB5",   # Aubergine Violet
+}
+# Cells that exceed the 12 GB box at the large tier (fat-node cells).
+OOM_AT_LARGE = {"sam_mpileup", "bcf_call", "bcf_isec"}
 
 
 def load_cells():
@@ -160,6 +171,14 @@ def fig_speedup(cells):
                 xerr=[los, his], ecolor=COLOURS["gray_48"], capsize=1.5,
                 error_kw={"lw": 0.8}, label=tier, zorder=3)
 
+    # mark the cells that OOM at the large tier (fat-node cells) so the absent
+    # large bar reads as intentional, not a data gap.
+    large_off = ((len(TIERS) - 1) - (n_t - 1) / 2) * bar_h
+    for (tool, name), yb in zip(rows, ypos):
+        if name in OOM_AT_LARGE:
+            ax.text(0.335, yb - large_off, "OOM at large", va="center", ha="left",
+                    fontsize=6.5, style="italic", color=COLOURS["gray_48"], zorder=4)
+
     ax.axvline(1.0, color=COLOURS["near_black"], lw=1.1, ls="--", alpha=0.8, zorder=2)
     ax.set_yticks(ypos)
     ax.set_yticklabels(ylabels, fontsize=9)
@@ -197,45 +216,82 @@ def fig_speedup(cells):
 
 
 def fig_scaling(cells):
-    """Wall time vs tier, one line per cell, COLOURED BY TOOL FAMILY so every
-    tool (incl. bcftools) is visible; solid = ours, dashed = upstream."""
+    """Per-tier dumbbell/arrow plot: for each subcommand, an OPEN marker at
+    upstream's median wall time with an ARROW to OUR median (filled), IQR error
+    bars on both. One facet per tier (small/medium/large) — tiers are discrete,
+    so nothing is connected across them. Arrow pointing left = we are faster."""
     by = defaultdict(dict)
     for c in cells:
         by[c["cell"]][c["scale"]] = c
-    multi = {k: v for k, v in by.items() if len([t for t in TIERS if t in v]) >= 2}
-    tool_col = {t: PAL_QUAL[i] for i, t in enumerate(TOOL_ORDER)}
-    fig, ax = plt.subplots(figsize=(7.0, 5.2))
-    seen_tool = set()
-    for tool, name in ordered_cells(multi):
-        sc = multi[name]
-        ts = [t for t in TIERS if t in sc]
-        xs = [TIER_X[t] for t in ts]
-        ours = [sc[t]["our_wall_med"] for t in ts]
-        up = [sc[t]["up_wall_med"] for t in ts]
-        col = tool_col[tool]
-        lab = tool if tool not in seen_tool else None
-        seen_tool.add(tool)
-        ax.plot(xs, ours, "-o", color=col, lw=1.7, ms=4, label=lab, zorder=3)
-        ax.plot(xs, up, "--o", color=col, lw=1.0, ms=2.5, alpha=0.55, zorder=2)
-    ax.set_yscale("log")
-    ax.yaxis.set_major_locator(matplotlib.ticker.LogLocator(base=10, numticks=6))
-    ax.yaxis.set_minor_locator(matplotlib.ticker.NullLocator())
-    ax.set_xticks(list(TIER_X.values()))
-    ax.set_xticklabels(list(TIER_X.keys()))
-    ax.set_xlim(0.85, 3.15)
-    ax.set_xlabel("input tier")
-    ax.set_ylabel("wall time (ms)")
-    leg = ax.legend(title="tool  (solid = ours, dashed = upstream)", fontsize=9,
-                    frameon=False, loc="upper left", ncol=2, title_fontsize=9)
-    leg._legend_box.align = "left"
-    fig.subplots_adjust(left=0.11, right=0.97, bottom=0.12, top=0.86)
-    mj.title_block(fig, "Scaling across input tiers",
-                   "ours (solid) vs upstream (dashed) — both scale alike",
-                   left=0.11, tighten=False)
+    rows = ordered_cells(by)                       # [(tool, cell)] all 22, tool order
+    # y layout with a gap between tool families (shared across facets).
+    ypos, ylabels, prev, y = {}, [], None, 0.0
+    for tool, name in rows:
+        if prev is not None and tool != prev:
+            y += 0.8
+        ypos[name] = y
+        ylabels.append((y, CELL[name][1], tool))
+        prev = tool
+        y += 1.0
+
+    fig, axes = plt.subplots(1, len(TIERS), figsize=(11.5, max(6.5, 0.34 * len(rows) + 1.4)),
+                             sharey=True)
+    fig.set_layout_engine("none")   # honour our subplots_adjust, not the theme's auto-layout
+    for ax, tier in zip(axes, TIERS):
+        for tool, name in rows:
+            c = by[name].get(tier)
+            yb = ypos[name]
+            if not c:
+                if tier == "large" and name in OOM_AT_LARGE:
+                    ax.text(0.5, yb, "OOM", transform=ax.get_yaxis_transform(),
+                            va="center", ha="center", fontsize=7.5, style="italic",
+                            color=COLOURS["gray_48"])
+                continue
+            col = TOOL_COLOUR[tool]
+            ou, up = c["our_wall_med"], c["up_wall_med"]
+            # arrow upstream -> ours (annotate in data coords).
+            ax.annotate("", xy=(ou, yb), xytext=(up, yb),
+                        arrowprops=dict(arrowstyle="-|>", color=col, lw=1.3,
+                                        shrinkA=2.5, shrinkB=2.5), zorder=3)
+            ax.errorbar([up], [yb], xerr=[[c["up_wall_iqr"] / 2]], fmt="o", ms=5,
+                        mfc="white", mec=COLOURS["gray_48"], ecolor=COLOURS["gray_48"],
+                        elinewidth=0.8, capsize=1.5, zorder=4)
+            ax.errorbar([ou], [yb], xerr=[[c["our_wall_iqr"] / 2]], fmt="o", ms=5,
+                        color=col, ecolor=col, elinewidth=0.8, capsize=1.5, zorder=5)
+        ax.set_xscale("log")
+        ax.xaxis.set_major_locator(matplotlib.ticker.LogLocator(base=10, numticks=5))
+        ax.xaxis.set_minor_locator(matplotlib.ticker.NullLocator())
+        ax.text(0.5, 1.01, tier, transform=ax.transAxes, va="bottom", ha="center",
+                fontsize=11, fontweight="bold", color=COLOURS["near_black"])
+        ax.set_xlabel("wall time (ms)")
+        for sp in ("top", "right"):
+            ax.spines[sp].set_visible(False)
+    ax0 = axes[0]
+    ax0.set_yticks([y for y, _, _ in ylabels])
+    ax0.set_yticklabels([lab for _, lab, _ in ylabels], fontsize=8.5)
+    ax0.invert_yaxis()
+    # tool-family band labels on the far-left margin.
+    fam = defaultdict(list)
+    for y, _, tool in ylabels:
+        fam[tool].append(y)
+    for tool, ys in fam.items():
+        ax0.text(-0.42, sum(ys) / len(ys), tool, transform=ax0.get_yaxis_transform(),
+                 rotation=90, va="center", ha="center", fontsize=9.5,
+                 fontweight="bold", color=TOOL_COLOUR[tool])
+    # legend: open = upstream, filled = ours, arrow = the gap.
+    h = [matplotlib.lines.Line2D([], [], marker="o", ls="", mfc="white",
+                                 mec=COLOURS["gray_48"], ms=7, label="upstream"),
+         matplotlib.lines.Line2D([], [], marker="o", ls="", color=COLOURS["gray_48"],
+                                 ms=7, label="ours (arrow ← faster)")]
+    axes[-1].legend(handles=h, title="median (bars = IQR)", fontsize=9,
+                    title_fontsize=9, frameon=False, loc="lower right")
+    fig.subplots_adjust(left=0.17, right=0.985, bottom=0.11, top=0.88, wspace=0.08)
+    fig.text(0.035, 0.965, "Per-tier wall time: upstream vs ours",
+             fontsize=15, fontweight="bold", color=COLOURS["near_black"], va="top")
     for ext in ("pdf", "png"):
         fig.savefig(os.path.join(FIGS, f"fig_scaling.{ext}"), dpi=200)
     plt.close(fig)
-    return len(multi)
+    return len(rows)
 
 
 def fig_scatter(cells):

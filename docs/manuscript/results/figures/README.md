@@ -19,7 +19,7 @@ ratio (claim C3, `pipeline/stats`).
 | figure | what it shows |
 |---|---|
 | `fig_speedup` | Per-**subcommand** speedup, **grouped by tool** (samtools / bcftools / bedtools / seqtk / sickle), with one bar per tier (small / medium / large) and 95% CI. The headline: I/O conversions + `bedtools` intersect/coverage + `sickle` are faster; the compute-heavy variant cells (`mpileup`, `call`, `isec`) are slower and **OOM at the large tier** (no large bar). |
-| `fig_scaling` | Wall time vs input tier (log-y), one line per cell **coloured by tool**, solid = ours, dashed = upstream — both implementations scale the same way, so the per-cell speedup is stable. |
+| `fig_scaling` | Per-tier **dumbbell/arrow** plot (one facet per tier): for each subcommand an open marker at upstream's median wall time with an **arrow to ours** (filled, tool-coloured) and **IQR error bars**. Tiers are discrete, so nothing is connected across them; arrow pointing left = faster. The fat-node cells (`mpileup`, `call`, `isec`) are marked **OOM** at the large tier. |
 | `fig_scatter` | Ours vs upstream wall time (log-log) with the `y=x` parity line; points below the line are faster (blue), above are slower (terracotta). |
 
 Each figure is emitted as both `.pdf` (vector, for the manuscript) and `.png`
