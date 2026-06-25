@@ -122,6 +122,18 @@ func Depth(inputs []io.Reader, out io.Writer, opts DepthOptions) error {
 		}
 		readers[i] = rd
 	}
+	return depthFromReaders(readers, out, opts)
+}
+
+// depthFromReaders runs the streaming depth engine over already-constructed
+// per-input sam.Readers. It is shared by Depth (linear, whole-file readers) and
+// DepthFile (the indexed seek-and-scan readers), so the aggregation, region
+// clamping and output are byte-identical regardless of how the records were
+// sourced.
+func depthFromReaders(readers []sam.Reader, out io.Writer, opts DepthOptions) error {
+	if len(readers) == 0 {
+		return fmt.Errorf("samtools depth: no inputs")
+	}
 	hdr := readers[0].Header()
 	for i := 1; i < len(readers); i++ {
 		if !sameRefOrder(hdr, readers[i].Header()) {
@@ -154,21 +166,59 @@ func Depth(inputs []io.Reader, out io.Writer, opts DepthOptions) error {
 // the per-read filters (flag include/exclude, MAPQ, min read length) as it
 // reads, so dropped reads never reach the streaming engine, and resolves each
 // kept record's reference index once for the coordinate-order merge.
+//
+// It decodes each record in place into a single reused buffer (rec) via the
+// reader's depth-tailored decode, which skips the read name, mate reference,
+// SEQ expansion and aux stream — none of which depth reads — and the QUAL block
+// unless a base-quality filter is active. This removes the dominant per-record
+// decode and allocation cost (aux parsing alone is ~a third of the BAM decode
+// on real data) while leaving the emitted depth byte-identical.
 type depthSource struct {
-	rd   sam.Reader
-	hdr  *sam.Header
-	opts DepthOptions
-	cur  *sam.Record // next kept record, or nil when exhausted
-	tid  int         // header reference index of cur
-	err  error
-	done bool
+	rd      sam.Reader
+	hdr     *sam.Header
+	opts    DepthOptions
+	cur     *sam.Record // points at rec when a kept record is buffered, else nil
+	rec     sam.Record  // reused decode target for the next record
+	tid     int         // header reference index of cur
+	needQ   bool        // decode QUAL (only when a base-quality floor is set)
+	lastRef string      // cache key for lastTid
+	lastTid int         // header index resolved for lastRef (avoids re-scanning)
+	err     error
+	done    bool
+
+	// readDepth is the reader's depth-tailored decode when it exposes one,
+	// else nil (SAM / CRAM fall back to readInto / Read).
+	readDepth func(*sam.Record, bool) error
+	readInto  func(*sam.Record) error
 }
 
 // newDepthSource builds a depthSource and primes its first kept record.
 func newDepthSource(rd sam.Reader, hdr *sam.Header, opts DepthOptions) *depthSource {
-	s := &depthSource{rd: rd, hdr: hdr, opts: opts}
+	s := &depthSource{rd: rd, hdr: hdr, opts: opts, lastTid: -1}
+	s.needQ = opts.MinBaseQ > 0
+	if rd, ok := rd.(interface {
+		ReadDepthInto(*sam.Record, bool) error
+	}); ok {
+		s.readDepth = rd.ReadDepthInto
+	}
+	if ri, ok := rd.(interface{ ReadInto(*sam.Record) error }); ok {
+		s.readInto = ri.ReadInto
+	}
 	s.advance()
 	return s
+}
+
+// resolveTid maps a record's reference name to its header index, caching the
+// last (name → index) pair. Input is coordinate-sorted, so a reference's reads
+// are contiguous and consecutive records overwhelmingly share a name, turning
+// the per-record header scan into a single string compare in the common case.
+func (s *depthSource) resolveTid(name string) int {
+	if name == s.lastRef && s.lastTid >= 0 {
+		return s.lastTid
+	}
+	tid := s.hdr.RefIndex(name)
+	s.lastRef, s.lastTid = name, tid
+	return tid
 }
 
 // advance loads the next kept record into s.cur (or marks the source done /
@@ -177,7 +227,19 @@ func newDepthSource(rd sam.Reader, hdr *sam.Header, opts DepthOptions) *depthSou
 // bam2depth.c's fastdepth_core.
 func (s *depthSource) advance() {
 	for {
-		rec, err := s.rd.Read()
+		var err error
+		switch {
+		case s.readDepth != nil:
+			err = s.readDepth(&s.rec, s.needQ)
+		case s.readInto != nil:
+			err = s.readInto(&s.rec)
+		default:
+			var rec *sam.Record
+			rec, err = s.rd.Read()
+			if err == nil {
+				s.rec = *rec
+			}
+		}
 		if err == io.EOF {
 			s.cur, s.done = nil, true
 			return
@@ -186,16 +248,16 @@ func (s *depthSource) advance() {
 			s.cur, s.err, s.done = nil, err, true
 			return
 		}
-		if !keepDepthRecord(rec, s.opts) {
+		if !keepDepthRecord(&s.rec, s.opts) {
 			continue
 		}
-		tid := s.hdr.RefIndex(rec.RName)
+		tid := s.resolveTid(s.rec.RName)
 		if tid < 0 {
 			// Reference not in the header ordering; skip (matches upstream's
 			// silent handling of records on unknown references).
 			continue
 		}
-		s.cur, s.tid = rec, tid
+		s.cur, s.tid = &s.rec, tid
 		return
 	}
 }

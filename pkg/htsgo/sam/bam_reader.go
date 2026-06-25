@@ -354,6 +354,111 @@ func (br *BAMReader) decodeShallowInto(dst *Record, buf []byte) error {
 	return nil
 }
 
+// ReadDepthInto decodes only the fields samtools depth consumes — RName, Pos,
+// Flag, MapQ and CIGAR — into dst, plus QUAL when needQual is true. It skips
+// the read name, the mate reference, the packed SEQ expansion and the entire
+// aux stream (the dominant decode cost on real BAMs, none of which depth uses).
+// The variable-length fields it does not populate (QName, Seq, RNext, Aux, and
+// Qual when needQual is false) are reset to empty so a reused record never
+// carries stale data from a previous decode. Like ReadInto it is allocation-
+// free across calls and advances the stream past the full record. It returns
+// io.EOF at end of stream.
+func (br *BAMReader) ReadDepthInto(dst *Record, needQual bool) error {
+	if br.err != nil {
+		return br.err
+	}
+	var blockSize int32
+	if err := binary.Read(br.src, binary.LittleEndian, &blockSize); err != nil {
+		if err == io.EOF {
+			br.err = io.EOF
+		}
+		return err
+	}
+	if blockSize < 32 {
+		return fmt.Errorf("sam: BAM block too small (%d)", blockSize)
+	}
+	if cap(br.scrat) < int(blockSize) {
+		br.scrat = make([]byte, blockSize)
+	} else {
+		br.scrat = br.scrat[:blockSize]
+	}
+	if _, err := io.ReadFull(br.src, br.scrat); err != nil {
+		return err
+	}
+	return br.decodeDepthInto(dst, br.scrat, needQual)
+}
+
+// decodeDepthInto deserialises the depth-relevant fields of one BAM record
+// body into dst. It mirrors decodeInto for RName/Pos/Flag/MapQ/CIGAR (and QUAL
+// when needQual) but skips read-name, mate-reference, SEQ and aux parsing.
+func (br *BAMReader) decodeDepthInto(dst *Record, buf []byte, needQual bool) error {
+	if len(buf) < 32 {
+		return fmt.Errorf("sam: BAM record body too small (%d)", len(buf))
+	}
+	refID := int32(binary.LittleEndian.Uint32(buf[0:4]))
+	pos := int32(binary.LittleEndian.Uint32(buf[4:8]))
+	lReadName := buf[8]
+	mapq := buf[9]
+	nCigarOp := binary.LittleEndian.Uint16(buf[12:14])
+	flag := binary.LittleEndian.Uint16(buf[14:16])
+	lSeq := int32(binary.LittleEndian.Uint32(buf[16:20]))
+
+	// Clear the fields depth never reads so a reused record carries no stale
+	// data from an earlier (possibly full) decode.
+	dst.QName, dst.Seq, dst.RNext = "", "", ""
+	dst.Aux = dst.Aux[:0]
+	dst.auxIndex = nil
+
+	off := 32 + int(lReadName)
+
+	// CIGAR ops: nCigarOp uint32s. Reuse dst.Cigar's backing array.
+	if off+int(nCigarOp)*4 > len(buf) {
+		return fmt.Errorf("sam: truncated CIGAR")
+	}
+	if cap(dst.Cigar) >= int(nCigarOp) {
+		dst.Cigar = dst.Cigar[:nCigarOp]
+	} else {
+		dst.Cigar = make(Cigar, nCigarOp)
+	}
+	for i := 0; i < int(nCigarOp); i++ {
+		dst.Cigar[i] = CigarOp(binary.LittleEndian.Uint32(buf[off : off+4]))
+		off += 4
+	}
+
+	if needQual {
+		// Skip the packed SEQ, then copy QUAL (lSeq Phred bytes).
+		seqLen := int((lSeq + 1) / 2)
+		off += seqLen
+		if off+int(lSeq) > len(buf) {
+			return fmt.Errorf("sam: truncated QUAL")
+		}
+		if cap(dst.Qual) >= int(lSeq) {
+			dst.Qual = dst.Qual[:lSeq]
+		} else {
+			dst.Qual = make([]byte, lSeq)
+		}
+		copy(dst.Qual, buf[off:off+int(lSeq)])
+	} else {
+		dst.Qual = dst.Qual[:0]
+	}
+
+	// Reference resolution (RName only; depth never reads the mate reference).
+	dst.RName = ""
+	if refID >= 0 && int(refID) < len(br.refs) {
+		dst.RName = br.refs[refID].Name
+	}
+
+	dst.Flag = flag
+	dst.MapQ = mapq
+	// BAM POS is 0-based; SAM POS is 1-based. -1 → 0.
+	if pos >= 0 {
+		dst.Pos = int64(pos) + 1
+	} else {
+		dst.Pos = 0
+	}
+	return nil
+}
+
 // decodeRecord deserialises one BAM record body (everything after block_size)
 // into a freshly allocated Record.
 func (br *BAMReader) decodeRecord(buf []byte) (*Record, error) {

@@ -943,9 +943,10 @@ func runDepth(args []string) int {
 		Threads:           effThreads,
 	}
 
-	readers := make([]io.Reader, 0, fs.NArg())
-	closers := make([]io.Closer, 0, fs.NArg())
-	for _, path := range fs.Args() {
+	paths := fs.Args()
+	readers := make([]io.Reader, 0, len(paths))
+	closers := make([]io.Closer, 0, len(paths))
+	for _, path := range paths {
 		// When parallel decode is in effect (resolved threads >= 2) open the
 		// file raw so samtools.Depth can inflate the BGZF blocks in parallel;
 		// otherwise use the decompressing opener. The per-position depth output
@@ -979,7 +980,13 @@ func runDepth(args []string) int {
 	}
 	defer out.Close()
 
-	if err := samtools.Depth(readers, out, opts); err != nil {
+	// With an -r region query against on-disk inputs, DepthFile seeks straight
+	// to the indexed BGZF chunks (a sibling .csi / .bai) so only the region's
+	// blocks are inflated, falling back to the linear scan over the readers we
+	// already opened when no index is usable. The streaming Depth handles every
+	// other case (no region, stdin, -b BED, -A). DepthFile owns its own seek
+	// handles; the readers above remain the fallback source it reuses.
+	if err := samtools.DepthFile(paths, readers, out, opts); err != nil {
 		for _, c := range closers {
 			_ = c.Close()
 		}

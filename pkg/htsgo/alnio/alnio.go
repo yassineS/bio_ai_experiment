@@ -228,3 +228,16 @@ func (s *samReader) ReadShallowInto(dst *sam.Record) error {
 	}
 	return s.ReadInto(dst)
 }
+
+// ReadDepthInto forwards a depth-tailored decode (RName/Pos/Flag/MapQ/CIGAR,
+// plus QUAL when needQual) to the wrapped reader when it supports one (the BAM
+// path), so samtools depth skips read-name, SEQ and aux parsing. It falls back
+// to a full ReadInto/Read otherwise.
+func (s *samReader) ReadDepthInto(dst *sam.Record, needQual bool) error {
+	if rd, ok := s.Reader.(interface {
+		ReadDepthInto(*sam.Record, bool) error
+	}); ok {
+		return rd.ReadDepthInto(dst, needQual)
+	}
+	return s.ReadInto(dst)
+}

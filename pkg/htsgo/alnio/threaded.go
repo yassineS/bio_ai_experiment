@@ -125,6 +125,19 @@ func (m *mrCloseReader) ReadShallowInto(dst *sam.Record) error {
 	return m.ReadInto(dst)
 }
 
+// ReadDepthInto forwards a depth-tailored decode (RName/Pos/Flag/MapQ/CIGAR,
+// plus QUAL when needQual) to the wrapped BAM reader when it supports one, so
+// samtools depth skips read-name, SEQ and aux parsing even on the parallel
+// BGZF path. It falls back to a full ReadInto/Read otherwise.
+func (m *mrCloseReader) ReadDepthInto(dst *sam.Record, needQual bool) error {
+	if rd, ok := m.Reader.(interface {
+		ReadDepthInto(*sam.Record, bool) error
+	}); ok {
+		return rd.ReadDepthInto(dst, needQual)
+	}
+	return m.ReadInto(dst)
+}
+
 // OpenReaderThreaded opens the alignment file at path and returns a Reader for
 // it, engaging block-parallel BGZF input decode when threads >= 2 and the file
 // is a BGZF-wrapped BAM. It is the thread-aware analogue of OpenReader: SAM, BAM
@@ -234,6 +247,17 @@ func (s *threadedSamReader) ReadInto(dst *sam.Record) error {
 func (s *threadedSamReader) ReadShallowInto(dst *sam.Record) error {
 	if rs, ok := s.Reader.(interface{ ReadShallowInto(*sam.Record) error }); ok {
 		return rs.ReadShallowInto(dst)
+	}
+	return s.ReadInto(dst)
+}
+
+// ReadDepthInto forwards a depth-tailored decode to the wrapped BAM reader when
+// it supports one, falling back to a full ReadInto/Read.
+func (s *threadedSamReader) ReadDepthInto(dst *sam.Record, needQual bool) error {
+	if rd, ok := s.Reader.(interface {
+		ReadDepthInto(*sam.Record, bool) error
+	}); ok {
+		return rd.ReadDepthInto(dst, needQual)
 	}
 	return s.ReadInto(dst)
 }
