@@ -110,6 +110,18 @@ def shade(hexc, amt):
     return (r * (1 + amt), g * (1 + amt), b * (1 + amt))
 
 
+def logticks(ax, which="x"):
+    """Draw visible major+minor tick *marks* on a log axis (the formal theme
+    suppresses them). Labels stay as the locators set them — only the marks come
+    back, so the sparse labelling is unchanged while the log decades stay legible."""
+    axes = ("x", "y") if which == "both" else (which,)
+    for a in axes:
+        ax.tick_params(axis=a, which="major", length=4.5, width=0.9,
+                       color=COLOURS["gray_48"], direction="out")
+        ax.tick_params(axis=a, which="minor", length=2.5, width=0.6,
+                       color=COLOURS["gray_48"], direction="out")
+
+
 def load_cells():
     """Flat list of bench cells from every available bench.json, keyed by tier."""
     cells = []
@@ -210,6 +222,7 @@ def fig_speedup(cells):
     ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(
         lambda v, _: ("0.33×" if abs(v - 1 / 3) < 0.01 else f"{v:g}×")))
     ax.set_xlabel("speedup  =  upstream wall / ours   (>1 means our port is faster)")
+    logticks(ax, "x")
 
     # tool-family band labels on the left margin + light separators.
     fam_rows = defaultdict(list)
@@ -217,7 +230,7 @@ def fig_speedup(cells):
         fam_rows[tool].append(yb)
     for tool, ys in fam_rows.items():
         ymid = sum(ys) / len(ys)
-        ax.text(-0.34, ymid, tool, transform=ax.get_yaxis_transform(),
+        ax.text(-0.50, ymid, tool, transform=ax.get_yaxis_transform(),
                 rotation=90, va="center", ha="center", fontsize=10,
                 fontweight="bold", color=TOOL_COLOUR[tool])   # match the bar hue
     for sy in sep:
@@ -230,10 +243,10 @@ def fig_speedup(cells):
     ax.legend(handles=handles, title="tier (shade)", loc="upper right", frameon=True,
               framealpha=0.95, edgecolor=COLOURS["gray_16"], fontsize=9,
               ncol=1, title_fontsize=9)
-    fig.subplots_adjust(left=0.36, right=0.97, bottom=0.07, top=0.91)
+    fig.subplots_adjust(left=0.42, right=0.97, bottom=0.07, top=0.91)
     mj.title_block(fig, "Per-subcommand speedup vs upstream",
                    "median over reps · 95% bootstrap CI · grouped by tool",
-                   left=0.36, tighten=False)
+                   left=0.42, tighten=False)
     for ext in ("pdf", "png"):
         fig.savefig(os.path.join(FIGS, f"fig_speedup.{ext}"), dpi=200)
     plt.close(fig)
@@ -291,12 +304,13 @@ def fig_memory(cells):
     ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
     ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:g}×"))
     ax.set_xlabel("peak RSS  =  ours / upstream   (< 1 means our port uses less RAM)")
+    logticks(ax, "x")
 
     fam_rows = defaultdict(list)
     for (tool, name), yb in zip(rows, ypos):
         fam_rows[tool].append(yb)
     for tool, ys in fam_rows.items():
-        ax.text(-0.34, sum(ys) / len(ys), tool, transform=ax.get_yaxis_transform(),
+        ax.text(-0.50, sum(ys) / len(ys), tool, transform=ax.get_yaxis_transform(),
                 rotation=90, va="center", ha="center", fontsize=10,
                 fontweight="bold", color=TOOL_COLOUR[tool])
     for sy in sep:
@@ -307,10 +321,10 @@ def fig_memory(cells):
     ax.legend(handles=handles, title="tier (shade)", loc="lower right", frameon=True,
               framealpha=0.95, edgecolor=COLOURS["gray_16"], fontsize=9,
               ncol=1, title_fontsize=9)
-    fig.subplots_adjust(left=0.36, right=0.97, bottom=0.07, top=0.91)
+    fig.subplots_adjust(left=0.42, right=0.97, bottom=0.07, top=0.91)
     mj.title_block(fig, "Per-subcommand peak memory vs upstream",
                    "peak RSS ratio · grouped by tool · < 1× = leaner than upstream",
-                   left=0.36, tighten=False)
+                   left=0.42, tighten=False)
     for ext in ("pdf", "png"):
         fig.savefig(os.path.join(FIGS, f"fig_memory.{ext}"), dpi=200)
     plt.close(fig)
@@ -364,6 +378,7 @@ def fig_scaling(cells):
         ax.xaxis.set_major_locator(matplotlib.ticker.LogLocator(base=10, numticks=5))
         ax.xaxis.set_minor_locator(matplotlib.ticker.LogLocator(base=10, subs=(0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9)))
         ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+        logticks(ax, "x")
         ax.text(0.5, 1.01, tier, transform=ax.transAxes, va="bottom", ha="center",
                 fontsize=11, fontweight="bold", color=COLOURS["near_black"])
         ax.set_xlabel("wall time (ms)")
@@ -385,7 +400,7 @@ def fig_scaling(cells):
     h = [matplotlib.lines.Line2D([], [], marker="o", ls="", mfc="white",
                                  mec=COLOURS["gray_48"], ms=7, label="upstream"),
          matplotlib.lines.Line2D([], [], marker="o", ls="", color=COLOURS["gray_48"],
-                                 ms=7, label="ours (arrow ← faster)")]
+                                 ms=7, label="ours (arrow <- faster)")]
     # framed legend in the figure's top-right margin, clear of the data.
     fig.legend(handles=h, title="median (bars = IQR)", fontsize=9, title_fontsize=9,
                frameon=True, framealpha=0.95, edgecolor=COLOURS["gray_16"],
@@ -418,6 +433,7 @@ def fig_scatter(cells):
         axis.set_major_locator(matplotlib.ticker.LogLocator(base=10, numticks=7))
         axis.set_minor_locator(matplotlib.ticker.LogLocator(base=10, subs=(0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9)))
         axis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+    logticks(ax, "both")
     ax.set_xlim(lim); ax.set_ylim(lim)
     ax.set_aspect("equal")
     ax.set_xlabel("upstream wall time (ms)")
