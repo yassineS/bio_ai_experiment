@@ -244,12 +244,37 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   whole BAM even for `-r chr20`; now an indexed BGZF seek (`.csi`/`.bai`) +
   a lean depth-only decode (`ReadDepthInto`). `depth -a -r chr20` on the real
   BAM: **~72 s → ~10 s** (upstream ~8 s), byte-identical, 26 MB.
-- **`samtools view` region→SAM ~12×**, and the ~11× RSS on `sam_view_bam2cram`
-  — remaining secondary optimisation targets (lower priority; correct today).
-- The large-tier heavy cells (`sam_mpileup`, `bcf_call`, `bcf_isec`) OOM on
-  the 12 GB box because the bench/parity harness buffers each side's whole
-  output; a stream-comparing bench (like `realparity`) or a fat node would
-  let them complete. Not a port defect.
+- **`samtools view` region→SAM** — fast path landed (BAM→SAM direct serialize
+  from raw bytes, ~2.6×); the ~11× RSS on `sam_view_bam2cram` remains a
+  secondary optimisation target (lower priority; correct today).
+- **`samtools view` indexed region over-read — FIXED** (commit `3a5f489`). A
+  chunk-bounded scan opened a fresh `bgzip.Reader` at a non-zero block offset
+  but compared its (then stream-relative) virtual offset against the absolute
+  BAI chunk end, so the bound fired ~startBlock too late and the scan over-read
+  into later chunks, **emitting records many times** (a real `view chr20:1-1M
+  chr20:30M-30.1M` over a GIAB BAM: ~26k vs ~20k). Root-caused to BGZF:
+  `bgzf.NewReaderAt(r, baseCoff)` now makes a mid-file reader report absolute
+  virtual offsets; used at all four chunk-bounded scan sites (view fast+decode,
+  merge, depth). Byte-validated vs upstream.
+- **`samtools view` multi-region semantics — FIXED** (commit `c1c32d1`). Default
+  `view reg1 reg2` now walks each region in command-line order, emitting a
+  record once per overlapping region (was a single deduplicated union scan, i.e.
+  the `-M` semantics always); `-M` collapses to the dedup/coordinate-ordered
+  union. Forward/reversed/overlapping queries byte-identical vs upstream in both
+  modes. **Remaining:** `-M` cross-region de-dup is not yet honoured for CRAM
+  (rare combo; default CRAM multi-region is correct).
+- **`bcftools isec` memory — FIXED** (commits `58efa79`, `25186a6`). Buffered a
+  whole contig (2.7 GB peak on a 3-contig 2.4 M-record pair); now a streaming
+  k-way position-window merge with a record+byte-bounded batch — peak RSS
+  **2.7 GB → 128 MB** (and 39× → **6.3×** upstream on the 24-sample large fixture,
+  492 → 81 MB). Byte-identical, and a colocated-`sites.txt` ordering parity bug
+  was fixed alongside (commit `a669525`). **Remaining (G6):** wall still ~15× at
+  large because isec decodes multi-sample FORMAT columns the set op never reads.
+- The large-tier heavy cells (`sam_mpileup`, `bcf_call`, `bcf_isec`) were
+  mis-reported as OOM; that was **disk exhaustion** (a ~17 GB temp output on a
+  5 GB-free overlay), not RAM — all three are bounded and run with a big-disk
+  `TMPDIR`. The parity *matrix* harness still buffers both outputs in RAM to
+  byte-diff them and wants the stream-comparing approach `realparity` uses.
 
 Genuinely-remaining real gaps (the deliverable — see PROJECT_STATUS.md for
 the canonical version with effort sizing). Cloud I/O is **complete**

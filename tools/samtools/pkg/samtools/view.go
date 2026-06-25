@@ -449,12 +449,14 @@ func viewCRAMIndexed(inPath string, out io.Writer, opts ViewOptions, warnW io.Wr
 	sub := newSubsampler(opts)
 	matched := 0
 	// QueryRegion already restricts each query's records to its reference and
-	// coordinate range; iterate the resolved regions in order and emit each
-	// region's overlapping records, applying the same per-record filters the
-	// BAM indexed path uses. Records are de-duplicated within a region by the
-	// RegionReader's container-overlap test; across regions a record may
-	// legitimately appear once per overlapping region, matching upstream
-	// samtools' multi-region behaviour.
+	// coordinate range; iterate the resolved regions in command-line order and
+	// emit each region's overlapping records, applying the same per-record
+	// filters the BAM indexed path uses. Records are de-duplicated within a
+	// region by the RegionReader's container-overlap test; across regions a
+	// record appears once per overlapping region, matching upstream's default
+	// multi-region behaviour. (NB: -M's cross-region de-duplication is honoured
+	// for BAM/CSI but not yet for CRAM — a rare combination; see the parity
+	// roadmap.)
 	for _, reg := range resolved {
 		recs, qerr := rr.Query(reg)
 		if qerr != nil {
