@@ -252,7 +252,9 @@ func (c *chunkScanReader) nextChunk() bool {
 			// as no-more-chunks.
 			return false
 		}
-		bgz, err := bgzip.NewReader(c.f)
+		// NewReaderAt(startBlock) so VirtualOffset is absolute and the
+		// chunk-bounded wrapper stops at the right place (see view.go / bgzf).
+		bgz, err := bgzip.NewReaderAt(c.f, startBlock)
 		if err != nil {
 			return false
 		}

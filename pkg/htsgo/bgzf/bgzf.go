@@ -315,9 +315,22 @@ type Reader struct {
 	streamDone  bool
 }
 
-// NewReader returns a Reader that decodes BGZF bytes from r.
+// NewReader returns a Reader that decodes BGZF bytes from r, treating the first
+// byte of r as compressed-stream offset 0.
 func NewReader(r io.Reader) (*Reader, error) {
-	return &Reader{counted: &countingReader{r: r}}, nil
+	return NewReaderAt(r, 0)
+}
+
+// NewReaderAt returns a Reader that decodes BGZF bytes from r, treating the
+// first byte of r as compressed-stream offset baseCoff. Use it after seeking the
+// underlying stream to a BGZF block boundary so VirtualOffset reports *absolute*
+// virtual offsets (block coffset << 16 | in-block uoffset). Without the base a
+// reader opened mid-file numbers blocks from zero, so virtual offsets compared
+// against absolute BAI/CSI chunk bounds (e.g. a chunk-bounded region scan) would
+// be off by baseCoff<<16 and the bound would never fire correctly — making the
+// scan over-read into later chunks and emit duplicate records.
+func NewReaderAt(r io.Reader, baseCoff int64) (*Reader, error) {
+	return &Reader{counted: &countingReader{r: r}, nextBlockCoff: baseCoff}, nil
 }
 
 // countingReader wraps an io.Reader and tracks how many bytes have been

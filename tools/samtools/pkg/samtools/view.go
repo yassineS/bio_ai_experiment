@@ -565,7 +565,11 @@ func viewIndexedChunks(f io.ReadSeeker, out io.Writer, opts ViewOptions, unionFn
 		if _, err := f.Seek(startBlock, io.SeekStart); err != nil {
 			return matched, err
 		}
-		bgz, err := bgzip.NewReader(f)
+		// NewReaderAt(startBlock) so the reader's VirtualOffset is absolute and
+		// the chunk-bounded wrapper stops exactly at c.End. With a base-0 reader
+		// the offsets would be relative to startBlock and the bound would
+		// over-read into later chunks, emitting duplicates.
+		bgz, err := bgzip.NewReaderAt(f, startBlock)
 		if err != nil {
 			return matched, err
 		}
@@ -659,7 +663,11 @@ func viewIndexedChunksFast(f io.ReadSeeker, out io.Writer, opts *ViewOptions, hd
 		if _, err := f.Seek(startBlock, io.SeekStart); err != nil {
 			return matched, err
 		}
-		bgz, err := bgzip.NewReader(f)
+		// NewReaderAt(startBlock) so the reader's VirtualOffset is absolute and
+		// the chunk-bounded wrapper stops exactly at c.End. With a base-0 reader
+		// the offsets would be relative to startBlock and the bound would
+		// over-read into later chunks, emitting duplicates.
+		bgz, err := bgzip.NewReaderAt(f, startBlock)
 		if err != nil {
 			return matched, err
 		}

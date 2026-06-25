@@ -2,11 +2,91 @@ package samtools
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
+
+// TestViewIndexedNoOverReadDuplicates is a regression for the BGZF
+// virtual-offset bug: a chunk-bounded region scan opened a bgzip reader at a
+// non-zero block offset but compared its (then stream-relative) virtual offset
+// against the absolute BAI chunk end, so the bound fired ~startBlock too late
+// and the scan over-read into later chunks, emitting records many times. It
+// triggers when a region's chunk list includes coarse parent-bin chunks
+// scattered across the file (large-span reads) — exactly the htslib bin model
+// for a `view reg1 reg2` over a real BAM. Here 400 reads carry a 30 Mbp N-skip
+// so they land in the whole-chromosome level-1 bin that the 30 Mbp query always
+// pulls, scattered among 12000 dense reads; the 800 reads with a 2 Mbp skip end
+// before the region. The query must return exactly the 3000 region reads plus
+// the 400 spanning reads that genuinely overlap it (3400), with no duplicates —
+// the buggy path emitted ~30k. Output sequences vary (a small LCG) so the BGZF
+// blocks have real volume and the coarse chunks spread across many coffsets.
+func TestViewIndexedNoOverReadDuplicates(t *testing.T) {
+	type read struct {
+		pos       int
+		name, cig string
+	}
+	var reads []read
+	add := func(name string, pos int, cig string) { reads = append(reads, read{pos, name, cig}) }
+	for i := 0; i < 12000; i++ { // dense reads in chr20:1-960k
+		add(fmt.Sprintf("lo_%d", i), 1+i*80, "100M")
+	}
+	for i := 0; i < 6000; i++ { // filler spreading coffsets to ~29.5M
+		add(fmt.Sprintf("mid_%d", i), 1_200_000+i*4700, "100M")
+	}
+	for i := 0; i < 800; i++ { // coarse (2 Mbp skip) — end ~2.9M, do NOT reach the region
+		add(fmt.Sprintf("big_%d", i), 1+i*1100, "50M2000000N50M")
+	}
+	for i := 0; i < 400; i++ { // whole-chr level-1 bin; reach 30M so they DO overlap the region
+		add(fmt.Sprintf("span_%d", i), 1+i*2200, "50M30000000N50M")
+	}
+	for i := 0; i < 3000; i++ { // the region reads
+		add(fmt.Sprintf("reg_%d", i), 30_000_000+i*30, "100M")
+	}
+	sort.SliceStable(reads, func(i, j int) bool { return reads[i].pos < reads[j].pos })
+
+	var sb strings.Builder
+	sb.WriteString("@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:chr20\tLN:63000000\n")
+	rng := uint32(1)
+	seq := func() string {
+		const b = "ACGT"
+		var s [100]byte
+		for i := range s {
+			rng = rng*1103515245 + 12345
+			s[i] = b[(rng>>16)&3]
+		}
+		return string(s[:])
+	}
+	for _, r := range reads {
+		fmt.Fprintf(&sb, "%s\t0\tchr20\t%d\t60\t%s\t*\t0\t0\t%s\t%s\n", r.name, r.pos, r.cig, seq(), strings.Repeat("I", 100))
+	}
+	bamPath := makeIndexedBAM(t, writeSAMFile(t, sb.String()))
+
+	var out bytes.Buffer
+	n, err := ViewFile(bamPath, &out, ViewOptions{Regions: []string{"chr20:30000000-30100000"}}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("indexed ViewFile: %v", err)
+	}
+	if n != 3400 {
+		t.Errorf("indexed region count = %d, want 3400 (3000 region + 400 spanning); over-read duplication?", n)
+	}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimRight(out.String(), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		if seen[line] {
+			t.Fatalf("duplicate record emitted from a single region scan: %.40s", line)
+		}
+		seen[line] = true
+		if name := line[:strings.IndexByte(line, '\t')]; !strings.HasPrefix(name, "reg_") && !strings.HasPrefix(name, "span_") {
+			t.Errorf("non-region record leaked into output: %s", name)
+		}
+	}
+}
 
 const sampleSAM = `@HD	VN:1.6	SO:coordinate
 @SQ	SN:chr1	LN:1000

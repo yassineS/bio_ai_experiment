@@ -538,7 +538,9 @@ func bamRegionToBuffer(path, regionSpec string) (io.Reader, error) {
 		if _, err := f.Seek(startBlock, io.SeekStart); err != nil {
 			return nil, err
 		}
-		bgz, err := bgzip.NewReader(f)
+		// NewReaderAt(startBlock) so VirtualOffset is absolute and the
+		// chunk-bounded wrapper stops at the right place (see view.go / bgzf).
+		bgz, err := bgzip.NewReaderAt(f, startBlock)
 		if err != nil {
 			return nil, err
 		}
