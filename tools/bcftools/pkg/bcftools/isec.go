@@ -503,15 +503,31 @@ func isecMergeContigOrder(fileContigs [][]string, primaryOrder map[string]int) (
 	return merged, true
 }
 
-// isecStreamFlushRecords is the soft cap on how many variants accumulate across
-// inputs before isecStreaming flushes a batch through isecCore. The cap is only
-// ever exceeded by a single position-window that is itself larger than the cap
-// (every batch cut lands on a position boundary so cross-input occurrence
-// pairing is never split). ~50k variants is a few MB — small enough to keep
-// peak memory flat across a whole chromosome, large enough that isecCore's
-// per-call map/sort overhead is amortised away. It is a var (not a const) only
-// so tests can shrink it to force many flushes across position boundaries.
-var isecStreamFlushRecords = 50000
+// isecStreamFlushRecords and isecStreamFlushBytes bound how much accumulates
+// across inputs before isecStreaming flushes a batch through isecCore. A flush
+// fires when EITHER the record count or the estimated live bytes is reached, so
+// peak memory stays flat whether records are skinny (single-sample — the count
+// cap dominates) or fat (many-sample FORMAT data — the byte cap dominates). The
+// cap is only ever exceeded by a single position-window larger than it; every
+// batch cut lands on a position boundary so cross-input occurrence pairing is
+// never split. They are vars (not consts) only so tests can shrink them to
+// force many flushes across position boundaries.
+var (
+	isecStreamFlushRecords = 50000
+	isecStreamFlushBytes   = 16 << 20 // 16 MiB of estimated variant footprint
+)
+
+// isecVarSize is a cheap upper-ish estimate of a parsed variant's heap
+// footprint, used only to decide when to flush the streaming batch. Multi-sample
+// FORMAT data dominates fat records — each Sample carries its own small map — so
+// it is charged a flat per-sample cost rather than walked field by field.
+func isecVarSize(v *vcf.Variant) int {
+	n := 80 + len(v.Chrom) + len(v.ID) + len(v.Ref)
+	for _, a := range v.Alt {
+		n += len(a) + 1
+	}
+	return n + len(v.Samples)*256
+}
 
 // isecStreaming runs the set operation as a streaming k-way merge over the
 // inputs. It advances one forward cursor per input in lock-step by (contig, POS)
@@ -556,6 +572,7 @@ func isecStreaming(paths []string, headers []*vcf.Header, _ []string, out io.Wri
 	// before returning, so the pointers are safe to drop).
 	pending := make([][]*vcf.Variant, n)
 	pendingCount := 0
+	pendingBytes := 0
 	flush := func() error {
 		if pendingCount == 0 {
 			return nil
@@ -567,6 +584,7 @@ func isecStreaming(paths []string, headers []*vcf.Header, _ []string, out io.Wri
 			pending[i] = pending[i][:0]
 		}
 		pendingCount = 0
+		pendingBytes = 0
 		return nil
 	}
 
@@ -592,13 +610,14 @@ func isecStreaming(paths []string, headers []*vcf.Header, _ []string, out io.Wri
 			for v := c.peek(); v != nil && keyFor(v, primaryOrder).equal(minKey); v = c.peek() {
 				pending[i] = append(pending[i], c.pop())
 				pendingCount++
+				pendingBytes += isecVarSize(v)
 			}
 			if c.err != nil && c.err != io.EOF {
 				_, _ = isecFinalize(state)
 				return state.totalKept, fmt.Errorf("bcftools isec: %s: %w", paths[i], c.err)
 			}
 		}
-		if pendingCount >= isecStreamFlushRecords {
+		if pendingCount >= isecStreamFlushRecords || pendingBytes >= isecStreamFlushBytes {
 			if err := flush(); err != nil {
 				_, _ = isecFinalize(state)
 				return state.totalKept, err

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -76,13 +75,26 @@ func TestIsecStreamingMatchesInMemory(t *testing.T) {
 		{"collapse_all_prefix", func(p string) IsecOptions { return IsecOptions{Prefix: p, Collapse: CollapseAll} }, true},
 	}
 
-	defaultFlush := isecStreamFlushRecords
-	defer func() { isecStreamFlushRecords = defaultFlush }()
+	defRec, defBytes := isecStreamFlushRecords, isecStreamFlushBytes
+	defer func() { isecStreamFlushRecords, isecStreamFlushBytes = defRec, defBytes }()
+
+	// Each config forces a different flush cadence; "bytes1" makes the byte cap
+	// fire after every position-window. All must reproduce the whole-corpus path.
+	flushCfgs := []struct {
+		name        string
+		recs, bytes int
+	}{
+		{"rec1", 1, 1 << 30},
+		{"rec2", 2, 1 << 30},
+		{"rec3", 3, 1 << 30},
+		{"bytes1", 1 << 30, 1},
+		{"default", defRec, defBytes},
+	}
 
 	for _, oc := range optsCases {
-		for _, flush := range []int{1, 2, 3, defaultFlush} {
-			t.Run(oc.name+"/flush="+strconv.Itoa(flush), func(t *testing.T) {
-				isecStreamFlushRecords = flush
+		for _, fc := range flushCfgs {
+			t.Run(oc.name+"/"+fc.name, func(t *testing.T) {
+				isecStreamFlushRecords, isecStreamFlushBytes = fc.recs, fc.bytes
 
 				// Streaming path via IsecFiles.
 				streamDir := t.TempDir()
