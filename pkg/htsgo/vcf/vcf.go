@@ -30,6 +30,14 @@ type Variant struct {
 	InfoOrder []string          // INFO key insertion order (preserved for byte-for-byte parity with upstream)
 	Format    []string          // FORMAT field tags
 	Samples   []Sample          // Sample genotype data
+	// RawTail, when non-empty, is the verbatim FORMAT + sample columns (the
+	// line from the start of the FORMAT field, tab-separated). A reader in
+	// KeepRawSamples mode fills it instead of parsing Format/Samples, and Write
+	// re-emits it verbatim — byte-identical to parsing the columns into per-
+	// sample maps and re-serialising them, for a well-formed record. It lets a
+	// caller that never inspects sample data (e.g. bcftools isec) skip the
+	// expensive map round-trip. Empty for normally-parsed records.
+	RawTail string
 }
 
 // Sample represents genotype data for a single sample.
@@ -62,7 +70,22 @@ type Reader struct {
 	// unsafe.String (no per-line alloc); the retaining Read path materializes a
 	// fresh string(lineBuf) so the returned Variant owns its own backing.
 	lineBuf []byte
+	// keepRawTail, set by KeepRawSamples, makes parseLine keep the FORMAT +
+	// sample columns verbatim in Variant.RawTail instead of building per-sample
+	// maps. See KeepRawSamples.
+	keepRawTail bool
 }
+
+// KeepRawSamples toggles "shallow sample" parsing: when on, Read/ReadInto parse
+// CHROM..INFO normally but leave the FORMAT + sample columns unparsed, exposing
+// them verbatim as Variant.RawTail (Format/Samples stay empty); Write re-emits
+// RawTail unchanged. For a well-formed record this is byte-identical to parsing
+// the columns into per-sample maps and re-serialising them, but skips that whole
+// round-trip — a large win for callers that only need CHROM/POS/REF/ALT/ID and
+// re-emit records unchanged (e.g. bcftools isec). Because RawTail aliases the
+// parsed line, only the retaining Read path is safe to keep across reads; do not
+// retain a ReadInto Variant's RawTail.
+func (r *Reader) KeepRawSamples(on bool) { r.keepRawTail = on }
 
 // NewReader creates a new VCF reader from an io.Reader.
 func NewReader(r io.Reader) *Reader {
@@ -213,6 +236,15 @@ func (r *Reader) parseLine(line string, v *Variant) error {
 	v.Filter = parseFilterInto(v.Filter, fields[6])
 	v.InfoOrder, v.Info = parseInfoInto(v.InfoOrder, v.Info, fields[7])
 
+	if len(fields) > 8 && r.keepRawTail {
+		// Shallow mode: keep the FORMAT + sample columns verbatim (the line from
+		// the start of fields[8]) and skip the per-sample map round-trip.
+		v.RawTail = rawTailOf(line)
+		v.Format = v.Format[:0]
+		v.Samples = v.Samples[:0]
+		return nil
+	}
+	v.RawTail = ""
 	if len(fields) > 8 {
 		v.Format = splitInto(v.Format, fields[8], ':')
 		n := len(r.header.Samples)
@@ -247,6 +279,23 @@ func (r *Reader) parseLine(line string, v *Variant) error {
 		v.Samples = v.Samples[:0]
 	}
 	return nil
+}
+
+// rawTailOf returns the substring of a VCF data line starting at the FORMAT
+// column — i.e. everything after the 8th tab (CHROM POS ID REF ALT QUAL FILTER
+// INFO are the first 8 fields). Returns "" if the line has no FORMAT column. The
+// result aliases line, so it lives only as long as line.
+func rawTailOf(line string) string {
+	n := 0
+	for i := 0; i < len(line); i++ {
+		if line[i] == '\t' {
+			if n == 7 {
+				return line[i+1:]
+			}
+			n++
+		}
+	}
+	return ""
 }
 
 // splitInto splits s on the single byte sep, appending the substrings into
@@ -417,7 +466,13 @@ func (w *Writer) Write(variant *Variant) error {
 	}
 
 	// Format and samples
-	if len(variant.Samples) > 0 && len(variant.Format) > 0 {
+	if variant.RawTail != "" {
+		// Shallow-parsed record (KeepRawSamples): the FORMAT + sample columns
+		// were kept verbatim. Re-emitting them is byte-identical to parsing them
+		// into per-sample maps and re-serialising, for a well-formed record.
+		bw.WriteByte('\t')
+		bw.WriteString(variant.RawTail)
+	} else if len(variant.Samples) > 0 && len(variant.Format) > 0 {
 		bw.WriteByte('\t')
 		for i, f := range variant.Format {
 			if i > 0 {

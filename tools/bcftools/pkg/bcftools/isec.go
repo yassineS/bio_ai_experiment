@@ -676,6 +676,10 @@ func openIsecCursor(path string) (*isecCursor, error) {
 			_ = in.Close()
 			return nil, err
 		}
+		// isec only inspects CHROM/POS/REF/ALT/ID and re-emits records unchanged,
+		// so keep the FORMAT + sample columns verbatim (RawTail) instead of
+		// parsing every sample into per-sample maps and rebuilding them on write.
+		r.KeepRawSamples(true)
 		c.next = func() (*vcf.Variant, error) { return r.Read() }
 	}
 	c.advance()

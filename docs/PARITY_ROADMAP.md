@@ -290,8 +290,16 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   256 KiB buffers on both paths: **3.9 s → 0.46 s** on the slow mount,
   byte-identical. On a fast disk isec is a steady **~2.1–2.5×** across tiers
   (rising gently with sample count), not 15×; the figures use the fast-disk
-  numbers. **Remaining (G6, low):** the residual ~2.5× is partly the multi-sample
-  FORMAT decode the set op doesn't need.
+  numbers.
+- **`bcftools isec` multi-sample FORMAT over-decode — FIXED** (G6). isec only
+  reads CHROM/POS/REF/ALT/ID and re-emits records unchanged, yet it parsed every
+  sample's FORMAT into per-sample maps and rebuilt them on write. The vcf reader
+  gained a `KeepRawSamples` mode that keeps the FORMAT+sample columns verbatim
+  (`Variant.RawTail`) and re-emits them on write — byte-identical to the map
+  round-trip for a well-formed record (`serialize(parse(tail)) == tail`),
+  validated by the streaming-vs-in-memory differential test and byte-exact vs
+  upstream incl. PL. isec wall **2.0× → 1.33× upstream** (0.56 s → 0.37 s on the
+  16-sample fixture).
 - The large-tier heavy cells (`sam_mpileup`, `bcf_call`, `bcf_isec`) were
   mis-reported as OOM; that was **disk exhaustion** (a ~17 GB temp output on a
   5 GB-free overlay), not RAM — all three are bounded and run with a big-disk
