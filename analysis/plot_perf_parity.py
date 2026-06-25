@@ -240,6 +240,83 @@ def fig_speedup(cells):
     return len(rows)
 
 
+def memratio(c):
+    """Peak-RSS ratio ours/upstream (< 1 = our port uses less RAM)."""
+    return c["our_rss_mb"] / c["up_rss_mb"]
+
+
+def fig_memory(cells):
+    """Per-subcommand peak-RSS ratio (ours / upstream), grouped by tool, one bar
+    per tier — the memory companion to fig_speedup. < 1 = our port uses less
+    RAM; > 1 = more (the Go runtime + GC overhead, honest)."""
+    by = defaultdict(dict)
+    for c in cells:
+        if c.get("our_rss_mb") and c.get("up_rss_mb"):
+            by[c["cell"]][c["scale"]] = c
+    rows = ordered_cells(by)
+
+    ypos, ylabels, sep, prev = [], [], [], None
+    y = 0.0
+    for tool, name in rows:
+        if prev is not None and tool != prev:
+            y += 0.45
+            sep.append(y - 0.22)
+        ypos.append(y)
+        ylabels.append(CELL[name][1])
+        prev = tool
+        y += 1.0
+
+    n_t = len(TIERS)
+    bar_h = 0.78 / n_t
+    fig, ax = plt.subplots(figsize=(7.4, max(6.5, 0.42 * len(rows) + 1.2)))
+    for ti, tier in enumerate(TIERS):
+        ys, xs, cols = [], [], []
+        for (tool, name), yb in zip(rows, ypos):
+            c = by[name].get(tier)
+            if not c:
+                continue
+            ys.append(yb - (ti - (n_t - 1) / 2) * bar_h)
+            xs.append(memratio(c))
+            cols.append(shade(TOOL_COLOUR[tool], TIER_SHADE[tier]))
+        ax.barh(ys, xs, height=bar_h * 0.92, color=cols, zorder=3)
+
+    ax.axvline(1.0, color=COLOURS["near_black"], lw=1.1, ls="--", alpha=0.8, zorder=2)
+    ax.set_yticks(ypos)
+    ax.set_yticklabels(ylabels, fontsize=9)
+    ax.invert_yaxis()
+    ax.set_xscale("log")
+    ax.set_xlim(0.7, 24)
+    ax.xaxis.set_major_locator(matplotlib.ticker.FixedLocator([1, 2, 5, 10, 20]))
+    ax.xaxis.set_minor_locator(matplotlib.ticker.LogLocator(base=10, subs=tuple(range(2, 10))))
+    ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+    ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:g}×"))
+    ax.set_xlabel("peak RSS  =  ours / upstream   (< 1 means our port uses less RAM)")
+
+    fam_rows = defaultdict(list)
+    for (tool, name), yb in zip(rows, ypos):
+        fam_rows[tool].append(yb)
+    for tool, ys in fam_rows.items():
+        ax.text(-0.34, sum(ys) / len(ys), tool, transform=ax.get_yaxis_transform(),
+                rotation=90, va="center", ha="center", fontsize=10,
+                fontweight="bold", color=TOOL_COLOUR[tool])
+    for sy in sep:
+        ax.axhline(sy, color=COLOURS["gray_16"], lw=0.7, zorder=1)
+
+    import matplotlib.patches as mpatches
+    handles = [mpatches.Patch(color=shade("#86868B", TIER_SHADE[t]), label=t) for t in TIERS]
+    ax.legend(handles=handles, title="tier (shade)", loc="lower right", frameon=True,
+              framealpha=0.95, edgecolor=COLOURS["gray_16"], fontsize=9,
+              ncol=1, title_fontsize=9)
+    fig.subplots_adjust(left=0.36, right=0.97, bottom=0.07, top=0.91)
+    mj.title_block(fig, "Per-subcommand peak memory vs upstream",
+                   "peak RSS ratio · grouped by tool · < 1× = leaner than upstream",
+                   left=0.36, tighten=False)
+    for ext in ("pdf", "png"):
+        fig.savefig(os.path.join(FIGS, f"fig_memory.{ext}"), dpi=200)
+    plt.close(fig)
+    return len(rows)
+
+
 def fig_scaling(cells):
     """Per-tier dumbbell/arrow plot: for each subcommand, an OPEN marker at
     upstream's median wall time with an ARROW to OUR median (filled), IQR error
@@ -414,8 +491,8 @@ def perf_table(cells):
               f"**Medium-tier summary ({len(med)} cells):** {fast} faster (≥1.1×), "
               f"{par} at par, {len(med) - fast - par} slower. The I/O-bound conversions "
               "and `bedtools` intersect/coverage/genomecov + `sickle` are faster; the "
-              "compute-heavy variant cells (`mpileup`, `call`, `isec`) are slower and "
-              "reported plainly (and OOM at the large tier on the 12 GB box).", ""]
+              "compute-heavy variant cells (`mpileup`, `call`, `isec`) are a steady "
+              "~2–2.5× slower across tiers, reported plainly.", ""]
     return lines
 
 
@@ -447,13 +524,59 @@ def parity_table():
     return lines
 
 
+def fig_compression():
+    """Compressed output size, ours vs upstream, per format. Each bar runs from
+    the 1× parity line to the size ratio (ours / upstream): a bar to the LEFT of
+    1× means our output is smaller (better compression), to the RIGHT means
+    larger. Annotated with the compression factor each side achieves (raw input
+    / compressed output)."""
+    path = os.path.join(FIGS, "compression.json")
+    if not os.path.exists(path):
+        return
+    data = json.load(open(path))
+    ys = list(range(len(data)))[::-1]
+    fig, ax = plt.subplots(figsize=(7.6, 0.62 * len(data) + 1.9))
+    maxr = max(d["our_bytes"] / d["up_bytes"] for d in data)
+    for y, d in zip(ys, data):
+        ratio = d["our_bytes"] / d["up_bytes"]
+        col = TOOL_COLOUR.get(d["tool"], COLOURS["gray_48"])
+        ax.barh(y, ratio - 1.0, left=1.0, height=0.55, color=col, zorder=3)
+        ocf, ucf = d["raw_bytes"] / d["our_bytes"], d["raw_bytes"] / d["up_bytes"]
+        ax.text(max(ratio, 1.0) + 0.03, y, f"{ocf:.1f}× vs {ucf:.1f}×",
+                va="center", ha="left", fontsize=8, color=COLOURS["gray_48"])
+    ax.axvline(1.0, color=COLOURS["near_black"], lw=1.1, ls="--", alpha=0.8, zorder=2)
+    ax.set_yticks(ys)
+    ax.set_yticklabels([d["format"] for d in data], fontsize=10)
+    ax.set_xlim(0.8, maxr + 0.7)
+    ax.set_xlabel("output size  =  ours / upstream   (< 1× = our output is smaller)")
+    for sp in ("top", "right"):
+        ax.spines[sp].set_visible(False)
+    import matplotlib.patches as mpatches
+    seen, handles = set(), []
+    for d in data:
+        if d["tool"] not in seen:
+            seen.add(d["tool"])
+            handles.append(mpatches.Patch(color=TOOL_COLOUR[d["tool"]], label=d["tool"]))
+    ax.legend(handles=handles, title="tool", fontsize=8.5, title_fontsize=8.5,
+              frameon=True, framealpha=0.95, edgecolor=COLOURS["gray_16"], loc="lower right")
+    fig.subplots_adjust(left=0.16, right=0.97, bottom=0.2, top=0.84)
+    mj.title_block(fig, "Compressed output size vs upstream",
+                   "annotated with compression factor (raw / compressed): ours vs upstream",
+                   left=0.15, tighten=False)
+    for ext in ("pdf", "png"):
+        fig.savefig(os.path.join(FIGS, f"fig_compression.{ext}"), dpi=200)
+    plt.close(fig)
+
+
 def main():
     cells = load_cells()
     tiers = sorted(set(c["scale"] for c in cells), key=lambda t: TIER_X[t])
     print(f"loaded {len(cells)} bench cells across tiers {tiers}")
     print("fig_speedup rows:", fig_speedup(cells))
+    print("fig_memory rows:", fig_memory(cells))
     print("fig_scaling rows:", fig_scaling(cells))
     fig_scatter(cells)
+    fig_compression()
     out = perf_table(cells) + parity_table()
     with open(os.path.join(RES, "performance_tables.md"), "w") as f:
         f.write("\n".join(out) + "\n")

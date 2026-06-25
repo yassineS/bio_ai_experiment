@@ -14,7 +14,8 @@ Source data: `bench_multiscale.json` (small/medium, `pipeline/bench`),
 `../large_tier/bench/*/bench.json` + `bench_large_bamvcf.json` (large tier);
 `bench_fastq.json` (sickle se/pe + seqtk seq/comp/trimfq/fqchk);
 `bench_oom_large.json` (the fat-node `mpileup` / `call` / `isec` cells at large,
-re-run with `TMPDIR` on a big disk — see the OOM note below).
+re-run with `TMPDIR` on a big disk — see the OOM note below);
+`compression.json` (per-format output sizes ours vs upstream, for `fig_compression`).
 Convention: **speedup = upstream wall / ours**, so **> 1 = our port is faster**.
 Timings are the median over reps; CIs are the 95% bootstrap CI on the wall-time
 ratio (claim C3, `pipeline/stats`).
@@ -23,7 +24,9 @@ ratio (claim C3, `pipeline/stats`).
 |---|---|
 | `fig_speedup` | Per-**subcommand** speedup, **grouped by tool** (samtools / bcftools / bedtools / seqtk / sickle), with one bar per tier (small / medium / large) and 95% CI. The headline: I/O conversions + `bedtools` intersect/coverage + `sickle` are faster; the compute-heavy variant cells (`mpileup`, `call`, `isec`) are a steady ~2–2.5× slower across tiers. (`bcf_isec` previously showed a spurious ~15× at large — a benchmarking artifact of writing its output to a slow bind mount with under-buffered writes; fixed, see below — it is really ~2.5×, gently rising with sample count.) |
 | `fig_scaling` | Per-tier **dumbbell/arrow** plot (one facet per tier): for each subcommand an open marker at upstream's median wall time with an **arrow to ours** (filled, tool-coloured) and **IQR error bars**. Tiers are discrete, so nothing is connected across them; arrow pointing left = faster. |
-| `fig_scatter` | Ours vs upstream wall time (log-log) with the `y=x` parity line; points below the line are faster (blue), above are slower (terracotta). |
+| `fig_scatter` | Ours vs upstream wall time (log-log) with the `y=x` parity line; points below the line are faster, above are slower; colour = tool. |
+| `fig_memory` | Per-**subcommand** peak-RSS ratio (ours / upstream), same layout as `fig_speedup`. **< 1× = leaner than upstream.** The honest picture of the Go-vs-C memory trade: every cell uses *more* RAM (Go runtime + GC), from ~1.2× (`bcftools query`/`stats`) to ~13–14× on the streaming-histogram cells (`samtools depth`/`stats`, `bedtools genomecov`/`merge`). |
+| `fig_compression` | Compressed **output size** ours / upstream per format (BAM, CRAM, VCF.gz, BCF, BGZF), each annotated with the compression factor (raw / compressed) both sides achieve. **< 1× = our output is smaller.** `BAM` is slightly smaller than upstream (15.0× vs 14.3×); the deflate-backed `VCF.gz`/`BCF`/`BGZF` are ~3–6% larger (klauspost vs libdeflate); **`CRAM` is the outlier — ~1.87× larger (62× vs 116×)**, a real codec gap (see the roadmap). Measured at one representative scale (size ratios are ~scale-independent). |
 
 Each figure is emitted as both `.pdf` (vector, for the manuscript) and `.png`
 (preview). Companion tables: [`../performance_tables.md`](../performance_tables.md)

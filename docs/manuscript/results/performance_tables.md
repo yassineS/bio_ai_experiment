@@ -89,7 +89,7 @@ inter-quartile range; the 95% CI is a bootstrap on the wall ratio (H1a).
 | large | sickle | `se` | 1885.0 ± 430.9 | 3156.0 ± 146.3 | 1.67× | [1.45, 1.98] | 2.09 | faster |
 | large | sickle | `pe` | 4602.6 ± 418.0 | 7564.2 ± 1198.5 | 1.64× | [1.47, 1.83] | 2.02 | faster |
 
-**Medium-tier summary (26 cells):** 8 faster (≥1.1×), 2 at par, 16 slower. The I/O-bound conversions and `bedtools` intersect/coverage/genomecov + `sickle` are faster; the compute-heavy variant cells (`mpileup`, `call`, `isec`) are slower and reported plainly (and OOM at the large tier on the 12 GB box).
+**Medium-tier summary (26 cells):** 8 faster (≥1.1×), 2 at par, 16 slower. The I/O-bound conversions and `bedtools` intersect/coverage/genomecov + `sickle` are faster; the compute-heavy variant cells (`mpileup`, `call`, `isec`) are a steady ~2–2.5× slower across tiers, reported plainly.
 
 ## C2 — Parity rates (byte-exact vs upstream) with 95% CIs
 

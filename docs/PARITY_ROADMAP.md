@@ -269,6 +269,13 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   **2.7 GB → 128 MB** (and 39× → ~6.5× upstream on the 24-sample large fixture,
   492 → ~80 MB). Byte-identical, and a colocated-`sites.txt` ordering parity bug
   was fixed alongside (commit `a669525`).
+- **CRAM compression ~1.87× larger than upstream** (NEW, from `fig_compression`).
+  On a synthetic medium fixture (ref-aligned reads) our `samtools view -C` output
+  is ~1.87× upstream's (62× vs 116× raw→CRAM); BAM is actually *smaller* than
+  upstream (15.0× vs 14.3×) and the deflate formats (VCF.gz/BCF/BGZF) are within
+  ~6% (klauspost vs libdeflate). CRAM is the outlier — likely better
+  quality-score / codec selection upstream. Output is valid CRAM (decode is
+  byte-validated); this is compression *efficiency*, not correctness. Tracked.
 - **`bcftools isec` "15× wall" was an artifact — FIXED** (commit `ff46358`).
   `isec -p` writes its projection VCFs + `sites.txt` to disk; the large-tier
   bench ran with `TMPDIR` on the slow Docker bind mount, and our plain-VCF writer

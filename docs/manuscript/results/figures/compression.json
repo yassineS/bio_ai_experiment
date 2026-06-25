@@ -1,0 +1,7 @@
+[
+  {"op": "samtools view -b", "tool": "samtools", "format": "BAM", "raw_bytes": 20175504, "our_bytes": 1343205, "up_bytes": 1414599},
+  {"op": "samtools view -C", "tool": "samtools", "format": "CRAM", "raw_bytes": 20175504, "our_bytes": 325647, "up_bytes": 174524},
+  {"op": "bcftools view -Oz", "tool": "bcftools", "format": "VCF.gz", "raw_bytes": 4415664, "our_bytes": 1030917, "up_bytes": 971788},
+  {"op": "bcftools view -Ob", "tool": "bcftools", "format": "BCF", "raw_bytes": 4415664, "our_bytes": 877059, "up_bytes": 855092},
+  {"op": "bgzip", "tool": "samtools", "format": "BGZF", "raw_bytes": 4415664, "our_bytes": 1030970, "up_bytes": 971648}
+]
