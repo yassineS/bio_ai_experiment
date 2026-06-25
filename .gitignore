@@ -145,3 +145,6 @@ __pycache__/
 reference_code/seqtk
 reference_code/skewer
 reference_code/vcftools
+
+# Babysitter orchestration state (local tool, not project source)
+.a5c/

@@ -1,33 +1,44 @@
 [submodule "reference_code/prinseq"]
 	path = reference_code/prinseq
 	url = https://github.com/uwb-linux/prinseq
+	ignore = dirty
 [submodule "reference_code/vcftools"]
 	path = reference_code/vcftools
 	url = https://github.com/vcftools/vcftools
+	ignore = dirty
 [submodule "reference_code/skewer"]
 	path = reference_code/skewer
 	url = https://github.com/relipmoc/skewer
+	ignore = dirty
 [submodule "reference_code/seqtk"]
 	path = reference_code/seqtk
 	url = https://github.com/lh3/seqtk
+	ignore = dirty
 [submodule "reference_code/sickle"]
 	path = reference_code/sickle
 	url = https://github.com/najoshi/sickle
+	ignore = dirty
 [submodule "reference_code/fastp"]
 	path = reference_code/fastp
 	url = https://github.com/OpenGene/fastp
+	ignore = dirty
 [submodule "reference_code/bedtools"]
 	path = reference_code/bedtools
 	url = https://github.com/arq5x/bedtools2
+	ignore = dirty
 [submodule "reference_code/samtools"]
 	path = reference_code/samtools
 	url = https://github.com/samtools/samtools
+	ignore = dirty
 [submodule "reference_code/htscodecs"]
 	path = reference_code/htscodecs
 	url = https://github.com/samtools/htscodecs
+	ignore = dirty
 [submodule "reference_code/bcftools"]
 	path = reference_code/bcftools
 	url = https://github.com/samtools/bcftools
+	ignore = dirty
 [submodule "reference_code/htslib"]
 	path = reference_code/htslib
 	url = https://github.com/samtools/htslib
+	ignore = dirty
