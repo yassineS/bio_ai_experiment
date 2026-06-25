@@ -161,6 +161,23 @@ func BenchMatrix() []BenchCell {
 			a := []string{"se", "-f", m.Path("fastq"), "-t", "sanger", "-o", out}
 			return benchPlan{ourTool: "sickle", upKey: "sickle", ourArgs: a, upArgs: a}
 		}},
+		{"sickle_pe", "FASTQ", func(m *fixtures.Manifest, tmp string) benchPlan {
+			o1 := filepath.Join(tmp, "trim_R1.fq")
+			o2 := filepath.Join(tmp, "trim_R2.fq")
+			s := filepath.Join(tmp, "trim_singles.fq")
+			a := []string{"pe", "-f", m.Path("fastq1"), "-r", m.Path("fastq2"),
+				"-t", "sanger", "-o", o1, "-p", o2, "-s", s}
+			return benchPlan{ourTool: "sickle", upKey: "sickle", ourArgs: a, upArgs: a}
+		}},
+		{"seqtk_comp", "FASTQ", func(m *fixtures.Manifest, tmp string) benchPlan {
+			return sameArgs("seqtk", "seqtk", true, "comp", m.Path("fasta"))(m, tmp)
+		}},
+		{"seqtk_trimfq", "FASTQ", func(m *fixtures.Manifest, tmp string) benchPlan {
+			return sameArgs("seqtk", "seqtk", true, "trimfq", m.Path("fastq"))(m, tmp)
+		}},
+		{"seqtk_fqchk", "FASTQ", func(m *fixtures.Manifest, tmp string) benchPlan {
+			return sameArgs("seqtk", "seqtk", true, "fqchk", m.Path("fastq"))(m, tmp)
+		}},
 	}
 	return cells
 }
