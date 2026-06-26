@@ -340,18 +340,20 @@ func hasSpanEvent(evs []pileupEvent) bool {
 }
 
 // liveDepth returns the count of "live" (not filtered, base-quality OK)
-// events at a position. We count pileupEventDel/RefSkip too because they
-// occupy a depth slot in upstream output (they're written as '*').
+// events at a position. pileupEventDel/RefSkip occupy a depth slot too (they
+// are written as '*'/'>'/'<'), but — like aligned bases — only when their
+// quality clears the -Q/--min-BQ threshold: upstream applies min_baseQ to
+// bam_get_qual[p->qpos] for every entry, and our del/refskip events carry that
+// post-gap base's quality, so a placeholder flanking a low-quality deletion is
+// excluded from depth exactly as upstream excludes it.
 func liveDepth(evs []pileupEvent, minBQ uint8) int {
 	n := 0
 	for i := range evs {
 		if evs[i].dropped {
 			continue
 		}
-		if evs[i].kind == pileupEventBase {
-			if minBQ > 0 && evs[i].qual < minBQ {
-				continue
-			}
+		if minBQ > 0 && evs[i].qual < minBQ {
+			continue
 		}
 		n++
 	}
@@ -368,10 +370,16 @@ func writeBasesColumn(bw *bufio.Writer, evs []pileupEvent, ref byte, opts Mpileu
 		if e.dropped {
 			continue
 		}
-		if e.kind == pileupEventBase {
-			if opts.MinBaseQ > 0 && e.qual < opts.MinBaseQ {
-				continue
-			}
+		// The -Q/--min-BQ filter applies to EVERY pileup entry, not just
+		// aligned bases: upstream (bam_plcmd.c) tests bam_get_qual[p->qpos]
+		// against min_baseQ for del/refskip placeholders too, where qpos is
+		// the post-gap base. Our del/refskip events carry exactly that base's
+		// quality (accumulateRecordEvents' gapQual = rec.Qual[queryPos]), so a
+		// '*'/'>'/'<' flanking a low-quality deletion drops out just as it does
+		// upstream. Gating this on pileupEventBase over-retained those
+		// placeholders, inflating depth near indels.
+		if opts.MinBaseQ > 0 && e.qual < opts.MinBaseQ {
+			continue
 		}
 		if e.readStart {
 			bw.WriteByte('^')
@@ -455,10 +463,16 @@ func writeQualsColumn(bw *bufio.Writer, evs []pileupEvent, opts MpileupOptions) 
 		if e.dropped {
 			continue
 		}
-		if e.kind == pileupEventBase {
-			if opts.MinBaseQ > 0 && e.qual < opts.MinBaseQ {
-				continue
-			}
+		// The -Q/--min-BQ filter applies to EVERY pileup entry, not just
+		// aligned bases: upstream (bam_plcmd.c) tests bam_get_qual[p->qpos]
+		// against min_baseQ for del/refskip placeholders too, where qpos is
+		// the post-gap base. Our del/refskip events carry exactly that base's
+		// quality (accumulateRecordEvents' gapQual = rec.Qual[queryPos]), so a
+		// '*'/'>'/'<' flanking a low-quality deletion drops out just as it does
+		// upstream. Gating this on pileupEventBase over-retained those
+		// placeholders, inflating depth near indels.
+		if opts.MinBaseQ > 0 && e.qual < opts.MinBaseQ {
+			continue
 		}
 		bw.WriteByte(e.qual + 33)
 	}
@@ -472,10 +486,16 @@ func writeMapqColumn(bw *bufio.Writer, evs []pileupEvent, opts MpileupOptions) {
 		if e.dropped {
 			continue
 		}
-		if e.kind == pileupEventBase {
-			if opts.MinBaseQ > 0 && e.qual < opts.MinBaseQ {
-				continue
-			}
+		// The -Q/--min-BQ filter applies to EVERY pileup entry, not just
+		// aligned bases: upstream (bam_plcmd.c) tests bam_get_qual[p->qpos]
+		// against min_baseQ for del/refskip placeholders too, where qpos is
+		// the post-gap base. Our del/refskip events carry exactly that base's
+		// quality (accumulateRecordEvents' gapQual = rec.Qual[queryPos]), so a
+		// '*'/'>'/'<' flanking a low-quality deletion drops out just as it does
+		// upstream. Gating this on pileupEventBase over-retained those
+		// placeholders, inflating depth near indels.
+		if opts.MinBaseQ > 0 && e.qual < opts.MinBaseQ {
+			continue
 		}
 		c := int(e.mapq) + 33
 		if c > 126 {
@@ -494,10 +514,16 @@ func writeReadBPColumn(bw *bufio.Writer, evs []pileupEvent, opts MpileupOptions)
 		if e.dropped {
 			continue
 		}
-		if e.kind == pileupEventBase {
-			if opts.MinBaseQ > 0 && e.qual < opts.MinBaseQ {
-				continue
-			}
+		// The -Q/--min-BQ filter applies to EVERY pileup entry, not just
+		// aligned bases: upstream (bam_plcmd.c) tests bam_get_qual[p->qpos]
+		// against min_baseQ for del/refskip placeholders too, where qpos is
+		// the post-gap base. Our del/refskip events carry exactly that base's
+		// quality (accumulateRecordEvents' gapQual = rec.Qual[queryPos]), so a
+		// '*'/'>'/'<' flanking a low-quality deletion drops out just as it does
+		// upstream. Gating this on pileupEventBase over-retained those
+		// placeholders, inflating depth near indels.
+		if opts.MinBaseQ > 0 && e.qual < opts.MinBaseQ {
+			continue
 		}
 		if !first {
 			bw.WriteByte(',')

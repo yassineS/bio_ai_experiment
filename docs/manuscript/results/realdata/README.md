@@ -299,6 +299,31 @@ optimisation targets (not defects):
 > follow-up), and replicating upstream's `embed_ref` auto-fallback on a
 > name-mismatched reference would be a deliberate output change — both tracked
 > in `docs/PARITY_ROADMAP.md`.
+>
+> **Update — `samtools mpileup` near-indel depth (task #36, large fix; small
+> residual tracked):** `mpileup` over region 20 diverged from upstream at indel
+> flanks — 542 positions with `-B` (BAQ off) and 3200 with BAQ on, ours' depth
+> always HIGHER. Despite the original "BAQ HMM" framing, the BAQ HMM is a
+> faithful port; the real cause was a **mis-scoped `-Q`/`--min-BQ` filter**:
+> deletion `*` and ref-skip `>`/`<` placeholders bypassed the base-quality
+> filter, so a placeholder flanking a low-quality deletion was counted in depth
+> when upstream drops it. Upstream applies `min_baseQ` to `bam_get_qual[p->qpos]`
+> for every pileup entry (for a placeholder, `qpos` is the post-gap base); our
+> placeholders already carry that quality, so applying the filter uniformly to
+> all event kinds fixed it. Result: **−B 542 → 7 positions, BAQ-on 3200 → 2**;
+> the canonical `20:126156` 4 bp-deletion case now matches upstream byte-for-byte
+> in both modes; region `20:30–31 Mb` and the `-Q 0` variation are 0-diff; no new
+> test failures; `mpileup -r 20` peak RSS unchanged (131.8 MB, within the task
+> #29 bound). The residual **7 (−B) / 2 (BAQ-on)** positions are a *separate*,
+> pre-existing **overlap-removal streaming-order** subtlety (arguably task #34's):
+> our buffered pipeline de-weights mate-pair overlaps eagerly over the whole
+> contig, whereas htslib's `bam_plp` applies each pair's tweak incrementally as
+> the later mate is pushed — and the tweak both sums *and* zeroes qualities — so a
+> deletion `*` borrowing the post-gap base needs an original-vs-tweaked quality
+> that varies per column. A naive position-aware model was tried and *regressed*
+> all the way back to baseline, so closing the last positions needs an
+> incremental/position-aware overlap tweak (a real restructure) — tracked in
+> `docs/PARITY_ROADMAP.md`, not folded into this filter fix.
 
 ## Status — real-data bugs found
 
