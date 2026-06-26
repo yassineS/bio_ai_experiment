@@ -635,18 +635,63 @@ func decodeBAMAux(buf []byte) ([]Aux, error) {
 	return decodeBAMAuxInto(nil, buf)
 }
 
+// tagInternTable holds a pre-allocated string for every 2-char aux tag built
+// from printable ASCII bytes (0x20..0x7e). It is built once at package init and
+// only read thereafter, so it is safe to share across concurrent BAMReaders. The
+// strings it returns are byte-for-byte identical to string(buf[:2]); interning
+// them just avoids a fresh 2-byte allocation on the per-record decode hot path.
+var tagInternTable = func() *[95][95]string {
+	t := new([95][95]string)
+	for i := 0; i < 95; i++ {
+		for j := 0; j < 95; j++ {
+			t[i][j] = string([]byte{byte(0x20 + i), byte(0x20 + j)})
+		}
+	}
+	return t
+}()
+
+// internTag returns the interned 2-char tag string for bytes a,b. For the
+// printable-ASCII tags that every real BAM uses it returns a shared, pre-built
+// string (no allocation); for any out-of-range byte it falls back to a fresh
+// string so the decoded tag is always exactly string([]byte{a, b}).
+func internTag(a, b byte) string {
+	if a >= 0x20 && a <= 0x7e && b >= 0x20 && b <= 0x7e {
+		return tagInternTable[a-0x20][b-0x20]
+	}
+	return string([]byte{a, b})
+}
+
 // decodeBAMAuxInto is decodeBAMAux that appends into dst (use dst[:0] to reuse
 // a record's existing Aux backing array), returning the grown slice.
+//
+// FIX 2: it reuses both the dst Aux backing array (callers pass rec.Aux[:0]) and
+// each reused entry's ArrayValues backing slice — for the common case of
+// re-decoding records into the same *Record, a record with B-array aux no longer
+// allocates a fresh []interface{} per read. It also interns the 2-char tag via a
+// fixed lookup (internTag) instead of allocating a new 2-byte string each call.
+// None of this changes a single decoded value: the Aux struct, its Value boxing,
+// and the parsed contents are identical to the allocate-fresh path.
 func decodeBAMAuxInto(dst []Aux, buf []byte) ([]Aux, error) {
-	out := dst
+	// fullCap is dst's backing array length: entries in dst[len:cap] still hold
+	// the previous decode's ArrayValues backing slices, which we can reuse.
+	out := dst[:0]
+	fullCap := dst[:cap(dst)]
 	for len(buf) > 0 {
 		if len(buf) < 3 {
 			return nil, fmt.Errorf("sam: truncated aux header")
 		}
-		tag := string(buf[:2])
+		tag := internTag(buf[0], buf[1])
 		typ := buf[2]
 		buf = buf[3:]
-		a := Aux{Tag: tag, Type: typ}
+		// Reuse the slot at index len(out) if it exists in the backing array, so
+		// its ArrayValues backing slice can be recycled; otherwise start fresh.
+		var a Aux
+		idx := len(out)
+		var reuseArr []interface{}
+		if idx < len(fullCap) {
+			reuseArr = fullCap[idx].ArrayValues[:0]
+		}
+		a = Aux{Tag: tag, Type: typ}
 		switch typ {
 		case 'A':
 			if len(buf) < 1 {
@@ -726,6 +771,9 @@ func decodeBAMAuxInto(dst []Aux, buf []byte) ([]Aux, error) {
 			if len(buf) < need {
 				return nil, fmt.Errorf("sam: truncated aux 'B' body")
 			}
+			// Seed the array with the reused backing slice (len 0, prior cap) so
+			// the appends below recycle it instead of allocating from nil.
+			a.ArrayValues = reuseArr
 			for j := uint32(0); j < count; j++ {
 				off := int(j) * elemSize
 				switch sub {

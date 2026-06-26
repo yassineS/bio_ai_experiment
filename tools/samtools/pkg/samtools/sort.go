@@ -83,6 +83,20 @@ func Sort(in io.Reader, out io.Writer, opts SortOptions) error {
 		opts.MaxMemBytes = SortDefaultMem
 	}
 
+	// The per-shard spill budget is the flat MaxMemBytes (default 768 MiB),
+	// deliberately NOT scaled by -@. Scaling the BYTE budget by thread count
+	// (mirroring upstream's `max_mem = _max_mem * n_threads`) was tried and
+	// regressed peak RSS to ~2x upstream: a buffered Go *sam.Record's real heap
+	// footprint is several times its packed byte size, so a thread-scaled byte
+	// budget lets the live buffer's resident set blow past upstream's, breaking
+	// task #32's memory bound — and it did not improve the full-sort wall (the
+	// per-spill decode/re-encode round-trip, not the shard count, dominates).
+	// Keeping the flat budget holds peak RSS within bound. Reducing the
+	// full-sort shard count without inflating RSS needs a packed/arena spill
+	// format that avoids re-decoding records — tracked as a follow-up in
+	// docs/PARITY_ROADMAP.md.
+	budget := opts.MaxMemBytes
+
 	// Decode the input with block-parallel BGZF inflation when -@/--threads
 	// asks for it. sort retains every record (it buffers and spills them), so
 	// it reads via Read() — which returns a fresh record each call — and never
@@ -139,7 +153,7 @@ func Sort(in io.Reader, out io.Writer, opts SortOptions) error {
 			return nil
 		}
 		sort.SliceStable(buffer, func(a, b int) bool { return cmp(buffer[a], buffer[b]) })
-		path, ferr := writeShard(tmpBaseDir, tmpName, len(shards), hdr, buffer, opts.Threads)
+		path, ferr := writeShard(tmpBaseDir, tmpName, len(shards), hdr, buffer)
 		if ferr != nil {
 			return ferr
 		}
@@ -160,7 +174,7 @@ func Sort(in io.Reader, out io.Writer, opts SortOptions) error {
 		size := recordSize(rec)
 		// If we are about to overflow and we already have content, spill
 		// first so the new record always lands in a fresh buffer.
-		if len(buffer) > 0 && bufBytes+size > opts.MaxMemBytes {
+		if len(buffer) > 0 && bufBytes+size > budget {
 			if err := flush(); err != nil {
 				return err
 			}
@@ -657,13 +671,26 @@ func refID(name string, refIndex map[string]int) int {
 
 // writeShard creates a tmp BAM file and writes the given (already sorted)
 // records to it. Returns the file path.
-func writeShard(dir, prefix string, idx int, hdr *sam.Header, recs []*sam.Record, threads int) (string, error) {
+//
+// FIX 3a: spill shards always use the SINGLE-THREADED BGZF writer, never the
+// parallel MultiWriter back end. A -@N run spills many shards over its lifetime;
+// previously each one spun up (and tore down) a fresh parallel-BGZF pool — N
+// worker goroutines, a collector, and two 256-deep channels — for a small,
+// serially written file. That create/destroy churn (plus the fd traffic) made
+// the -@4 sys-time explode, so -@4 ran slower than -@1. The parallel BGZF writer
+// is now reserved for the FINAL output only (see writeOutput), where the stream
+// is large enough to amortise the pool. OUTPUT-COMPAT: only the spill shards'
+// BGZF deflate threading changes; BGZF is block-parallel and decodes to
+// identical plaintext regardless of how many goroutines compressed it, and the
+// merge reads those identical records back, so the merged output is byte-for-
+// byte unchanged.
+func writeShard(dir, prefix string, idx int, hdr *sam.Header, recs []*sam.Record) (string, error) {
 	path := filepath.Join(dir, fmt.Sprintf("%s.%d.%d.bam", prefix, os.Getpid(), idx))
 	f, err := os.Create(path)
 	if err != nil {
 		return "", err
 	}
-	bw := sam.NewBAMWriterThreads(f, threads)
+	bw := sam.NewBAMWriter(f)
 	if err := bw.WriteHeader(hdr); err != nil {
 		_ = f.Close()
 		_ = os.Remove(path)

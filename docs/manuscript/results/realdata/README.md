@@ -324,6 +324,27 @@ optimisation targets (not defects):
 > all the way back to baseline, so closing the last positions needs an
 > incremental/position-aware overlap tweak (a real restructure) — tracked in
 > `docs/PARITY_ROADMAP.md`, not folded into this filter fix.
+>
+> **Update — `samtools sort` wall (task #39, improved; structural residual
+> tracked):** at matched memory, `sort -@4` was ~3x upstream. Profiling
+> disproved the "inherent Go sort cost" framing — `sort.SliceStable`/heap/
+> comparator are <4%; the real costs were excessive spilling (57 shards vs
+> upstream's 4, each an extra BGZF deflate+inflate round-trip), ~22% GC from
+> per-record allocation churn, and a **`-@4` threading regression** where each
+> of 57 spills spun up a fresh parallel-BGZF worker pool while the sort never
+> parallelised (sys-time exploded 3.2→28.2 s). Fixed by using a single-threaded
+> BGZF writer for spill shards (the parallel writer is reserved for the final
+> output) and pooling the per-record encode buffer + decode Aux/array backing
+> (byte-identical). Measured on real GIAB: full `-@4` **3.06× → 2.36×**, subset
+> `-@4` **12.25× → 4.39×**, subset `-@1` 1.81× → 1.55×, peak RSS **0.78×**
+> upstream (2647 vs 3412 MB), decoded sorted records byte-identical to upstream.
+> An interim attempt to scale the spill budget by thread count (mirroring
+> upstream's `max_mem * n_threads`) was reverted: a buffered Go `*sam.Record`'s
+> real heap footprint is several times its packed size, so it blew peak RSS to
+> 2.01× for no wall gain. Reaching ≤2×/~1× needs a packed/arena spill format
+> (avoiding the per-spill Go decode→re-encode round-trip) plus a parallel
+> in-memory sort — a larger, higher-risk restructure tracked in
+> `docs/PARITY_ROADMAP.md`.
 
 ## Status — real-data bugs found
 

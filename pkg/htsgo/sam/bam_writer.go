@@ -27,6 +27,16 @@ type BAMWriter struct {
 	hdr    *Header
 	refMap map[string]int32
 	closed bool
+	// FIX 2: per-writer scratch buffers reused across Write calls to avoid a
+	// fresh heap allocation per record. A BAMWriter.Write is single-threaded per
+	// instance (the parallel BGZF back end runs *behind* the writer, on a copy of
+	// the finished bytes), so reusing instance-owned buffers within Write is
+	// safe and introduces no cross-goroutine sharing. The encoded bytes are
+	// byte-for-byte identical to the per-record-allocation path.
+	encBuf  bytes.Buffer // record-body accumulator (was a local var per Write)
+	nameBuf []byte       // QName + trailing NUL scratch
+	seqBuf  []byte       // packed 4-bit SEQ scratch
+	szBuf   [4]byte      // block-length prefix scratch
 }
 
 // NewBAMWriter constructs a BAMWriter that writes BGZF-compressed BAM bytes
@@ -158,9 +168,8 @@ func (bw *BAMWriter) Write(rec *Record) error {
 	if err != nil {
 		return err
 	}
-	var sz [4]byte
-	binary.LittleEndian.PutUint32(sz[:], uint32(len(body)))
-	if _, err := bw.bw.Write(sz[:]); err != nil {
+	binary.LittleEndian.PutUint32(bw.szBuf[:], uint32(len(body)))
+	if _, err := bw.bw.Write(bw.szBuf[:]); err != nil {
 		return err
 	}
 	_, err = bw.bw.Write(body)
@@ -176,9 +185,12 @@ func (bw *BAMWriter) Close() error {
 	return bw.bw.Close()
 }
 
-// encodeRecord serialises one record into the BAM record body format.
+// encodeRecord serialises one record into the BAM record body format. It writes
+// into the writer's reused bw.encBuf (reset on entry), so the returned slice is
+// valid only until the next Write — bw.bw.Write copies/flushes it before then.
 func (bw *BAMWriter) encodeRecord(rec *Record) ([]byte, error) {
-	var buf bytes.Buffer
+	bw.encBuf.Reset()
+	buf := &bw.encBuf
 	refID := int32(-1)
 	if rec.RName != "" && rec.RName != "*" {
 		if id, ok := bw.refMap[rec.RName]; ok {
@@ -221,42 +233,46 @@ func (bw *BAMWriter) encodeRecord(rec *Record) ([]byte, error) {
 		bamPNext = int32(rec.PNext - 1)
 	}
 
-	nameBytes := []byte(rec.QName)
-	nameBytes = append(nameBytes, 0)
-	if len(nameBytes) > 255 {
-		return nil, fmt.Errorf("sam: BAM read name too long (%d > 255)", len(nameBytes))
+	// Reuse the per-writer nameBuf scratch instead of allocating a fresh
+	// []byte(rec.QName) + append per record. Identical bytes: QName followed by
+	// the trailing NUL.
+	nameBuf := append(bw.nameBuf[:0], rec.QName...)
+	nameBuf = append(nameBuf, 0)
+	bw.nameBuf = nameBuf
+	if len(nameBuf) > 255 {
+		return nil, fmt.Errorf("sam: BAM read name too long (%d > 255)", len(nameBuf))
 	}
 
 	lSeq := int32(len(rec.Seq))
 	bin := reg2bin(int(bamPos), int(bamPos)+rec.Cigar.ReferenceLength())
 
 	// Fixed 32-byte header.
-	binary.Write(&buf, binary.LittleEndian, refID)
-	binary.Write(&buf, binary.LittleEndian, bamPos)
-	buf.WriteByte(byte(len(nameBytes)))
+	binary.Write(buf, binary.LittleEndian, refID)
+	binary.Write(buf, binary.LittleEndian, bamPos)
+	buf.WriteByte(byte(len(nameBuf)))
 	buf.WriteByte(rec.MapQ)
-	binary.Write(&buf, binary.LittleEndian, uint16(bin))
-	binary.Write(&buf, binary.LittleEndian, uint16(len(rec.Cigar)))
-	binary.Write(&buf, binary.LittleEndian, rec.Flag)
-	binary.Write(&buf, binary.LittleEndian, lSeq)
-	binary.Write(&buf, binary.LittleEndian, nextRefID)
-	binary.Write(&buf, binary.LittleEndian, bamPNext)
+	binary.Write(buf, binary.LittleEndian, uint16(bin))
+	binary.Write(buf, binary.LittleEndian, uint16(len(rec.Cigar)))
+	binary.Write(buf, binary.LittleEndian, rec.Flag)
+	binary.Write(buf, binary.LittleEndian, lSeq)
+	binary.Write(buf, binary.LittleEndian, nextRefID)
+	binary.Write(buf, binary.LittleEndian, bamPNext)
 	if rec.TLen < math.MinInt32 || rec.TLen > math.MaxInt32 {
 		return nil, fmt.Errorf("sam: BAM writer: TLEN %d exceeds the 32-bit BAM field limit (use SAM or CRAM for long references)", rec.TLen)
 	}
-	binary.Write(&buf, binary.LittleEndian, int32(rec.TLen))
+	binary.Write(buf, binary.LittleEndian, int32(rec.TLen))
 
 	// Read name (with trailing NUL).
-	buf.Write(nameBytes)
+	buf.Write(nameBuf)
 
 	// CIGAR.
 	for _, op := range rec.Cigar {
-		binary.Write(&buf, binary.LittleEndian, uint32(op))
+		binary.Write(buf, binary.LittleEndian, uint32(op))
 	}
 
-	// Packed SEQ.
-	seqEncoded := encodeSeq(rec.Seq)
-	buf.Write(seqEncoded)
+	// Packed SEQ. encodeSeqInto packs into the reused seqBuf scratch.
+	bw.seqBuf = encodeSeqInto(bw.seqBuf, rec.Seq)
+	buf.Write(bw.seqBuf)
 
 	// QUAL.
 	if int32(len(rec.Qual)) == lSeq && lSeq > 0 {
@@ -272,29 +288,48 @@ func (bw *BAMWriter) encodeRecord(rec *Record) ([]byte, error) {
 
 	// AUX.
 	for _, a := range rec.Aux {
-		if err := encodeBAMAux(&buf, a); err != nil {
+		if err := encodeBAMAux(buf, a); err != nil {
 			return nil, err
 		}
 	}
 	return buf.Bytes(), nil
 }
 
-// encodeSeq packs an ASCII nucleotide string into the BAM 4-bit form.
+// encodeSeq packs an ASCII nucleotide string into the BAM 4-bit form, allocating
+// a fresh slice. It is retained for callers outside the per-record hot path;
+// the writer uses encodeSeqInto to reuse a scratch buffer.
 func encodeSeq(s string) []byte {
+	return encodeSeqInto(nil, s)
+}
+
+// encodeSeqInto packs an ASCII nucleotide string into the BAM 4-bit form,
+// reusing dst's backing array when it is large enough (use the previous result
+// to stay allocation-free across records). The packed bytes are identical to
+// encodeSeq's. The output length must be set, not appended, because odd-length
+// sequences leave the final low nibble zero — so dst is sliced to the exact size
+// and every byte written.
+func encodeSeqInto(dst []byte, s string) []byte {
 	n := (len(s) + 1) / 2
-	out := make([]byte, n)
+	if cap(dst) >= n {
+		dst = dst[:n]
+	} else {
+		dst = make([]byte, n)
+	}
+	for i := 0; i < n; i++ {
+		dst[i] = 0
+	}
 	for i := 0; i < len(s); i++ {
 		code := seqEncodeTable[s[i]]
 		if code == 0xff {
 			code = 15 // unknown → N
 		}
 		if i%2 == 0 {
-			out[i/2] = code << 4
+			dst[i/2] = code << 4
 		} else {
-			out[i/2] |= code
+			dst[i/2] |= code
 		}
 	}
-	return out
+	return dst
 }
 
 // encodeBAMAux serialises one aux field to BAM binary form.
