@@ -993,7 +993,7 @@ short-read filter, PE with singletons, synced PE pass/fail, **strict
 upstream sickle v1.33 with the documented flags and is asserted
 byte-for-byte by `TestParity_Sickle_*` in
 `tools/sickle/pkg/sickle/parity_test.go`. See
-[`tools/PARITY_VALIDATION.md` → sickle](../tools/PARITY_VALIDATION.md#sickle)
+the `tools/sickle` README parity notes
 for the per-case description and the audit's "discrepancies found and
 fixed" log.
 
@@ -1048,7 +1048,7 @@ algorithms verbatim from `reference_code/skewer/src/matrix.cpp`:
   rejected when the cumulative penalty exceeds
   `dPenaltyPerErr * compareLen + 0.001`.
 
-See [`tools/PARITY_VALIDATION.md` → skewer](../tools/PARITY_VALIDATION.md#skewer)
+See the `tools/skewer` README parity notes
 for the per-case description.
 
 ### `fastp`
@@ -1204,7 +1204,7 @@ cut_tail / disable-flags follow-up: cut_tail-at-scale with and without
 adapter, cut_front/cut_right unregressed at scale, and the new `--disable_*`
 toggles; deterministic transforms validated byte-exact, the heuristic SE
 adapter-detect validated by a documented similarity bound). See
-[tools/PARITY_VALIDATION.md#fastp-parity-validation](../tools/PARITY_VALIDATION.md#fastp-parity-validation)
+the `tools/fastp` README parity notes
 for the case list.
 
 Bugs in the Go port surfaced + fixed inline by the initial audit:

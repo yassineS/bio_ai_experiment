@@ -12,7 +12,7 @@ A tool in this repository is **only considered "complete"** once it has both:
    parsing, predictable exit codes, and `-h/--help` + `-v/--version`.
 
 Until both conditions are met, the tool is listed as **Partial** in
-[`tools/PORTING_STATUS.md`](../tools/PORTING_STATUS.md). Where a POSIX-compliant
+[`docs/PARITY_ROADMAP.md`](PARITY_ROADMAP.md). Where a POSIX-compliant
 flag conflicts with an upstream short-form alias, the POSIX form wins; the
 upstream alias may still be accepted as a long option (e.g. `--qual-type`).
 
