@@ -513,18 +513,28 @@ func isecMergeContigOrder(fileContigs [][]string, primaryOrder map[string]int) (
 // never split. They are vars (not consts) only so tests can shrink them to
 // force many flushes across position boundaries.
 var (
-	isecStreamFlushRecords = 50000
-	isecStreamFlushBytes   = 16 << 20 // 16 MiB of estimated variant footprint
+	isecStreamFlushRecords = 20000
+	isecStreamFlushBytes   = 4 << 20 // 4 MiB of estimated variant footprint
 )
 
 // isecVarSize is a cheap upper-ish estimate of a parsed variant's heap
-// footprint, used only to decide when to flush the streaming batch. Multi-sample
-// FORMAT data dominates fat records — each Sample carries its own small map — so
-// it is charged a flat per-sample cost rather than walked field by field.
+// footprint, used only to decide when to flush the streaming batch. The FORMAT
+// + sample columns dominate fat records: with the FORMAT-passthrough reader
+// (isec's openIsecCursor) they are held verbatim in RawTail with Samples empty,
+// so RawTail must be charged — undercounting it (the old estimate ignored both
+// RawTail and INFO) let a batch of richly-annotated GIAB records grow to ~100 MB
+// while the estimate still read ~16 MiB. INFO and FILTER are charged too; a
+// fully parsed multi-sample record is charged a flat per-sample cost.
 func isecVarSize(v *vcf.Variant) int {
-	n := 80 + len(v.Chrom) + len(v.ID) + len(v.Ref)
+	n := 80 + len(v.Chrom) + len(v.ID) + len(v.Ref) + len(v.RawTail)
 	for _, a := range v.Alt {
 		n += len(a) + 1
+	}
+	for k, val := range v.Info {
+		n += len(k) + len(val) + 8
+	}
+	for _, f := range v.Filter {
+		n += len(f) + 1
 	}
 	return n + len(v.Samples)*256
 }
