@@ -470,8 +470,19 @@ func regenerateMDNM(recs []*sam.Record, suppress []mdnmSuppress, refBases []byte
 		if i < len(suppress) {
 			sup = suppress[i]
 		}
-		_, hasMD := rec.GetAux("MD")
-		_, hasNM := rec.GetAux("NM")
+		// Direct linear scan over the (small, <=~12-tag) aux list rather than
+		// rec.GetAux, which builds and discards an aux-index map per record;
+		// this path runs for every mapped record of every slice (~10k/slice),
+		// so the map churn is pure GC pressure under the decode memory cap.
+		hasMD, hasNM := false, false
+		for j := range rec.Aux {
+			switch rec.Aux[j].Tag {
+			case "MD":
+				hasMD = true
+			case "NM":
+				hasNM = true
+			}
+		}
 		// A cF "no MD"/"no NM" bit is equivalent to the tag already being
 		// present for the regeneration gate: htslib forces has_MD/has_NM so
 		// the `!has_MD`/`!has_NM` condition is false and nothing is emitted.
@@ -502,14 +513,33 @@ func insertBeforeTrailingRG(aux, add []sam.Aux) []sam.Aux {
 	if len(add) == 0 {
 		return aux
 	}
-	if n := len(aux); n > 0 && aux[n-1].Tag == "RG" {
-		out := make([]sam.Aux, 0, n+len(add))
-		out = append(out, aux[:n-1]...)
-		out = append(out, add...)
-		out = append(out, aux[n-1])
-		return out
+	n := len(aux)
+	// Splice point: just before a trailing data-series RG, else at the end.
+	insertPos := n
+	if n > 0 && aux[n-1].Tag == "RG" {
+		insertPos = n - 1
 	}
-	return append(aux, add...)
+	need := n + len(add)
+	// Reuse the existing backing array's spare capacity when present
+	// (decodeTags over-allocates and mergeAux rarely fills it), splicing in
+	// place with a single memmove instead of allocating a fresh aux slice per
+	// record — the standalone reallocation here was the dominant resident
+	// allocation of CRAM decode. `copy` is memmove-safe for overlapping
+	// ranges, so shifting the [insertPos:n] tail right is correct. The emitted
+	// elements and their order are byte-identical (… MD NM [RG]).
+	if cap(aux) >= need {
+		aux = aux[:need]
+		copy(aux[insertPos+len(add):], aux[insertPos:n])
+		copy(aux[insertPos:], add)
+		return aux
+	}
+	// Insufficient capacity: one exact-sized allocation (still cheaper than the
+	// previous make-plus-three-appends, and only when the slice can't grow).
+	out := make([]sam.Aux, need)
+	copy(out, aux[:insertPos])
+	copy(out[insertPos:], add)
+	copy(out[insertPos+len(add):], aux[insertPos:n])
+	return out
 }
 
 // resolveSliceReference resolves the reference span a slice covers. It

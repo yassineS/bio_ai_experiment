@@ -313,12 +313,24 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   regardless of GC pressure — the genuine per-slice working set (a slice's
   decompressed data-series blocks + reconstructed records) — while upstream's C
   decoder is an exceptionally lean ~20 MB.
-  **REMAINING (the path to ≤2×):** stream a slice's series blocks rather than
-  decompressing all of them up front (and/or reuse the block/record buffers
-  across slices), so the live working set drops below ~40 MB. This is a
-  `pkg/htsgo/cram` decode-core change (touches `slice.go` `newSeriesSource` and
-  the per-slice block buffers) and carries codec-correctness risk, so it is a
-  deliberate follow-up, not folded into the memory-knee fix above.
+  **REMAINING (the path to ≤2×) — investigated in task #40, re-scoped:** the
+  original "stream the per-slice series blocks" hypothesis was DISPROVEN by
+  profiling — the decompressed CORE+external series blocks are only ~2.12 MB per
+  slice and are freed each slice, not the holder. The ~70–75 MB peak is the OS
+  arena high-water from materialising a whole slice of ~10k **fat Go
+  `*sam.Record` (~600 B each: `Seq` as a string, `Qual`/`Cigar` slices, `[]sam.Aux`)**
+  versus upstream decoding the same slice into packed `bam1_t` (~50 B). It is
+  GC-immune (lowering GOGC does not move the peak — it is a transient burst, not
+  heap-goal headroom), and batching the fat materialisation is structurally
+  blocked (the CRAM data series are consumed in record order in a single pass,
+  `resolveMates` needs the whole slice, and the retained `Seq`/`Aux` escape to
+  the consumer so they cannot be pooled). **Reaching ≤2× therefore requires a
+  leaner `sam.Record` representation (pack `SEQ` as 4-bit nibbles and `Aux` as
+  bytes, à la `bam1_t`)** — a large, cross-cutting change to the shared `sam`
+  type used by every tool, tracked as its own follow-up. Task #40 shipped a
+  byte-identical decode-churn cleanup (an in-place MD/NM aux splice replacing a
+  per-record reallocation, ~38 % fewer decode allocations, marginally faster) but
+  peak RSS stays ~3.6× — the leaner-record change is the only path below 2×.
 - **`samtools view -C` CRAM encode wall — FIXED (task #33).** Serial per-contig
   `@SQ M5` (reference MD5) hashing dominated header-write (≈80 % of CPU; whole
   reference genome hashed). Now parallelised across a worker pool, each worker on
