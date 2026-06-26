@@ -370,6 +370,23 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   accumulate-then-render pipeline (touches `mpileup_overlap.go` +
   `mpileup_pileup.go`'s `gapQual` capture), carrying real regression risk, so it
   is a deliberate follow-up, not folded into the `-Q` filter fix.
+  **Follow-up task #41 attempted the position-aware tweak and was reverted (no
+  regression) — the boundary is NON-UNIVERSAL.** A second model (capture each
+  tweaked base's original quality + `visibleFrom = (later mate).Pos−1`, use the
+  original quality for a placeholder column `C < visibleFrom`) again regressed in
+  the full-region scan (`−B` 7 → 54), and the full-md5 oracle caught it. It was
+  refuted at the algorithm level at `20:25426694`: there a `C < visibleFrom`
+  deletion placeholder borrows a *zeroed* post-gap base and upstream emits the
+  **tweaked** `0`, not the original — so "before the mate is pushed ⇒ original"
+  is simply false in general. htslib's borrowed-quality semantics
+  (`sam.c tweak_overlap_quality`, `p->qpos = s->y`) are an in-place mutate whose
+  per-column visibility is coupled to `bam_plp`'s streaming push/emit order; the
+  buffered accumulate-then-render model cannot reproduce it with a per-record (or
+  even per-base) `visibleFrom` rule. **The only faithful path is a true streaming
+  pileup engine** that pushes reads and applies the overlap tweak in `bam_plp`
+  order, emitting each column as it is reached — a major mpileup-engine
+  restructure (follow-up #44). The 7/2-position residual (99.99993 % of region 20
+  already byte-identical) stands until then.
 - **`samtools sort` wall — IMPROVED (task #39); structural residual.** `sort -@4`
   was ~3x upstream at matched memory. Profiling showed `sort.SliceStable`/heap/
   comparator are negligible (<4%); the costs were excessive spilling (57 vs 4
