@@ -364,13 +364,48 @@ type Record struct {
 	Qual  []byte // raw Phred scores; nil/length zero or all 0xff means "*"
 	Aux   []Aux
 
+	// RawAux is the record's auxiliary fields as a raw on-disk BAM aux byte
+	// block (a run of tag[2]+type[1]+value entries in BAM binary layout). When
+	// it is non-nil the BAM writer emits it verbatim and Aux is left nil; it is
+	// mutually exclusive with Aux. It is a memory-lean passthrough used on the
+	// CRAM→BAM view path, where the aux bytes already arrive in BAM layout and
+	// never need to be materialised into the heavier []Aux form. Any consumer
+	// that reads Aux (GetAux, the SAM/CRAM writers) self-heals by decoding
+	// RawAux into Aux on first access, so correctness never depends on the
+	// passthrough gate being perfect.
+	RawAux []byte
+
 	// AuxIndex maps a 2-char tag to its position in Aux for quick lookups.
 	// Populated lazily by GetAux.
 	auxIndex map[string]int
 }
 
+// materialiseAux decodes a pending RawAux byte block into the Aux slice when
+// Aux has not yet been populated, then clears RawAux so the two never disagree.
+// It is the defensive lazy guard that lets any Aux-reading code path stay
+// correct even if a record reached it with RawAux still set (the gated view
+// passthrough should ensure that never happens, but this makes correctness
+// independent of the gate). A record with neither RawAux nor Aux is left
+// untouched. The decoded Aux is byte-for-byte what decodeBAMAux would produce
+// for the same bytes, so the materialised record is identical to one decoded
+// eagerly.
+func (r *Record) materialiseAux() {
+	if r.Aux == nil && r.RawAux != nil {
+		r.Aux, _ = decodeBAMAuxInto(nil, r.RawAux)
+		r.RawAux = nil
+	}
+}
+
+// MaterialiseAux decodes a pending RawAux byte block into the Aux slice, then
+// clears RawAux. It is the exported form of the defensive lazy guard for
+// consumers in other packages (e.g. the CRAM writer) that read Aux directly: a
+// record handed to them with RawAux set self-heals into the decoded Aux form.
+// It is a no-op when Aux is already populated or no aux is present.
+func (r *Record) MaterialiseAux() { r.materialiseAux() }
+
 // GetAux returns the aux field with the given tag, or false if absent.
 func (r *Record) GetAux(tag string) (Aux, bool) {
+	r.materialiseAux()
 	if r.auxIndex == nil && len(r.Aux) > 0 {
 		r.auxIndex = make(map[string]int, len(r.Aux))
 		for i, a := range r.Aux {

@@ -191,6 +191,21 @@ func View(in io.Reader, out io.Writer, opts ViewOptions) (int, error) {
 		return viewStreamFast(br, out, &opts, hdr, resolved)
 	}
 
+	// CRAM→BAM memory-lean passthrough: when the input is CRAM, the output is
+	// BAM, and no filter or sink on this path reads a record's aux fields, ask
+	// the CRAM decoder to build each record's aux as a raw on-disk BAM aux byte
+	// block (rec.RawAux) that the BAM writer emits verbatim — so the heavier
+	// []sam.Aux form is never materialised, cutting the decode's peak RSS. The
+	// predicate is conservative: any aux-touching filter (RG / -d / -D) or a
+	// non-BAM sink leaves the mode OFF, keeping today's eager behaviour. The BAM
+	// output bytes are byte-identical either way (see the cram package's
+	// byte-exact test).
+	if rawAuxBAMSinkEligible(&opts) {
+		if cr, ok := r.(interface{ SetRawAuxBAMSink(bool) }); ok {
+			cr.SetRawAuxBAMSink(true)
+		}
+	}
+
 	regionFilter := buildRegionFilter(resolved, hdr)
 	if regionFilter == nil && len(opts.Regions) > 0 {
 		// User asked for regions but none resolved — surface a predicate

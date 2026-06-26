@@ -109,6 +109,12 @@ type recordDecoder struct {
 	// returned slice is never retained past the same record's reconstruction
 	// (the emitted sam.Record copies SEQ/QUAL/CIGAR out, never the features).
 	featScratch []readFeature
+
+	// rawAuxBAMSink mirrors the RecordReader flag of the same name: when set,
+	// decodeTags builds each record's aux block directly as raw on-disk BAM aux
+	// bytes (rec.RawAux) and leaves rec.Aux nil, the memory-lean CRAM→BAM view
+	// passthrough. Default false keeps the eager []sam.Aux path unchanged.
+	rawAuxBAMSink bool
 }
 
 // newRecordDecoder builds a recordDecoder for one slice. It parses the
@@ -429,12 +435,49 @@ func (rd *recordDecoder) decodeRecord(index int) (*decodedRecord, error) {
 	// For CRAM v4 the dictionary already carries an "RG*" placeholder that
 	// decodeTags expanded in place, so rgEmitted is set and no second copy
 	// is added.
+	var finalAux []sam.Aux
 	if rgEmitted {
-		rec.Aux = tags
+		finalAux = tags
 	} else {
-		rec.Aux = mergeAux(tags, rd.readGroupTag(rgValue))
+		finalAux = mergeAux(tags, rd.readGroupTag(rgValue))
+	}
+	if rd.rawAuxBAMSink {
+		// Memory-lean view passthrough: serialise the assembled aux fields
+		// straight to a raw on-disk BAM aux byte block and leave rec.Aux nil.
+		// The bytes are byte-for-byte what encodeRecord would write for the
+		// equivalent rec.Aux (both go through the same per-field serialiser), so
+		// a record decoded here is identical to one decoded eagerly and
+		// re-encoded. A trailing data-series RG is located later by a raw-byte
+		// walk in regenerateMDNM so MD/NM splice in just before it.
+		raw, rerr := buildRawAux(finalAux)
+		if rerr != nil {
+			return nil, wrapf(rerr, "record %d aux", index)
+		}
+		rec.RawAux = raw
+	} else {
+		rec.Aux = finalAux
 	}
 	return dr, nil
+}
+
+// buildRawAux serialises an assembled aux list into a raw on-disk BAM aux byte
+// block. The bytes are byte-for-byte what the BAM writer's encodeRecord emits
+// for the same aux list — both use the shared per-field serialiser
+// (sam.AppendBAMAux / encodeBAMAux) — so a record carrying this RawAux writes
+// identically to one carrying the equivalent rec.Aux.
+func buildRawAux(aux []sam.Aux) ([]byte, error) {
+	if len(aux) == 0 {
+		return nil, nil
+	}
+	var raw []byte
+	for i := range aux {
+		var err error
+		raw, err = sam.AppendBAMAux(raw, aux[i])
+		if err != nil {
+			return nil, err
+		}
+	}
+	return raw, nil
 }
 
 // mergeAux appends the read-group aux tag, reconstructed from the RG
