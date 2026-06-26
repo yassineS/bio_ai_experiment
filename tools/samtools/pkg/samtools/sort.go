@@ -304,17 +304,34 @@ func (h *recordHeap) Pop() interface{} {
 	return x
 }
 
-// recordSize returns a coarse estimate of a record's memory footprint, used
-// only to decide when to spill an in-memory chunk.
+// recordSize estimates a record's ACTUAL Go heap footprint (not just its data
+// bytes), used to decide when to spill an in-memory chunk. A *sam.Record is many
+// separate heap allocations — the struct itself plus a backing array per
+// string/slice field, each rounded up to a size class — so the real footprint
+// is roughly twice the raw field bytes. Charging only the field bytes (the old
+// estimate) let the in-memory chunk grow to ~2x MaxMemBytes before spilling,
+// doubling peak RSS versus upstream's packed bam1_t budget.
 func recordSize(r *sam.Record) int64 {
-	const base = 96 // struct header + slice headers + minor overheads.
-	n := int64(base) + int64(len(r.QName)) + int64(len(r.Seq)) + int64(len(r.Qual)) + int64(len(r.Cigar)*4) + int64(len(r.RName)+len(r.RNext))
-	for _, a := range r.Aux {
-		n += int64(2 + 1 + 8) // tag + type + 8-byte fallback value
-		if s, ok := a.Value.(string); ok {
-			n += int64(len(s))
+	// alloc approximates a single Go heap allocation of n payload bytes: the
+	// allocator rounds small objects up to a size class (modelled as the next
+	// multiple of 16) and there is per-object bookkeeping; an empty field still
+	// costs nothing.
+	alloc := func(n int) int64 {
+		if n == 0 {
+			return 0
 		}
-		n += int64(len(a.ArrayValues) * 8)
+		return int64((n + 15) &^ 15)
+	}
+	const structBytes = 208 // the Record struct + its slot in the []*sam.Record buffer
+	n := int64(structBytes) +
+		alloc(len(r.QName)) + alloc(len(r.Seq)) + alloc(len(r.Qual)) +
+		alloc(len(r.Cigar)*4) + alloc(len(r.RName)) + alloc(len(r.RNext))
+	for _, a := range r.Aux {
+		n += 48 // Aux struct + interface value box
+		if s, ok := a.Value.(string); ok {
+			n += alloc(len(s))
+		}
+		n += alloc(len(a.ArrayValues) * 8)
 	}
 	return n
 }
