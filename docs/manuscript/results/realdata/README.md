@@ -355,9 +355,20 @@ independent review agent re-running the comparison).
   data loss).
 - **`samtools merge`** `@RG`/`@PG` header line-grouping now matches upstream
   (0-diff header), records still byte-identical.
-- **CRAM MD/NM regeneration** on decode was already implemented and correctly
-  gated to external-reference CRAM; confirmed byte-exact vs upstream and pinned
-  with a regression test (the earlier delta was an embed_ref test artifact).
+- **CRAM MD/NM regeneration** on decode is byte-exact across **all** reference
+  modes (task #37). It was originally gated only to *external*-reference CRAM —
+  an embedded-reference slice (e.g. `view -C -T` of a BAM whose `@SQ` lacks
+  `M5`, which auto-embeds the real reference) dropped MD/NM entirely (ours 0 vs
+  upstream 215 646 on the chr20 fixture). The real htslib gate is per-record and
+  per-version, not external-vs-embedded: regenerate when the slice has a
+  reference (`s->ref != NULL`, embedded *or* external) **except** when a CRAM<4
+  record's `cF` aux byte marks it `no-MD`/`no-NM` (`embed_ref=2`) or a CRAM≥4
+  record lacks an `MD*`/`NM*` tag-dictionary placeholder. The decoder now
+  captures those bits per record and honours them, so embedded, `embed_ref=1/2`,
+  v3/v4, no-ref and external CRAM all decode byte-identical to upstream (the
+  `20:1–5 Mb` embedded fixture md5 `a6411adb…`); four CRAM parity tests that had
+  silently passed (insensitive fixture) now genuinely exercise it, plus a new
+  oracle-free `mdnm_regen_test.go`.
 
 **Remaining:** `samtools merge` is slower than upstream on large inputs
 (performance, not correctness — deferred to the performance pass).

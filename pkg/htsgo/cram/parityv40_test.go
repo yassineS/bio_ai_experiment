@@ -138,12 +138,21 @@ func TestV4UsesV4Codecs(t *testing.T) {
 // TestV4ExternalReferenceParity exercises the v4 decode against an
 // external reference: a self-consistent reference and SAM are written,
 // encoded to CRAM v4.0 with -T, and decoded with SetReferenceFASTA. The
-// result is compared to the v3.0 decode of the same source, so MD/NM
-// regeneration, substitution-feature reconstruction and the
-// reference-resolve path are all asserted identical across versions. (A
-// raw `samtools view` of either CRAM omits MD/NM because the file does not
-// store them; both our decodes regenerate them from the reference, which
-// is the behaviour under test.)
+// result is compared against the live `samtools view -T ref` decode of the
+// same CRAM (the upstream oracle), so substitution-feature reconstruction,
+// the reference-resolve path and — crucially — the version-specific MD/NM
+// regeneration policy are all asserted against upstream.
+//
+// MD/NM regeneration differs by CRAM version when the source reads carry no
+// MD/NM (this fixture's case), and upstream samtools is the source of truth:
+//   - CRAM v3: `samtools view -T ref` REGENERATES MD/NM from the reference
+//     (decode_md is auto-on for v<4 unless the cF "no MD" bit is set).
+//   - CRAM v4: `samtools view -T ref` does NOT regenerate; v4 regenerates
+//     only when an MD*/NM* placeholder is stored, which an embed_ref=0
+//     external CRAM of MD-less reads does not carry (cram_decode.c:1116,2046).
+//
+// Asserting v4==v3 here would be wrong — it contradicts upstream — so each
+// version is compared against its own `samtools view` decode instead.
 func TestV4ExternalReferenceParity(t *testing.T) {
 	samtools := upstreamSamtoolsCram(t)
 	dir := t.TempDir()
@@ -199,27 +208,59 @@ func TestV4ExternalReferenceParity(t *testing.T) {
 		t.Fatalf("samtools view -C version=3.0: %v\n%s", cerr, out)
 	}
 
-	v4Recs := decodeWithReferenceFASTA(t, v4Path, faPath)
+	// Each version's decode is compared against its own `samtools view -T ref`
+	// (the upstream oracle), since the v3 and v4 MD/NM policies legitimately
+	// differ for these MD-less reads.
+	for _, tc := range []struct {
+		name, path string
+	}{{"v3.0", v3Path}, {"v4.0", v4Path}} {
+		ours := decodeWithReferenceFASTA(t, tc.path, faPath)
+		want := samtoolsViewRecordsRef(t, samtools, tc.path, faPath)
+		if len(ours) != len(want) {
+			t.Fatalf("%s: ours decoded %d records, samtools decoded %d", tc.name, len(ours), len(want))
+		}
+		for i := range want {
+			if ours[i] != want[i] {
+				t.Fatalf("%s ext-ref record %d mismatch vs upstream:\n ours=%q\nwant=%q", tc.name, i, ours[i], want[i])
+			}
+		}
+	}
+
+	// Sanity on the policy split: v3 regenerates the substituted read's
+	// MD:Z:4A3 / NM:i:1, while v4 leaves it bare (no MD/NM). This guards
+	// against the comparison passing vacuously and pins the per-version
+	// behaviour the fix establishes.
 	v3Recs := decodeWithReferenceFASTA(t, v3Path, faPath)
-	if len(v4Recs) != len(v3Recs) {
-		t.Fatalf("v4 decoded %d records, v3 decoded %d", len(v4Recs), len(v3Recs))
-	}
-	for i := range v3Recs {
-		if v4Recs[i] != v3Recs[i] {
-			t.Fatalf("ext-ref record %d differs between v4 and v3:\nv4=%q\nv3=%q", i, v4Recs[i], v3Recs[i])
-		}
-	}
-	// Sanity: the substitution must have produced a non-trivial MD/NM, so
-	// the comparison is not vacuously matching two empty tag sets.
-	sawSubst := false
-	for _, r := range v4Recs {
+	v4Recs := decodeWithReferenceFASTA(t, v4Path, faPath)
+	v3HasMD, v4HasMD := false, false
+	for _, r := range v3Recs {
 		if strings.Contains(r, "MD:Z:4A3") && strings.Contains(r, "NM:i:1") {
-			sawSubst = true
+			v3HasMD = true
 		}
 	}
-	if !sawSubst {
-		t.Fatalf("v4 ext-ref decode did not regenerate the expected MD:Z:4A3 / NM:i:1 for the substituted read; records=%v", v4Recs)
+	for _, r := range v4Recs {
+		if strings.Contains(r, "MD:Z:") || strings.Contains(r, "NM:i:") {
+			v4HasMD = true
+		}
 	}
+	if !v3HasMD {
+		t.Fatalf("v3 ext-ref decode did not regenerate the expected MD:Z:4A3 / NM:i:1; records=%v", v3Recs)
+	}
+	if v4HasMD {
+		t.Fatalf("v4 ext-ref decode regenerated MD/NM but upstream v4 does not; records=%v", v4Recs)
+	}
+}
+
+// samtoolsViewRecordsRef runs `samtools view -T ref file` and returns the
+// record lines (no header). It is the reference-attached parity oracle, the
+// counterpart of samtoolsViewRecords for CRAMs decoded against a FASTA.
+func samtoolsViewRecordsRef(t *testing.T, samtools, file, faPath string) []string {
+	t.Helper()
+	out, err := exec.Command(samtools, "view", "-T", faPath, file).Output()
+	if err != nil {
+		t.Fatalf("samtools view -T %s %s: %v", faPath, file, err)
+	}
+	return splitNonEmptyLines(string(out))
 }
 
 // decodeWithReferenceFASTA decodes path with the given reference FASTA
