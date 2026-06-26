@@ -313,13 +313,17 @@ func (rr *RecordReader) decodeSliceParallel(h *CompressionHeader, sl *Slice, con
 		return nil, false, wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
 	}
 	dec.namePrefix = rr.namePrefix
-	recs, err := dec.decodeSliceRecords(sl.Header.NumRecords)
+	recs, suppress, err := dec.decodeSliceRecords(sl.Header.NumRecords)
 	if err != nil {
 		return nil, false, wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
 	}
-	if !sl.HasEmbeddedReference() {
-		regenerateMDNM(recs, refBases, refStart)
-	}
+	// Regenerate MD/NM whenever the slice has a reference (external or embedded),
+	// skipping only no_ref/RR=0 slices — see the rationale on the sequential
+	// path in iterator.go. regenerateMDNM no-ops when refBases is nil, so the
+	// call reproduces htslib's `s->ref != NULL` gate; suppress carries the
+	// per-record cF "no MD/NM" bits an embed_ref=2 CRAM stores so a reduced
+	// reference whose reads lacked MD/NM stays bare, exactly like upstream.
+	regenerateMDNM(recs, suppress, refBases, refStart)
 	return recs, dec.needsReference, nil
 }
 

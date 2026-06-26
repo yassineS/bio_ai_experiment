@@ -160,13 +160,13 @@ func TestDecodeReadNameSynthesised(t *testing.T) {
 func TestDecodeTagsErrors(t *testing.T) {
 	rd := &recordDecoder{h: refFreeHeader()}
 	// A TL of 0 with an empty dictionary yields no tags, not an error.
-	if tags, _, err := rd.decodeTags(0, -1, 0); err != nil || tags != nil {
+	if tags, _, _, err := rd.decodeTags(0, -1, 0); err != nil || tags != nil {
 		t.Errorf("decodeTags(0) = %v, %v; want nil,nil", tags, err)
 	}
-	if _, _, err := rd.decodeTags(-1, -1, 0); err == nil {
+	if _, _, _, err := rd.decodeTags(-1, -1, 0); err == nil {
 		t.Error("a negative tag-line index should error")
 	}
-	if _, _, err := rd.decodeTags(7, -1, 0); err == nil {
+	if _, _, _, err := rd.decodeTags(7, -1, 0); err == nil {
 		t.Error("an out-of-range tag-line index should error")
 	}
 }
@@ -281,13 +281,13 @@ func TestDecodeSliceRecordsErrors(t *testing.T) {
 		slice: &SliceHeader{},
 		src:   &SeriesSource{s: newTestSource(nil, nil)},
 	}
-	if _, err := rd.decodeSliceRecords(-1); err == nil {
+	if _, _, err := rd.decodeSliceRecords(-1); err == nil {
 		t.Error("a negative record count should error")
 	}
 	// A record count that exceeds the slice's series data must be
 	// rejected up front rather than allocate and loop — the slice here
 	// has zero bytes, so any positive count overshoots.
-	if _, err := rd.decodeSliceRecords(1); err == nil {
+	if _, _, err := rd.decodeSliceRecords(1); err == nil {
 		t.Error("a record count exceeding the series data should error")
 	}
 }
@@ -338,7 +338,7 @@ func TestDecodeSliceMatePair(t *testing.T) {
 		refNames:     []string{"chr1"},
 		readLenLimit: 1 << 20,
 	}
-	recs, err := rd.decodeSliceRecords(2)
+	recs, _, err := rd.decodeSliceRecords(2)
 	if err != nil {
 		t.Fatalf("decodeSliceRecords: %v", err)
 	}

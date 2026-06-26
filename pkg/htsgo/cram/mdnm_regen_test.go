@@ -53,7 +53,7 @@ func TestRegenerateMDNM(t *testing.T) {
 				{Tag: "RG", Type: 'Z', Value: "rg1"},
 			},
 		}
-		regenerateMDNM([]*sam.Record{rec}, ref, refStart)
+		regenerateMDNM([]*sam.Record{rec}, nil, ref, refStart)
 		// MD/NM must land between PG and the data-series RG.
 		if got, want := auxString(rec), "PG:Z:x\tMD:Z:8\tNM:i:0\tRG:Z:rg1"; got != want {
 			t.Fatalf("aux = %q, want %q", got, want)
@@ -68,7 +68,7 @@ func TestRegenerateMDNM(t *testing.T) {
 			Cigar: cig([2]int{8, sam.CigarMatch}),
 			Seq:   "ACCTACGT",
 		}
-		regenerateMDNM([]*sam.Record{rec}, ref, refStart)
+		regenerateMDNM([]*sam.Record{rec}, nil, ref, refStart)
 		md, _ := rec.GetAux("MD")
 		nm, _ := rec.GetAux("NM")
 		if v, _ := md.String(); v != "2G5" {
@@ -91,7 +91,7 @@ func TestRegenerateMDNM(t *testing.T) {
 			Cigar: cig([2]int{4, sam.CigarMatch}, [2]int{2, sam.CigarDeletion}, [2]int{4, sam.CigarMatch}),
 			Seq:   "ACGTGTAC",
 		}
-		regenerateMDNM([]*sam.Record{rec}, ref, refStart)
+		regenerateMDNM([]*sam.Record{rec}, nil, ref, refStart)
 		md, _ := rec.GetAux("MD")
 		nm, _ := rec.GetAux("NM")
 		if v, _ := md.String(); v != "4^AC4" {
@@ -110,7 +110,7 @@ func TestRegenerateMDNM(t *testing.T) {
 			Cigar: cig([2]int{4, sam.CigarMatch}, [2]int{2, sam.CigarInsertion}, [2]int{4, sam.CigarMatch}),
 			Seq:   "ACGTTTACGT",
 		}
-		regenerateMDNM([]*sam.Record{rec}, ref, refStart)
+		regenerateMDNM([]*sam.Record{rec}, nil, ref, refStart)
 		md, _ := rec.GetAux("MD")
 		nm, _ := rec.GetAux("NM")
 		if v, _ := md.String(); v != "8" {
@@ -126,7 +126,7 @@ func TestRegenerateMDNM(t *testing.T) {
 			QName: "u1", Flag: sam.FlagUnmapped, RName: "*", Pos: 0,
 			Seq: "ACGTACGT",
 		}
-		regenerateMDNM([]*sam.Record{rec}, ref, refStart)
+		regenerateMDNM([]*sam.Record{rec}, nil, ref, refStart)
 		if _, ok := rec.GetAux("MD"); ok {
 			t.Error("unmapped record should not gain an MD tag")
 		}
@@ -145,7 +145,7 @@ func TestRegenerateMDNM(t *testing.T) {
 				{Tag: "NM", Type: 'i', Value: int64(99)},
 			},
 		}
-		regenerateMDNM([]*sam.Record{rec}, ref, refStart)
+		regenerateMDNM([]*sam.Record{rec}, nil, ref, refStart)
 		md, _ := rec.GetAux("MD")
 		nm, _ := rec.GetAux("NM")
 		if v, _ := md.String(); v != "stored" {
@@ -168,7 +168,7 @@ func TestRegenerateMDNM(t *testing.T) {
 				{Tag: "NM", Type: 'i', Value: int64(7)},
 			},
 		}
-		regenerateMDNM([]*sam.Record{rec}, ref, refStart)
+		regenerateMDNM([]*sam.Record{rec}, nil, ref, refStart)
 		md, hasMD := rec.GetAux("MD")
 		if !hasMD {
 			t.Fatal("MD not regenerated when only NM was stored")
@@ -188,12 +188,87 @@ func TestRegenerateMDNM(t *testing.T) {
 			Cigar: cig([2]int{8, sam.CigarMatch}),
 			Seq:   "ACGTACGT",
 		}
-		regenerateMDNM([]*sam.Record{rec}, nil, refStart)
+		regenerateMDNM([]*sam.Record{rec}, nil, nil, refStart)
 		if _, ok := rec.GetAux("MD"); ok {
 			t.Error("no reference must not regenerate MD")
 		}
 		if _, ok := rec.GetAux("NM"); ok {
 			t.Error("no reference must not regenerate NM")
+		}
+	})
+
+	// The cF "no MD"/"no NM" bits an embed_ref=2 (reduced/consensus) CRAM
+	// stores per record mark that the source read carried no MD/NM. htslib
+	// then leaves that record bare even though the (embedded) reference is
+	// available (cram_decode.c:2117-2122). These cases pin that this decoder
+	// reproduces the per-record suppression instead of fabricating tags —
+	// the exact regression `samtools view` of an embed_ref=2 file exposes.
+	t.Run("cF no-MD bit suppresses MD only", func(t *testing.T) {
+		rec := &sam.Record{
+			QName: "c1", Flag: 0, RName: "chr1", Pos: 1,
+			Cigar: cig([2]int{8, sam.CigarMatch}),
+			Seq:   "ACCTACGT", // a real mismatch — regeneration would yield MD:Z:2G5.
+		}
+		regenerateMDNM([]*sam.Record{rec}, []mdnmSuppress{{md: true}}, ref, refStart)
+		if _, ok := rec.GetAux("MD"); ok {
+			t.Error("cF no-MD bit must suppress MD regeneration")
+		}
+		// NM is not suppressed by the no-MD bit, so it is still recomputed.
+		nm, ok := rec.GetAux("NM")
+		if !ok {
+			t.Fatal("NM should still be regenerated when only MD is suppressed")
+		}
+		if v, _ := nm.Int(); v != 1 {
+			t.Errorf("NM = %d, want 1", v)
+		}
+	})
+
+	t.Run("cF no-NM bit suppresses NM only", func(t *testing.T) {
+		rec := &sam.Record{
+			QName: "c2", Flag: 0, RName: "chr1", Pos: 1,
+			Cigar: cig([2]int{8, sam.CigarMatch}),
+			Seq:   "ACCTACGT",
+		}
+		regenerateMDNM([]*sam.Record{rec}, []mdnmSuppress{{nm: true}}, ref, refStart)
+		md, ok := rec.GetAux("MD")
+		if !ok {
+			t.Fatal("MD should still be regenerated when only NM is suppressed")
+		}
+		if v, _ := md.String(); v != "2G5" {
+			t.Errorf("MD = %q, want %q", v, "2G5")
+		}
+		if _, ok := rec.GetAux("NM"); ok {
+			t.Error("cF no-NM bit must suppress NM regeneration")
+		}
+	})
+
+	t.Run("cF both bits leave the record bare", func(t *testing.T) {
+		// This is the embed_ref=2 fixture case: a perfectly matching read
+		// whose source had neither MD nor NM. Before honouring cF the decoder
+		// wrongly emitted MD:Z:8 / NM:i:0 here (the bug this test guards).
+		rec := &sam.Record{
+			QName: "c3", Flag: 0, RName: "chr1", Pos: 1,
+			Cigar: cig([2]int{8, sam.CigarMatch}),
+			Seq:   "ACGTACGT",
+			Aux:   []sam.Aux{{Tag: "RG", Type: 'Z', Value: "rg1"}},
+		}
+		regenerateMDNM([]*sam.Record{rec}, []mdnmSuppress{{md: true, nm: true}}, ref, refStart)
+		if got, want := auxString(rec), "RG:Z:rg1"; got != want {
+			t.Fatalf("aux = %q, want %q (cF must leave the record bare)", got, want)
+		}
+	})
+
+	t.Run("suppress shorter than recs falls back to regenerate", func(t *testing.T) {
+		// A short/nil suppress slice must not panic and must regenerate the
+		// records it does not cover (the common no-cF path passes nil).
+		rec := &sam.Record{
+			QName: "c4", Flag: 0, RName: "chr1", Pos: 1,
+			Cigar: cig([2]int{8, sam.CigarMatch}),
+			Seq:   "ACGTACGT",
+		}
+		regenerateMDNM([]*sam.Record{rec}, []mdnmSuppress{}, ref, refStart)
+		if _, ok := rec.GetAux("MD"); !ok {
+			t.Error("a record beyond the suppress slice must still regenerate MD")
 		}
 	})
 }

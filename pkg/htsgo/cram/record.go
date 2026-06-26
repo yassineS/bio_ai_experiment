@@ -279,6 +279,18 @@ type decodedRecord struct {
 	// the record number htslib's cram_to_bam uses when synthesising a
 	// dropped name: the mate's index when the mate is an earlier record.
 	mateIndex int
+
+	// suppressMD and suppressNM mark that MD / NM must NOT be regenerated
+	// for this record even though a reference is available, reproducing
+	// htslib's per-record regeneration gate. They are computed by
+	// mdnmSuppressFor from the version-specific signal: for CRAM < 4 the
+	// per-record "cF" aux-tag bits an embed_ref=2 writer stores
+	// (cram_encode.c:3417, consumed at cram_decode.c:2117-2122); for CRAM
+	// >= 4 the absence of an MD*/NM* placeholder in the record's tag
+	// dictionary (regeneration is requested only when the placeholder is
+	// present, has_MD < 0 at cram_decode.c:2046).
+	suppressMD bool
+	suppressNM bool
 }
 
 // decodeRecord decodes one CRAM alignment record into a decodedRecord.
@@ -364,10 +376,12 @@ func (rd *recordDecoder) decodeRecord(index int) (*decodedRecord, error) {
 	if err != nil {
 		return nil, wrapf(err, "record %d tag line", index)
 	}
-	tags, rgEmitted, err := rd.decodeTags(tl, rgValue, index)
+	tags, rgEmitted, suppress, err := rd.decodeTags(tl, rgValue, index)
 	if err != nil {
 		return nil, err
 	}
+	dr.suppressMD = suppress.md
+	dr.suppressNM = suppress.nm
 
 	// The reconstructed sequence/quality/CIGAR depends on whether the
 	// record is mapped: a mapped record stores read features, an
@@ -459,14 +473,14 @@ func reverseQual(q []byte) {
 // next-fragment distance instead of explicit mate coordinates, and the
 // mate-related SAM fields are reconstructed here by pairing each such
 // record with the record that distance away.
-func (rd *recordDecoder) decodeSliceRecords(nRecords int32) ([]*sam.Record, error) {
+func (rd *recordDecoder) decodeSliceRecords(nRecords int32) ([]*sam.Record, []mdnmSuppress, error) {
 	if nRecords < 0 {
-		return nil, errFormat("slice declares a negative record count %d", nRecords)
+		return nil, nil, errFormat("slice declares a negative record count %d", nRecords)
 	}
 	// Fail fast on a count grossly larger than even the decompressed
 	// series data, before the loop allocates anything.
 	if total := rd.src.s.totalBytes(); nRecords > total {
-		return nil, errFormat("slice declares %d records but holds only %d bytes of series data",
+		return nil, nil, errFormat("slice declares %d records but holds only %d bytes of series data",
 			nRecords, total)
 	}
 	decoded := make([]*decodedRecord, 0)
@@ -474,7 +488,7 @@ func (rd *recordDecoder) decodeSliceRecords(nRecords int32) ([]*sam.Record, erro
 	for i := int32(0); i < nRecords; i++ {
 		dr, err := rd.decodeRecord(int(i))
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		decoded = append(decoded, dr)
 		// Every record must consume series input. If one did not, the
@@ -483,20 +497,22 @@ func (rd *recordDecoder) decodeSliceRecords(nRecords int32) ([]*sam.Record, erro
 		// header could otherwise drive a multi-billion-iteration loop).
 		c := rd.src.s.consumed()
 		if c == prev && i+1 < nRecords {
-			return nil, errFormat("slice declares %d records but the series data is exhausted after record %d",
+			return nil, nil, errFormat("slice declares %d records but the series data is exhausted after record %d",
 				nRecords, i)
 		}
 		prev = c
 	}
 	if err := resolveMates(decoded); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	rd.reconstructDroppedNames(decoded)
 	out := make([]*sam.Record, len(decoded))
+	suppress := make([]mdnmSuppress, len(decoded))
 	for i, dr := range decoded {
 		out[i] = dr.rec
+		suppress[i] = mdnmSuppress{md: dr.suppressMD, nm: dr.suppressNM}
 	}
-	return out, nil
+	return out, suppress, nil
 }
 
 // reconstructDroppedNames assigns a QNAME to every record of a lossy-names
@@ -758,20 +774,26 @@ func (rd *recordDecoder) decodeMate(dr *decodedRecord, cf int32, index int) erro
 // rgEmitted flag tells the caller to suppress the separate RG append in
 // that case. CRAM v2/v3 leave RG out of the dictionary, so rgEmitted is
 // false and the caller appends it as before.
-func (rd *recordDecoder) decodeTags(tl int32, rgValue int32, index int) (aux []sam.Aux, rgEmitted bool, err error) {
+func (rd *recordDecoder) decodeTags(tl int32, rgValue int32, index int) (aux []sam.Aux, rgEmitted bool, suppress mdnmSuppress, err error) {
 	if tl < 0 {
-		return nil, false, errFormat("record %d declares a negative tag-line index %d", index, tl)
+		return nil, false, suppress, errFormat("record %d declares a negative tag-line index %d", index, tl)
 	}
 	if int(tl) >= len(rd.tagDict) {
 		// A TL of 0 with an empty dictionary means "no tags".
 		if tl == 0 {
-			return nil, false, nil
+			return nil, false, rd.mdnmSuppressFor(cramFlagsTag{}, false, false), nil
 		}
-		return nil, false, errFormat("record %d tag-line index %d has no tag-dictionary entry (%d entries)",
+		return nil, false, suppress, errFormat("record %d tag-line index %d has no tag-dictionary entry (%d entries)",
 			index, tl, len(rd.tagDict))
 	}
 	keys := rd.tagDict[tl]
 	out := make([]sam.Aux, 0, len(keys))
+	// For CRAM v4 the presence of an MD*/NM* placeholder in this record's
+	// tag-line dictionary is what authorises regeneration; for v<4 the cF
+	// aux-tag bits authorise suppression. Both are folded into the final
+	// mdnmSuppress by mdnmSuppressFor below.
+	var cf cramFlagsTag
+	var seenMDStar, seenNMStar bool
 	for _, key := range keys {
 		// CRAM v4 stores certain tags in the dictionary as placeholders
 		// whose type byte is '*' (0x2a), to be filled in by the decoder
@@ -786,38 +808,70 @@ func (rd *recordDecoder) decodeTags(tl int32, rgValue int32, index int) (aux []s
 				rgEmitted = true
 				continue
 			}
-			// NM*/MD* (and any other '*' placeholder) carry no per-tag
-			// block: they are regenerated from the reference if one is
-			// attached (see iterator.go regenerateMDNM), so nothing is
-			// read or emitted here. This matches htslib inserting an empty
-			// placeholder it later overwrites.
+			// NM*/MD* carry no per-tag block: they are regenerated from the
+			// reference if one is attached (see iterator.go regenerateMDNM),
+			// so nothing is read or emitted here. Their *presence* is what a
+			// v4 file uses to request regeneration (cram_decode.c:2046 sets
+			// has_MD = -pos for the placeholder, and the v4 gate regenerates
+			// only when has_MD < 0); record it so a record WITHOUT the
+			// placeholder is left bare, matching upstream.
+			if key[0] == 'M' && key[1] == 'D' {
+				seenMDStar = true
+			}
+			if key[0] == 'N' && key[1] == 'M' {
+				seenNMStar = true
+			}
 			continue
 		}
 		enc := rd.h.Tags[key]
 		if enc == nil {
-			return nil, false, errFormat("record %d tag %q is not in the tag-encoding map", index, key.String())
+			return nil, false, suppress, errFormat("record %d tag %q is not in the tag-encoding map", index, key.String())
 		}
 		raw, derr := enc.decodeByteArray(rd.src.s)
 		if derr != nil {
-			return nil, false, wrapf(derr, "record %d tag %q value", index, key.String())
+			return nil, false, suppress, wrapf(derr, "record %d tag %q value", index, key.String())
 		}
 		// "cF" (CRAM flags, a single byte typed 'C') is an internal tag
 		// htslib writes and then strips on read — it is not part of the
 		// SAM record. Its value bytes must still be drained from the data
-		// series (done above), but the tag is never emitted. The bits
-		// suppress auto-regeneration of MD/NM; this decoder does not
-		// auto-generate either, so the suppression is implicit and only
-		// the tag-drop matters here. (htslib cram_decode.c "Remove cF tag".)
+		// series (done above), but the tag is never emitted. Its bits gate
+		// per-record MD/NM regeneration: bit 1 = "source had no MD", bit 2 =
+		// "no NM" (cram_encode.c:3417, set only by an embed_ref=2 writer).
+		// htslib turns these into has_MD=1/has_NM=1 to suppress regeneration
+		// for that record (cram_decode.c:2117-2122); we capture them here so
+		// mdnmSuppressFor can reproduce the same per-record suppression.
+		// (htslib cram_decode.c "Remove cF tag".)
 		if isCRAMFlagsTag(key, raw) {
+			cf = parseCRAMFlagsTag(raw)
 			continue
 		}
 		val, perr := decodeTagValue(key, raw)
 		if perr != nil {
-			return nil, false, wrapf(perr, "record %d tag %q", index, key.String())
+			return nil, false, suppress, wrapf(perr, "record %d tag %q", index, key.String())
 		}
 		out = append(out, val)
 	}
-	return out, rgEmitted, nil
+	return out, rgEmitted, rd.mdnmSuppressFor(cf, seenMDStar, seenNMStar), nil
+}
+
+// mdnmSuppressFor folds the version-specific MD/NM regeneration policy into
+// a single per-record mdnmSuppress.
+//
+// CRAM < 4: regeneration is the default (the gate `do_md` is true because
+// `samtools view` sets decode_md=-1, so `do_md = decode_md != 0` is true).
+// The per-record cF bits SUPPRESS it for a record whose source lacked the
+// tag — htslib forces has_MD/has_NM, making `!has_MD` false
+// (cram_decode.c:2117-2122). So suppress = the cF bits.
+//
+// CRAM >= 4: regeneration is OFF by default (`do_md = decode_md > 0` is
+// false for the -1 "auto" setting), and is requested ONLY when an MD*/NM*
+// placeholder sits in the record's tag dictionary (has_MD < 0 at
+// cram_decode.c:2046). So suppress = NOT the placeholder presence.
+func (rd *recordDecoder) mdnmSuppressFor(cf cramFlagsTag, seenMDStar, seenNMStar bool) mdnmSuppress {
+	if rd.h.major >= 4 {
+		return mdnmSuppress{md: !seenMDStar, nm: !seenNMStar}
+	}
+	return mdnmSuppress{md: cf.noMD, nm: cf.noNM}
 }
 
 // isCRAMFlagsTag reports whether a tag key/value is the internal "cF"
@@ -827,6 +881,30 @@ func (rd *recordDecoder) decodeTags(tl int32, rgValue int32, index int) (aux []s
 // htslib's cram_decode.c.
 func isCRAMFlagsTag(key tagKey, raw []byte) bool {
 	return key[0] == 'c' && key[1] == 'F' && key[2] == 'C' && len(raw) == 1
+}
+
+// cramFlagsTag holds the decoded per-record "cF" (CRAM-flags) aux-tag
+// suppression bits an embed_ref=2 writer stores. noMD mirrors cF bit 1
+// ("the source record had no MD") and noNM mirrors cF bit 2 ("no NM"),
+// exactly as cram_encode.c:3417 sets them and cram_decode.c:2117-2122
+// consumes them. A zero cramFlagsTag (the common case: no cF tag, or a
+// cF tag with no suppression bits) means "do not suppress".
+type cramFlagsTag struct {
+	noMD bool
+	noNM bool
+}
+
+// parseCRAMFlagsTag decodes the single cF value byte into its MD/NM
+// suppression bits. raw is the one-byte payload isCRAMFlagsTag matched;
+// bit 1 (0x1) is "no MD" and bit 2 (0x2) is "no NM".
+func parseCRAMFlagsTag(raw []byte) cramFlagsTag {
+	if len(raw) != 1 {
+		return cramFlagsTag{}
+	}
+	return cramFlagsTag{
+		noMD: raw[0]&0x1 != 0,
+		noNM: raw[0]&0x2 != 0,
+	}
 }
 
 // readGroupTag turns a CRAM RG data-series value into the SAM "RG:Z:"

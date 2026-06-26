@@ -387,26 +387,43 @@ func (rr *RecordReader) decodeSlice(h *CompressionHeader, sl *Slice, containerId
 		return nil, wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
 	}
 	dec.namePrefix = rr.namePrefix
-	recs, err := dec.decodeSliceRecords(sl.Header.NumRecords)
+	recs, suppress, err := dec.decodeSliceRecords(sl.Header.NumRecords)
 	if err != nil {
 		return nil, wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
 	}
 	if dec.needsReference {
 		rr.needsReference = true
 	}
-	// MD/NM are regenerated only against an EXTERNAL reference (a FASTA or
-	// REF_CACHE attached via SetReference / SetRefCache), matching upstream
-	// `samtools view -T ref file.cram`. An embedded reference is excluded:
-	// `samtools view file.cram` of a consensus-embedded CRAM emits no MD/NM
-	// (the embedded bases are derived from the reads, so MD against them is
-	// meaningless), and an embed_ref=2 reduced reference does not carry the
-	// base content the walk would need. (A genuine real-reference embedded CRAM
-	// — e.g. `view -C -T` of a BAM lacking @SQ M5 — does regenerate upstream;
-	// distinguishing it from the consensus case is tracked separately.)
-	if !sl.HasEmbeddedReference() {
-		regenerateMDNM(recs, refBases, refStart)
-	}
+	// MD/NM are regenerated whenever the slice HAS a reference — external (a
+	// FASTA or REF_CACHE attached via SetReference / SetRefCache) OR embedded
+	// (the reference bytes stored in the slice itself) — and skipped only for a
+	// reference-free (no_ref / RR=0) slice. This mirrors htslib exactly, which
+	// gates regeneration on `s->ref != NULL` (cram_decode.c:1118): its embedded
+	// branch sets `s->ref` for ANY embedded block (a real-reference embed OR a
+	// consensus / embed_ref=1 embed), so upstream regenerates MD/NM from the
+	// embedded bases in BOTH cases — only a no_ref slice is left bare.
+	// resolveSliceReference returns the embedded bases for an embedded slice and
+	// nil for a no_ref slice, and regenerateMDNM is a no-op when refBases is nil,
+	// so calling it unconditionally reproduces htslib's gate precisely.
+	//
+	// suppress carries the per-record "cF" (CRAM-flags) bits an embed_ref=2
+	// writer stores: when the source record had no MD (bit 1) or no NM (bit 2),
+	// htslib leaves it bare even though the embedded reference is available
+	// (cram_decode.c:2117-2122). regenerateMDNM honours those bits so a
+	// reduced-reference CRAM whose reads carried no MD/NM stays byte-identical
+	// to `samtools view`.
+	regenerateMDNM(recs, suppress, refBases, refStart)
 	return recs, nil
+}
+
+// mdnmSuppress carries the per-record MD/NM regeneration suppression an
+// embed_ref=2 (reduced/consensus reference) CRAM encodes in its "cF" aux
+// tag: md is set when the source record had no MD tag and nm when it had
+// no NM (cram_encode.c:3417). regenerateMDNM skips the corresponding tag
+// for such a record, reproducing htslib's per-record gate exactly.
+type mdnmSuppress struct {
+	md bool
+	nm bool
 }
 
 // regenerateMDNM appends the reference-derived MD:Z and NM:i aux tags to
@@ -433,26 +450,42 @@ func (rr *RecordReader) decodeSlice(h *CompressionHeader, sl *Slice, containerId
 // mdnm.Compute is refStart-1. A nil refBases (no external/embedded reference,
 // or an unmapped/multi-reference slice) means "no reference available" and
 // suppresses regeneration entirely.
-func regenerateMDNM(recs []*sam.Record, refBases []byte, refStart int32) {
+//
+// suppress, when non-nil, is indexed parallel to recs and carries the
+// per-record "cF" suppression an embed_ref=2 (reduced/consensus) CRAM stores:
+// suppress[i].md / .nm true means the source record had no MD / no NM tag, so
+// that record is left bare even though the reference is available. htslib does
+// the same by forcing has_MD/has_NM at cram_decode.c:2117-2122. A nil suppress
+// (the common case, no cF bits) regenerates every eligible record.
+func regenerateMDNM(recs []*sam.Record, suppress []mdnmSuppress, refBases []byte, refStart int32) {
 	if refBases == nil {
 		return
 	}
 	refOffset := int(refStart) - 1
-	for _, rec := range recs {
+	for i, rec := range recs {
 		if rec.IsUnmapped() || rec.RName == "" || rec.RName == "*" || len(rec.Cigar) == 0 {
 			continue
 		}
+		var sup mdnmSuppress
+		if i < len(suppress) {
+			sup = suppress[i]
+		}
 		_, hasMD := rec.GetAux("MD")
 		_, hasNM := rec.GetAux("NM")
-		if hasMD && hasNM {
+		// A cF "no MD"/"no NM" bit is equivalent to the tag already being
+		// present for the regeneration gate: htslib forces has_MD/has_NM so
+		// the `!has_MD`/`!has_NM` condition is false and nothing is emitted.
+		wantMD := !hasMD && !sup.md
+		wantNM := !hasNM && !sup.nm
+		if !wantMD && !wantNM {
 			continue
 		}
 		md, nm := mdnm.Compute(rec, refBases, refOffset)
 		var add []sam.Aux
-		if !hasMD {
+		if wantMD {
 			add = append(add, sam.Aux{Tag: "MD", Type: 'Z', Value: md})
 		}
-		if !hasNM {
+		if wantNM {
 			add = append(add, sam.Aux{Tag: "NM", Type: 'i', Value: int64(nm)})
 		}
 		rec.Aux = insertBeforeTrailingRG(rec.Aux, add)
