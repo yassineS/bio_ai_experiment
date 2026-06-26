@@ -99,6 +99,16 @@ type recordDecoder struct {
 	// cram_to_bam name generation. Empty when the file was opened from a
 	// bare io.Reader with no path (htslib likewise has no prefix then).
 	namePrefix string
+
+	// featScratch is a reused backing array for decodeFeatures: each mapped
+	// record's feature list is decoded into it and fully consumed by
+	// reconstructMapped before the next record's decode reuses it. This
+	// removes the dominant per-record allocation of CRAM->BAM decode (a
+	// fresh []readFeature per mapped record). It is safe because a single
+	// recordDecoder decodes its slice's records sequentially and the
+	// returned slice is never retained past the same record's reconstruction
+	// (the emitted sam.Record copies SEQ/QUAL/CIGAR out, never the features).
+	featScratch []readFeature
 }
 
 // newRecordDecoder builds a recordDecoder for one slice. It parses the

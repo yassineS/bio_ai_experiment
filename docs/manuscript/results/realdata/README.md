@@ -254,6 +254,29 @@ optimisation targets (not defects):
 > `sam_mpileup` cell) is refreshed in the figures pass by re-running that cell
 > with the fixed binary — not back-filled from this `-r 20` number, which is a
 > different input.
+>
+> **Update — `samtools view` CRAM→BAM decode peak RSS (task #30, partial,
+> still byte-exact):** decoding a reference CRAM to BAM
+> (`view -b -T hs37d5.fa.gz <chr20.cram>`) peaked at **~110–122 MB
+> (5.5–5.8× upstream's ~20 MB)**. Investigation (live heap profiling + a
+> `GOMEMLIMIT`/`GOGC` sweep on real GIAB) established the floor: the Go-runtime
+> baseline is tiny (`view -H` ≈ 9 MB; `flagstat` streams the whole 2.9 GB BAM at
+> 14 MB), but the CRAM decoder's **per-slice working set** (a slice's
+> decompressed data-series blocks plus its reconstructed records) is ~65–70 MB,
+> and RSS floors at ~70 MB no matter how hard the GC is capped (a 40 MiB cap
+> still sits at 69.6 MB while wall explodes to 22 s). So **≤2× is physically
+> infeasible** here without a deeper codec change. The fix lands the best
+> achievable without a CPU regression: a per-record read-feature scratch buffer
+> (kills 71 % of decode allocation churn, a CPU win), a per-slice streaming
+> iterator (bounds multi-slice-container CRAMs; these GIAB CRAMs are
+> single-slice so it is RSS-neutral here but correctness-aligned with htslib),
+> the reference window trimmed 8→2 MiB, and a soft `debug.SetMemoryLimit` scoped
+> to CRAM `view` at the **measured knee of 64 MiB**. Peak RSS is now **~73–77 MB
+> (3.83–3.86× upstream, worst-of-five)** with **no wall regression** (1.44×, at
+> baseline) and **byte-identical** decode (md5 `a800227c…`; the `#37` MD/NM drop
+> on upstream-written CRAM is unchanged, tracked separately). Reaching ≤2×
+> requires streaming a slice's series blocks rather than decompressing them all
+> up front — a follow-up tracked in `docs/PARITY_ROADMAP.md`.
 
 ## Status — real-data bugs found
 

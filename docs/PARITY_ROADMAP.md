@@ -300,6 +300,25 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   validated by the streaming-vs-in-memory differential test and byte-exact vs
   upstream incl. PL. isec wall **2.0× → 1.33× upstream** (0.56 s → 0.37 s on the
   16-sample fixture).
+- **`samtools view` CRAM→BAM decode memory — PARTIALLY FIXED (task #30).**
+  Decoding a reference CRAM to BAM peaked at **5.5–5.8× upstream** (~110 MB vs
+  ~20 MB on chr20). Landed (byte-identical, real GIAB): a per-record
+  read-feature scratch buffer (removes 71 % of decode allocation churn — a CPU
+  win), a per-slice streaming iterator (bounds multi-slice-container CRAMs;
+  htslib-aligned), the reference window trimmed 8→2 MiB, and a soft
+  `debug.SetMemoryLimit` scoped to CRAM `view` at the **measured knee of
+  64 MiB**. Peak RSS **5.5–5.8× → 3.83–3.86×** (worst-of-five), **no wall
+  regression** (1.44×, at baseline). **≤2× was shown infeasible without a
+  deeper change:** a `GOMEMLIMIT`/`GOGC` sweep proved RSS floors at ~70 MB
+  regardless of GC pressure — the genuine per-slice working set (a slice's
+  decompressed data-series blocks + reconstructed records) — while upstream's C
+  decoder is an exceptionally lean ~20 MB.
+  **REMAINING (the path to ≤2×):** stream a slice's series blocks rather than
+  decompressing all of them up front (and/or reuse the block/record buffers
+  across slices), so the live working set drops below ~40 MB. This is a
+  `pkg/htsgo/cram` decode-core change (touches `slice.go` `newSeriesSource` and
+  the per-slice block buffers) and carries codec-correctness risk, so it is a
+  deliberate follow-up, not folded into the memory-knee fix above.
 - The large-tier heavy cells (`sam_mpileup`, `bcf_call`, `bcf_isec`) were
   mis-reported as OOM; that was **disk exhaustion** (a ~17 GB temp output on a
   5 GB-free overlay), not RAM — all three are bounded and run with a big-disk
