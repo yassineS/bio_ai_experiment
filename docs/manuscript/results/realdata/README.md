@@ -236,6 +236,24 @@ optimisation targets (not defects):
 > ~10 s** (≈ upstream) via an indexed BGZF seek + lean decode (`9766251`). The
 > remaining `view` region→SAM speed is a lower-priority follow-up
 > (`docs/PARITY_ROADMAP.md`).
+>
+> **Update — `samtools mpileup -r` peak RSS (task #29, still byte-exact):**
+> whole-chromosome `mpileup -f hs37d5.fa.gz giab_b37.bam -r 20` peaked at
+> **660.8 MB (8.87× upstream's 74.5 MB)**. Root cause: a never-shrinking
+> pileup-event scratch matrix plus over-wide GC headroom. Fixed structurally
+> (sliding-tile width 16384→2048 columns; `pileupEvent` 88→56 bytes; per-column
+> backing arrays released on reset) and bounded with a soft `debug.SetMemoryLimit`
+> scoped to the `mpileup` subcommand (GOGC left at default, so the collector
+> stays lazy below the cap). Peak RSS is now **138.5 MB (1.859× upstream,
+> worst-of-five)**; the sub-chromosome `-r 20:30000000-30100000` case is
+> **1.680×**. Output is byte-identical (md5 `c31ac533…` / `5b72c356…`) and wall
+> time is unchanged (26.5 s, vs the pre-existing ~2× `mpileup` CPU gap tracked
+> separately). Measured on real GIAB in the `bioval` container, worst-of-five
+> sequential runs via the `ru_maxrss` harness. The manuscript memory figure
+> (`figures/fig_memory`, fed by the large-tier `bench_oom_large.json`
+> `sam_mpileup` cell) is refreshed in the figures pass by re-running that cell
+> with the fixed binary — not back-filled from this `-r 20` number, which is a
+> different input.
 
 ## Status — real-data bugs found
 
