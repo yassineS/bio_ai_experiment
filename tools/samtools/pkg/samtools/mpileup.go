@@ -392,7 +392,13 @@ func runMpileup(readers []sam.Reader, out io.Writer, opts MpileupOptions, refFA 
 // mpileupTileWidth is the reference span of one pileup tile. It bounds the
 // per-position event matrix (and the live read set) emitMpileupWindow holds at
 // once, so peak memory is O(tile width x depth) rather than O(contig length).
-const mpileupTileWidth = 16 * 1024
+// The matrix is retained in the persistent mpileupScratch across tiles, so a
+// narrower tile directly shrinks the resident footprint of a whole-chromosome
+// scan (the per-column backing arrays scale with the column count). Tiling
+// boundary handling (read carry-over, ^/$ markers, per-position event sort) is
+// independent of the width and is tested byte-exact, so this width is purely a
+// memory/CPU trade-off and never changes the emitted bytes.
+const mpileupTileWidth = 2 * 1024
 
 // runMpileupStreaming piles up a single coordinate-sorted input without ever
 // buffering the whole file: records are pulled from a peekable, pre-filtered

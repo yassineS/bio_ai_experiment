@@ -1191,17 +1191,18 @@ func callConsensusBayesian(evs []pileupEvent, recs []*sam.Record,
 		}
 		var bp bayesPileupBase
 		bp.mapQ = e.mapq
-		if e.readIdx >= 0 && e.readIdx < len(bayesReads) {
-			bp.read = bayesReads[e.readIdx]
+		readIdx := int(e.readIdx)
+		if readIdx >= 0 && readIdx < len(bayesReads) {
+			bp.read = bayesReads[readIdx]
 		}
-		if e.readIdx >= 0 && e.readIdx < len(recs) {
-			bp.readPos0 = int(recs[e.readIdx].Pos) - 1
+		if readIdx >= 0 && readIdx < len(recs) {
+			bp.readPos0 = int(recs[readIdx].Pos) - 1
 		}
 		switch e.kind {
 		case pileupEventBase:
 			bp.base4 = byte(baseToSeqi(upper(e.base)))
 			bp.qual = e.qual
-			bp.seqOff = e.readBP - 1
+			bp.seqOff = int(e.readBP) - 1
 			// An exon base abutting a ref-skip (CIGAR N) run carries
 			// upstream's p->ref_skip flag, so the Gap5/bayesian caller
 			// excludes it from the consensus depth (bam_consensus.c:1333)
@@ -1214,7 +1215,7 @@ func callConsensusBayesian(evs []pileupEvent, recs []*sam.Record,
 		case pileupEventDel:
 			bp.base4 = 16
 			bp.qual = e.qual
-			bp.seqOff = e.readBP - 1
+			bp.seqOff = int(e.readBP) - 1
 			// A deletion ('*') position directly abutting a ref-skip run
 			// also carries upstream's p->ref_skip flag (consensus_pileup.c:
 			// 240 tests `p->base != '.'`, which a deletion satisfies), so
@@ -1225,7 +1226,7 @@ func callConsensusBayesian(evs []pileupEvent, recs []*sam.Record,
 			}
 		case pileupEventRefSkip:
 			bp.refSkip = true
-			bp.seqOff = e.readBP - 1
+			bp.seqOff = int(e.readBP) - 1
 		}
 		bases = append(bases, bp)
 		td++
@@ -1319,8 +1320,9 @@ func callConsensusBayesianInsertions(evs []pileupEvent, recs []*sam.Record,
 			}
 			var bp bayesPileupBase
 			bp.mapQ = e.mapq
-			if e.readIdx >= 0 && e.readIdx < len(bayesReads) {
-				bp.read = bayesReads[e.readIdx]
+			readIdx := int(e.readIdx)
+			if readIdx >= 0 && readIdx < len(bayesReads) {
+				bp.read = bayesReads[readIdx]
 			}
 			var b byte = '*'
 			var q byte
@@ -1329,10 +1331,10 @@ func callConsensusBayesianInsertions(evs []pileupEvent, recs []*sam.Record,
 				bp.base4 = byte(baseToSeqi(ib))
 				// The nth inserted base sits at query offset
 				// (readBP-1)+nth in the read's SEQ.
-				bp.seqOff = e.readBP - 1 + nth
+				bp.seqOff = int(e.readBP) - 1 + nth
 				var rec *sam.Record
-				if e.readIdx >= 0 && e.readIdx < len(recs) {
-					rec = recs[e.readIdx]
+				if readIdx >= 0 && readIdx < len(recs) {
+					rec = recs[readIdx]
 				}
 				if rec != nil && bp.seqOff >= 0 && bp.seqOff < len(rec.Qual) {
 					q = rec.Qual[bp.seqOff]
@@ -1347,7 +1349,7 @@ func callConsensusBayesianInsertions(evs []pileupEvent, recs []*sam.Record,
 				// read's current base quality and position into the
 				// insertion column for non-inserting reads.
 				bp.base4 = 16
-				bp.seqOff = e.readBP - 1
+				bp.seqOff = int(e.readBP) - 1
 				q = e.qual
 				bp.qual = q
 				if e.isReverse {
@@ -1428,9 +1430,9 @@ func callConsensusSimpleInsertions(evs []pileupEvent, recs []*sam.Record,
 				ce.base = ib
 				// The nth inserted base sits at query offset
 				// (readBP-1)+nth in the read's SEQ.
-				seqOff := e.readBP - 1 + nth
+				seqOff := int(e.readBP) - 1 + nth
 				var rec *sam.Record
-				if e.readIdx >= 0 && e.readIdx < len(recs) {
+				if e.readIdx >= 0 && int(e.readIdx) < len(recs) {
 					rec = recs[e.readIdx]
 				}
 				if rec != nil && seqOff >= 0 && seqOff < len(rec.Qual) {
@@ -1495,7 +1497,7 @@ func spansInsertionColumn(e pileupEvent, recs []*sam.Record, pos1 int) bool {
 	if e.insAfter != "" {
 		return true
 	}
-	if e.readIdx < 0 || e.readIdx >= len(recs) {
+	if e.readIdx < 0 || int(e.readIdx) >= len(recs) {
 		return false
 	}
 	return int(recs[e.readIdx].EndPosition()) > pos1

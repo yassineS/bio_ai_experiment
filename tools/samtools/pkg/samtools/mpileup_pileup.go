@@ -31,13 +31,38 @@ const (
 )
 
 // pileupEvent is one read's contribution to one reference position.
+//
+// Field order is deliberate: the two (usually empty) string fields and the
+// 32-bit integer fields are grouped first so the struct packs to 56 bytes with
+// no interior padding. A whole-chromosome scan keeps a persistent column matrix
+// of these events, so every byte trimmed here multiplies across the resident
+// set; the integer fields are 32-bit because a read index, a within-read base
+// position, and a deletion length all fit comfortably in int32 (a contig holds
+// far fewer than 2^31 reads, and read/deletion lengths are tiny). This is purely
+// a memory-layout choice and never affects the emitted bytes.
 type pileupEvent struct {
-	kind pileupEventKind
+	// insAfter, when non-empty, is the inserted sequence to annotate as
+	// "+<len><seq>" immediately after this event's base. Only valid on
+	// pileupEventBase.
+	insAfter string
+	// delBases holds the reference bases of a deletion that begins at the
+	// position immediately AFTER this event's base (see delAfter), used for
+	// accurate "-<len><seq>" rendering when a FASTA reference is loaded;
+	// otherwise the renderer falls back to 'N' x delAfter, matching upstream.
+	delBases string
 	// readIdx is the 0-based index of the originating record in the
 	// per-chrom record slice; used to order events stably within a
 	// position so multi-read columns match upstream's "in-order"
 	// rendering.
-	readIdx int
+	readIdx int32
+	// readBP is the 1-based position of this base within the read's
+	// SEQ (i.e. the original query base index + 1, regardless of strand).
+	// 0 for non-base events.
+	readBP int32
+	// delAfter, when > 0, is the length of a deletion that begins at the
+	// position immediately AFTER this event's base.
+	delAfter int32
+	kind     pileupEventKind
 	// base is the read base (uppercase if forward, lowercase if reverse)
 	// at this reference position. '*' for pileupEventDel/RefSkip.
 	base byte
@@ -45,10 +70,6 @@ type pileupEvent struct {
 	qual byte
 	// mapq is the read's MAPQ.
 	mapq uint8
-	// readBP is the 1-based position of this base within the read's
-	// SEQ (i.e. the original query base index + 1, regardless of strand).
-	// 0 for non-base events.
-	readBP int
 	// isReverse reports the read's reverse-strand flag bit.
 	isReverse bool
 	// readStart is true when this is the very first event emitted for
@@ -57,17 +78,6 @@ type pileupEvent struct {
 	// readEnd is true when this is the very last event emitted for this
 	// read; the output gets a trailing "$".
 	readEnd bool
-	// insAfter, when non-nil, is the inserted sequence to annotate as
-	// "+<len><seq>" immediately after this event's base. Only valid on
-	// pileupEventBase.
-	insAfter string
-	// delAfter, when > 0, is the length of a deletion that begins at the
-	// position immediately AFTER this event's base. The reference bases
-	// being deleted are recorded in delBases for accurate "-<len><seq>"
-	// rendering when a FASTA reference is loaded; otherwise they fall
-	// back to 'N' x delAfter, matching upstream.
-	delAfter int
-	delBases string
 	// dropped, when true, indicates this event was deselected by post-
 	// hoc filtering (overlap-pair removal or max-depth cap). Stays in
 	// the slice so readStart/readEnd markers can still be skipped/moved.
@@ -104,9 +114,33 @@ type mpileupScratch struct {
 	depths []int
 }
 
+// mpileupColumnCapBound is the per-column event-array capacity above which
+// reset reallocates the column small instead of recycling it. The scratch is
+// persistent for a whole-chromosome scan, and reset only re-slices each
+// column's backing array to [:0]; without this clamp every column's backing
+// array would pin the deepest coverage ever seen at its tile offset, and since
+// the same width-wide scratch is reused across every tile of the contig, that
+// high-water mark ratchets toward the GLOBAL maximum depth on the whole contig.
+// A region of normal depth ~tens then carries the resident cost of the single
+// deepest pileup spike anywhere on the chromosome, for every column, for the
+// rest of the run.
+//
+// 64 sits comfortably above the typical per-position read depth of WGS data
+// (single-to-low-double-digit coverage), so the overwhelmingly common shallow
+// column still recycles its small backing array cheaply via [:0]; only columns
+// that transiently held a deep pileup are dropped and re-grown on demand. The
+// re-grow is a rare, amortised geometric reallocation confined to genuine
+// coverage spikes, so wall time is unaffected while the resident event matrix
+// tracks the local — not the global — depth. This changes only how backing
+// arrays are recycled, never the emitted bytes.
+const mpileupColumnCapBound = 64
+
 // reset prepares the scratch for a window of nIn inputs and the given width,
 // growing the buffers when needed and truncating each per-position event slice
-// to length zero while keeping its backing array for reuse.
+// to length zero while keeping its backing array for reuse. A column whose
+// backing array has ratcheted far past mpileupColumnCapBound is dropped (set to
+// nil) instead of recycled, so a single deep column cannot pin an oversized
+// array for the rest of a long whole-chromosome scan.
 func (s *mpileupScratch) reset(nIn, width int) {
 	if cap(s.depths) < nIn {
 		s.depths = make([]int, nIn)
@@ -123,7 +157,15 @@ func (s *mpileupScratch) reset(nIn, width int) {
 			s.events[i] = s.events[i][:width]
 		}
 		for c := 0; c < width; c++ {
-			s.events[i][c] = s.events[i][c][:0]
+			// Common case: small backing array, recycle it cheaply.
+			// Memory-ratchet guard: if this column once held a
+			// pathologically deep pileup, drop the oversized array so a
+			// single deep column does not pin memory for the whole run.
+			if cap(s.events[i][c]) > mpileupColumnCapBound {
+				s.events[i][c] = nil
+			} else {
+				s.events[i][c] = s.events[i][c][:0]
+			}
 		}
 	}
 }
@@ -386,10 +428,10 @@ func writeBasesColumn(bw *bufio.Writer, evs []pileupEvent, ref byte, opts Mpileu
 		}
 		if e.delAfter > 0 {
 			bw.WriteByte('-')
-			bw.WriteString(strconv.Itoa(e.delAfter))
+			bw.WriteString(strconv.Itoa(int(e.delAfter)))
 			delSeq := e.delBases
 			if delSeq == "" {
-				delSeq = strings.Repeat("N", e.delAfter)
+				delSeq = strings.Repeat("N", int(e.delAfter))
 			}
 			if e.isReverse {
 				bw.WriteString(strings.ToLower(delSeq))
@@ -461,7 +503,7 @@ func writeReadBPColumn(bw *bufio.Writer, evs []pileupEvent, opts MpileupOptions)
 			bw.WriteByte(',')
 		}
 		first = false
-		bw.WriteString(strconv.Itoa(e.readBP))
+		bw.WriteString(strconv.Itoa(int(e.readBP)))
 	}
 }
 
@@ -685,17 +727,17 @@ func accumulateRecordEvents(rec *sam.Record, readIdx, beg0, end0 int, evs [][]pi
 		}
 		ev := pileupEvent{
 			kind:            t.kind,
-			readIdx:         readIdx,
+			readIdx:         int32(readIdx),
 			base:            t.base,
 			qual:            t.qual,
 			mapq:            mapq,
-			readBP:          t.readBP,
+			readBP:          int32(t.readBP),
 			isReverse:       isReverse,
 			noSeq:           noSeq,
 			readStart:       i == firstVisible && tmp[firstVisible].pos0 == int(rec.Pos)-1,
 			readEnd:         i == lastVisible && lastVisible == len(tmp)-1,
 			insAfter:        t.insAfter,
-			delAfter:        t.delAfter,
+			delAfter:        int32(t.delAfter),
 			delBases:        t.delBases,
 			refSkipBoundary: t.refSkipBoundary,
 		}
