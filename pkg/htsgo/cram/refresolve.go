@@ -27,12 +27,20 @@ type referenceResolver struct {
 	// after every local source misses. It is nil unless REF_PATH was set.
 	refpath *RefPathReference
 
-	// lastContig and lastBases memoise the most recently fetched whole
-	// reference sequence (FASTA path) so consecutive slices on the same
-	// contig reuse it instead of re-reading.
+	// lastContig, lastStart and lastBases memoise the most recently fetched
+	// reference WINDOW (FASTA path), based at lastStart (0-based), so a run of
+	// coordinate-sorted slices on the same contig reuses it instead of
+	// re-seeking — while never holding more than ~one window resident (loading
+	// the whole chromosome cost ~250 MB per contig on decode).
 	lastContig string
+	lastStart  int64
 	lastBases  []byte
 }
+
+// refWindowSize bounds the reference window the decoder holds resident: each
+// FASTA fetch reads at least this many bases starting at the slice, so adjacent
+// slices reuse it, but a whole human chromosome (~250 MB) is never loaded.
+const refWindowSize = 8 << 20 // 8 MiB
 
 // hasSource reports whether the resolver can supply any reference at
 // all. A resolver with no FASTA, REF_CACHE or custom source behaves as
@@ -182,48 +190,60 @@ func cacheKey(contigMD5Hex string, sliceMD5 [16]byte, contig string, start, span
 // slices on one contig reuses a single Fetch of the whole sequence
 // rather than seeking per slice. The memo is bounded to one contig.
 func (rr *referenceResolver) fastaSpan(contig string, start, span int32) ([]byte, error) {
-	end := int64(start-1) + int64(span)
-	if rr.lastContig == contig && rr.lastBases != nil {
-		if end <= int64(len(rr.lastBases)) {
-			return rr.lastBases[start-1 : end], nil
-		}
+	if start < 1 {
+		return nil, errFormat("reference contig %q: slice start %d is out of range", contig, start)
 	}
-	// Fetch the whole contig once and memoise it. faidx random access
-	// keeps this a single seek+read; holding one contig is acceptable
-	// for v1 and avoids a per-slice seek.
-	whole, err := rr.fasta.Fetch(contig, 0, contigLength(rr.fasta, contig))
+	lo := int64(start - 1)
+	hi := lo + int64(span)
+
+	// Reuse the memoised window when it already covers the requested span.
+	if rr.lastContig == contig && rr.lastBases != nil &&
+		lo >= rr.lastStart && hi <= rr.lastStart+int64(len(rr.lastBases)) {
+		return rr.lastBases[lo-rr.lastStart : hi-rr.lastStart], nil
+	}
+
+	// Fetch a window starting at the slice, at least refWindowSize wide and
+	// clamped to the contig, so adjacent coordinate-sorted slices reuse it —
+	// without ever holding the whole chromosome resident.
+	clen := contigLength(rr.fasta, contig)
+	winHi := hi
+	if w := lo + int64(refWindowSize); w > winHi {
+		winHi = w
+	}
+	if clen > 0 && winHi > clen {
+		winHi = clen
+	}
+	if winHi <= lo {
+		// The slice begins at or past the contig end; the records were stored
+		// verbatim, so no reference bases are needed — return an empty span.
+		return nil, nil
+	}
+	whole, err := rr.fasta.Fetch(contig, lo, winHi)
 	if err != nil {
-		// Fall back to fetching just the span when the whole-contig
-		// length is unavailable (the index may lack the contig).
-		bases, ferr := rr.fasta.Fetch(contig, int64(start-1), end)
+		// Window fetch failed (e.g. the contig length is unavailable): fall
+		// back to fetching just the span.
+		bases, ferr := rr.fasta.Fetch(contig, lo, hi)
 		if ferr != nil {
 			return nil, ferr
 		}
 		return bases, nil
 	}
 	rr.lastContig = contig
+	rr.lastStart = lo
 	rr.lastBases = whole
-	if start < 1 {
-		return nil, errFormat("reference contig %q: slice start %d is out of range", contig, start)
+
+	avail := lo + int64(len(whole))
+	if hi > avail {
+		// The slice span overhangs the contig end (an alignment past the
+		// reference, htslib's c1#bounds): return the available prefix; the
+		// overhanging bases were stored verbatim by the encoder, and
+		// fillReferenceMatch supplies 'N' for anything not covered.
+		if lo >= avail {
+			return nil, nil
+		}
+		return whole, nil
 	}
-	if int64(start-1) > int64(len(whole)) {
-		// The slice begins entirely past the contig end; no reference bases
-		// are available. The records covering this span were encoded
-		// verbatim, so reconstruction needs no reference — return an empty
-		// span rather than erroring.
-		return nil, nil
-	}
-	if end > int64(len(whole)) {
-		// The slice span overhangs the contig end (an alignment extending
-		// past the reference, e.g. htslib's c1#bounds). htslib tolerates
-		// this — it warns "Ref pos outside of ref sequence boundary" and
-		// proceeds with the bases it has, the overhanging bases having been
-		// stored verbatim by the encoder. Return the available prefix
-		// (clamped to the contig) instead of erroring; fillReferenceMatch
-		// supplies 'N' for any position the encoder did not cover verbatim.
-		return whole[start-1:], nil
-	}
-	return whole[start-1 : end], nil
+	return whole[:hi-lo], nil
 }
 
 // contigLength returns the length of a contig in the FASTA index, or 0

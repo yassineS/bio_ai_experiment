@@ -357,12 +357,13 @@ func (rr *RecordReader) decodeSlice(h *CompressionHeader, sl *Slice, containerId
 	}
 	// MD/NM are regenerated only against an EXTERNAL reference (a FASTA or
 	// REF_CACHE attached via SetReference / SetRefCache), matching upstream
-	// `samtools view -T ref file.cram`. An embedded reference is deliberately
-	// excluded: upstream `samtools view file.cram` of an embed_ref CRAM emits
-	// no MD/NM (it only regenerates them when given an external reference),
-	// and an embed_ref=2 reduced reference does not even carry the full base
-	// content the walk would need. So regeneration is suppressed for an
-	// embedded-reference slice even though its bases reconstruct the SEQ.
+	// `samtools view -T ref file.cram`. An embedded reference is excluded:
+	// `samtools view file.cram` of a consensus-embedded CRAM emits no MD/NM
+	// (the embedded bases are derived from the reads, so MD against them is
+	// meaningless), and an embed_ref=2 reduced reference does not carry the
+	// base content the walk would need. (A genuine real-reference embedded CRAM
+	// — e.g. `view -C -T` of a BAM lacking @SQ M5 — does regenerate upstream;
+	// distinguishing it from the consensus case is tracked separately.)
 	if !sl.HasEmbeddedReference() {
 		regenerateMDNM(recs, refBases, refStart)
 	}
@@ -491,7 +492,8 @@ func (rr *RecordReader) resolveSliceReference(sl *Slice, refRequired bool) ([]by
 	// so the external reference is not consulted — and must not be, since the
 	// contig may be absent from it (a CRAM encoded with a -T reference whose
 	// contigs do not match). htslib gates the equivalent cram_get_ref load on
-	// !no_ref for exactly this case.
+	// !no_ref, and likewise does NOT regenerate MD/NM for a no_ref slice even
+	// when -T is given (decode_md = s->ref && ..., and s->ref stays NULL here).
 	if !refRequired {
 		return nil, 0, nil
 	}
