@@ -217,6 +217,38 @@ func (br *BAMReader) Read() (*Record, error) {
 	return br.decodeRecord(br.scrat)
 }
 
+// ReadRaw returns the next BAM record's body bytes — everything after the
+// 4-byte block_size prefix — in a freshly allocated, caller-owned slice,
+// WITHOUT decoding them into a *Record. It returns io.EOF when no more records
+// are available, exactly like Read.
+//
+// Unlike Read/ReadInto, the returned slice does not alias the reader's reused
+// scratch buffer: every call allocates a new []byte sized to the record body,
+// so callers may retain or buffer the bytes across further reads (samtools
+// sort buffers and spills them). The bytes are the verbatim on-disk BAM record
+// body — the fixed 32-byte prefix followed by read name, CIGAR, packed SEQ,
+// QUAL and aux — suitable for WriteRaw to emit unchanged.
+func (br *BAMReader) ReadRaw() ([]byte, error) {
+	if br.err != nil {
+		return nil, br.err
+	}
+	var blockSize int32
+	if err := binary.Read(br.src, binary.LittleEndian, &blockSize); err != nil {
+		if err == io.EOF {
+			br.err = io.EOF
+		}
+		return nil, err
+	}
+	if blockSize < 32 {
+		return nil, fmt.Errorf("sam: BAM block too small (%d)", blockSize)
+	}
+	body := make([]byte, blockSize)
+	if _, err := io.ReadFull(br.src, body); err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
 // Close releases the underlying BGZF reader, when one is wrapping the input.
 // For raw (already-decompressed) BAM streams Close is a no-op — callers own
 // the source io.Reader and are responsible for closing it.
@@ -472,6 +504,36 @@ func (br *BAMReader) decodeDepthInto(dst *Record, buf []byte, needQual bool) err
 	return nil
 }
 
+// RawAuxOffset returns the byte offset within a BAM record body at which the
+// aux stream begins — i.e. just past the fixed 32-byte prefix, read name, CIGAR,
+// packed SEQ and QUAL. It is the offset callers pass to FindRawAuxTag's slice
+// (body[off:]) to scan a single record's aux fields without decoding the whole
+// record. It returns an error when the body is too short to hold the prefix or
+// the fixed-length region it describes overruns the body.
+func RawAuxOffset(body []byte) (int, error) {
+	if len(body) < 32 {
+		return 0, fmt.Errorf("sam: BAM record body too small (%d)", len(body))
+	}
+	lReadName := int(body[8])
+	nCigarOp := int(binary.LittleEndian.Uint16(body[12:14]))
+	lSeq := int(int32(binary.LittleEndian.Uint32(body[16:20])))
+	off := 32 + lReadName + nCigarOp*4 + (lSeq+1)/2 + lSeq
+	if off > len(body) {
+		return 0, fmt.Errorf("sam: BAM record fixed region overruns body (%d > %d)", off, len(body))
+	}
+	return off, nil
+}
+
+// DecodeRecordBody decodes one verbatim BAM record body (everything after the
+// 4-byte block_size, exactly as ReadRaw returns it) into a freshly allocated,
+// caller-owned *Record, resolving reference names against br's header. It is the
+// inverse of ReadRaw for callers that buffered raw bodies but need a decoded
+// record for a non-BAM output (e.g. samtools sort writing SAM text). The decoded
+// record is identical to what Read would have produced for the same bytes.
+func (br *BAMReader) DecodeRecordBody(body []byte) (*Record, error) {
+	return br.decodeRecord(body)
+}
+
 // decodeRecord deserialises one BAM record body (everything after block_size)
 // into a freshly allocated Record.
 func (br *BAMReader) decodeRecord(buf []byte) (*Record, error) {
@@ -633,6 +695,159 @@ func (br *BAMReader) decodeInto(rec *Record, buf []byte, owned bool) error {
 // decodeBAMAux walks the binary aux stream and returns parsed Aux entries.
 func decodeBAMAux(buf []byte) ([]Aux, error) {
 	return decodeBAMAuxInto(nil, buf)
+}
+
+// FindRawAuxTag walks the binary aux stream in buf and decodes ONLY the entry
+// whose 2-char tag equals tag, returning it and true. It stops at the first
+// match without decoding the rest of the stream, so callers that compare a
+// single tag (e.g. samtools sort -t) need not materialise every aux field. The
+// decoded Aux — its Type byte, boxed Value, ArrayType and ArrayValues — is
+// byte-for-byte identical to what a full decodeBAMAuxInto would produce for the
+// same tag. It returns (Aux{}, false) when the tag is absent and an error only
+// when the aux stream is malformed before the tag is found.
+func FindRawAuxTag(buf []byte, tag string) (Aux, bool, error) {
+	if len(tag) != 2 {
+		return Aux{}, false, fmt.Errorf("sam: aux tag must be 2 chars, got %q", tag)
+	}
+	for len(buf) > 0 {
+		if len(buf) < 3 {
+			return Aux{}, false, fmt.Errorf("sam: truncated aux header")
+		}
+		t0, t1 := buf[0], buf[1]
+		typ := buf[2]
+		buf = buf[3:]
+		match := t0 == tag[0] && t1 == tag[1]
+		var a Aux
+		if match {
+			a = Aux{Tag: internTag(t0, t1), Type: typ}
+		}
+		switch typ {
+		case 'A':
+			if len(buf) < 1 {
+				return Aux{}, false, fmt.Errorf("sam: truncated aux 'A'")
+			}
+			if match {
+				a.Value = string(buf[:1])
+			}
+			buf = buf[1:]
+		case 'c':
+			if len(buf) < 1 {
+				return Aux{}, false, fmt.Errorf("sam: truncated aux 'c'")
+			}
+			if match {
+				a.Value = int64(int8(buf[0]))
+			}
+			buf = buf[1:]
+		case 'C':
+			if len(buf) < 1 {
+				return Aux{}, false, fmt.Errorf("sam: truncated aux 'C'")
+			}
+			if match {
+				a.Value = int64(buf[0])
+			}
+			buf = buf[1:]
+		case 's':
+			if len(buf) < 2 {
+				return Aux{}, false, fmt.Errorf("sam: truncated aux 's'")
+			}
+			if match {
+				a.Value = int64(int16(binary.LittleEndian.Uint16(buf[:2])))
+			}
+			buf = buf[2:]
+		case 'S':
+			if len(buf) < 2 {
+				return Aux{}, false, fmt.Errorf("sam: truncated aux 'S'")
+			}
+			if match {
+				a.Value = int64(binary.LittleEndian.Uint16(buf[:2]))
+			}
+			buf = buf[2:]
+		case 'i':
+			if len(buf) < 4 {
+				return Aux{}, false, fmt.Errorf("sam: truncated aux 'i'")
+			}
+			if match {
+				a.Value = int64(int32(binary.LittleEndian.Uint32(buf[:4])))
+			}
+			buf = buf[4:]
+		case 'I':
+			if len(buf) < 4 {
+				return Aux{}, false, fmt.Errorf("sam: truncated aux 'I'")
+			}
+			if match {
+				a.Value = int64(binary.LittleEndian.Uint32(buf[:4]))
+			}
+			buf = buf[4:]
+		case 'f':
+			if len(buf) < 4 {
+				return Aux{}, false, fmt.Errorf("sam: truncated aux 'f'")
+			}
+			if match {
+				a.Value = float64(math.Float32frombits(binary.LittleEndian.Uint32(buf[:4])))
+			}
+			buf = buf[4:]
+		case 'Z', 'H':
+			end := bytes.IndexByte(buf, 0)
+			if end < 0 {
+				return Aux{}, false, fmt.Errorf("sam: unterminated aux 'Z'/'H'")
+			}
+			if match {
+				a.Value = string(buf[:end])
+			}
+			buf = buf[end+1:]
+		case 'B':
+			if len(buf) < 5 {
+				return Aux{}, false, fmt.Errorf("sam: truncated aux 'B' header")
+			}
+			sub := buf[0]
+			count := binary.LittleEndian.Uint32(buf[1:5])
+			buf = buf[5:]
+			var elemSize int
+			switch sub {
+			case 'c', 'C':
+				elemSize = 1
+			case 's', 'S':
+				elemSize = 2
+			case 'i', 'I', 'f':
+				elemSize = 4
+			default:
+				return Aux{}, false, fmt.Errorf("sam: unknown aux 'B' subtype %q", sub)
+			}
+			need := int(count) * elemSize
+			if len(buf) < need {
+				return Aux{}, false, fmt.Errorf("sam: truncated aux 'B' body")
+			}
+			if match {
+				a.ArrayType = sub
+				for j := uint32(0); j < count; j++ {
+					off := int(j) * elemSize
+					switch sub {
+					case 'c':
+						a.ArrayValues = append(a.ArrayValues, int64(int8(buf[off])))
+					case 'C':
+						a.ArrayValues = append(a.ArrayValues, int64(buf[off]))
+					case 's':
+						a.ArrayValues = append(a.ArrayValues, int64(int16(binary.LittleEndian.Uint16(buf[off:off+2]))))
+					case 'S':
+						a.ArrayValues = append(a.ArrayValues, int64(binary.LittleEndian.Uint16(buf[off:off+2])))
+					case 'i':
+						a.ArrayValues = append(a.ArrayValues, int64(int32(binary.LittleEndian.Uint32(buf[off:off+4]))))
+					case 'I':
+						a.ArrayValues = append(a.ArrayValues, int64(binary.LittleEndian.Uint32(buf[off:off+4])))
+					case 'f':
+						a.ArrayValues = append(a.ArrayValues, float64(math.Float32frombits(binary.LittleEndian.Uint32(buf[off:off+4]))))
+					}
+				}
+			}
+			buf = buf[need:]
+		default:
+			return Aux{}, false, fmt.Errorf("sam: unknown aux type %q", typ)
+		}
+		if match {
+			return a, true, nil
+		}
+	}
+	return Aux{}, false, nil
 }
 
 // tagInternTable holds a pre-allocated string for every 2-char aux tag built

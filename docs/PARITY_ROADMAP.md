@@ -387,7 +387,7 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   order, emitting each column as it is reached — a major mpileup-engine
   restructure (follow-up #44). The 7/2-position residual (99.99993 % of region 20
   already byte-identical) stands until then.
-- **`samtools sort` wall — IMPROVED (task #39); structural residual.** `sort -@4`
+- **`samtools sort` wall — FIXED (task #39 then #42, now ≈ parity).** `sort -@4`
   was ~3x upstream at matched memory. Profiling showed `sort.SliceStable`/heap/
   comparator are negligible (<4%); the costs were excessive spilling (57 vs 4
   shards), ~22% GC from per-record allocation churn, and a `-@4` threading
@@ -396,17 +396,24 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   reserved for final output) + per-record encode/decode allocation pooling
   (byte-identical): full `-@4` **3.06x → 2.36x**, subset `-@4` **12.25x →
   4.39x**, peak RSS **0.78x** upstream, decoded records byte-identical.
-  **REMAINING (the path to ≤2x / ~1x):** ours decodes→re-encodes every record
-  through the Go BAM codec (interface-boxed `Aux`, GC) on every spill+merge
-  round-trip and uses the klauspost BGZF backend, whereas upstream copies packed
-  `bam1_t` arenas with no per-record decode. Closing the gap needs (a) a
-  **packed/arena spill format** that stores raw BAM bytes per shard (no
-  re-decode), and (b) a **parallel in-memory sort** (upstream's `sort_blocks`).
-  An interim attempt to scale the spill byte-budget by thread count was reverted
-  — a buffered Go `*sam.Record`'s real heap footprint is several times its
-  packed size, so it blew peak RSS to 2.01x for no wall gain; the byte budget is
-  not a safe RSS lever. Both remaining pieces are larger, higher-risk
-  restructures (touch the core sort/spill/merge loop), tracked here.
+  The interim attempt to scale the spill byte-budget by thread count was
+  reverted — a buffered Go `*sam.Record`'s real heap footprint is several times
+  its packed size, so it blew peak RSS to 2.01x for no wall gain; the byte budget
+  is not a safe RSS lever.
+  **CLOSED by task #42 — packed spill.** Profiling showed the decode→re-encode
+  round-trip was ~33% of CPU (+ the 22% GC it drove) while `sort.SliceStable` was
+  only ~0.5% — so the *parallel in-memory sort* idea was dropped as worthless and
+  the **packed-spill format** alone delivered the win. Sort now copies on-disk BAM
+  record bytes VERBATIM through buffer → spill → merge → output and decodes only
+  the sort key (`sam.BAMReader.ReadRaw` / `sam.BAMWriter.WriteRaw` /
+  `FindRawAuxTag`, a reusable raw-record fast path), so the per-record footprint
+  ≈ upstream's `bam1_t`. Measured on real GIAB: full `-@4` **2.54× → 1.08×**
+  (near parity), subset now *faster* than upstream (`-@1` 0.48×, `-@4` 0.52×,
+  chr20 fits RAM and no longer spills), peak RSS **0.53×** upstream, spill shards
+  57 → 18 (chr20 2 → 0). Byte-identical across coordinate / `-n` / `-N` / `-t`
+  and the `-O sam` fallback — including the BAM `bin` field (0 diff over 39.2 M
+  records; the sort path never mutates a record, so the raw passthrough is exact).
+  SAM/CRAM input falls back to the decode path via `alnio.ErrNoRawRead`.
 - The large-tier heavy cells (`sam_mpileup`, `bcf_call`, `bcf_isec`) were
   mis-reported as OOM; that was **disk exhaustion** (a ~17 GB temp output on a
   5 GB-free overlay), not RAM — all three are bounded and run with a big-disk

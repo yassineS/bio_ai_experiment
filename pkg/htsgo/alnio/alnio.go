@@ -18,12 +18,19 @@
 package alnio
 
 import (
+	"errors"
 	"io"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/cram"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
+
+// ErrNoRawRead is returned by a wrapper's ReadRaw when the underlying reader is
+// not a BAM reader (SAM or CRAM input), so callers can detect the absence of a
+// raw-byte path and fall back to the decode path. It is returned WITHOUT
+// consuming any input, so a caller may continue with Read after observing it.
+var ErrNoRawRead = errors.New("alnio: underlying reader does not support raw BAM record reads")
 
 // NewReader returns a sam.Reader for r, auto-detecting whether the input is
 // text SAM, BAM, or CRAM by sniffing its leading bytes. It is a drop-in,
@@ -216,6 +223,19 @@ func (s *samReader) ReadInto(dst *sam.Record) error {
 	}
 	*dst = *rec
 	return nil
+}
+
+// ReadRaw forwards a raw, undecoded BAM record-body read to the wrapped reader
+// when it supports one (the BAM path), so samtools sort can buffer and spill the
+// on-disk record bytes verbatim instead of decoding then re-encoding them. It
+// returns an error (not a fallback) when the wrapped reader is not a BAM reader,
+// so callers can detect the absence of a raw path via the type assertion rather
+// than this call.
+func (s *samReader) ReadRaw() ([]byte, error) {
+	if rr, ok := s.Reader.(interface{ ReadRaw() ([]byte, error) }); ok {
+		return rr.ReadRaw()
+	}
+	return nil, ErrNoRawRead
 }
 
 // ReadShallowInto forwards a shallow (fixed-prefix only) decode to the wrapped
