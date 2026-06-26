@@ -2,6 +2,7 @@ package samtools
 
 import (
 	"container/heap"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -121,8 +122,6 @@ func Sort(in io.Reader, out io.Writer, opts SortOptions) error {
 		refIndex[ref.Name] = i
 	}
 
-	cmp := makeRecordLess(opts, refIndex)
-
 	tmpDir := opts.TmpPrefix
 	if tmpDir == "" {
 		tmpDir = os.TempDir()
@@ -138,6 +137,27 @@ func Sort(in io.Reader, out io.Writer, opts SortOptions) error {
 			tmpBaseDir = "."
 		}
 	}
+
+	// PACKED FAST PATH. When the input is BGZF-wrapped (or raw) BAM the reader
+	// exposes ReadRaw, which hands back the verbatim on-disk record body. The
+	// sort path never mutates a record (RG/PG translation is merge-only; Sort's
+	// writeOutput applies none), so we buffer/spill/merge those raw bodies and
+	// emit them unchanged — eliminating the per-record decode→re-encode round
+	// trip that dominated the profile. The first raw read also doubles as the
+	// probe: ErrNoRawRead (returned without consuming input) means SAM/CRAM
+	// input, so we fall through to the decode path below with the stream intact.
+	if rr, ok := r.(rawReader); ok {
+		first, ferr := rr.ReadRaw()
+		if ferr == nil || ferr == io.EOF {
+			return sortPacked(rr, first, ferr, out, hdr, opts, budget, tmpBaseDir, tmpName)
+		}
+		if ferr != alnio.ErrNoRawRead {
+			return ferr
+		}
+		// ErrNoRawRead: no bytes consumed, fall through to the decode path.
+	}
+
+	cmp := makeRecordLess(opts, refIndex)
 
 	var shards []string
 	defer func() {
@@ -214,6 +234,539 @@ func Sort(in io.Reader, out io.Writer, opts SortOptions) error {
 	}
 	merged := newMergeIterator(readers, cmp)
 	return writeOutput(out, hdr, merged, opts)
+}
+
+// sortPacked is the packed-spill external-merge sort: it buffers verbatim BAM
+// record bodies (packedRec), spills sorted shards of raw bodies, and merges them
+// straight to the output, decoding only each record's sort key — never the full
+// record. firstRaw/firstErr carry the result of the probe ReadRaw the caller
+// already performed (firstErr is nil for a record or io.EOF for empty input).
+//
+// The sorted output is byte-identical to the decode path: the comparators are
+// field-for-field mirrors of coordCmp/nameLess/tagCmp, the in-memory sort is
+// sort.SliceStable and the merge heap tie-breaks on source index, so equal-key
+// records keep input order exactly as the *sam.Record path does. For SAM text
+// output (not perf-critical) the raw bodies are decoded on the way out.
+func sortPacked(rr rawReader, firstRaw []byte, firstErr error, out io.Writer, hdr *sam.Header, opts SortOptions, budget int64, tmpBaseDir, tmpName string) error {
+	cmp := makePackedCmp(opts)
+
+	var shards []string
+	defer func() {
+		for _, p := range shards {
+			_ = os.Remove(p)
+		}
+	}()
+
+	var buffer []packedRec
+	var bufBytes int64
+	flush := func() error {
+		if len(buffer) == 0 {
+			return nil
+		}
+		sort.SliceStable(buffer, func(a, b int) bool { return cmp(&buffer[a], &buffer[b]) < 0 })
+		path, ferr := writePackedShard(tmpBaseDir, tmpName, len(shards), hdr, buffer)
+		if ferr != nil {
+			return ferr
+		}
+		shards = append(shards, path)
+		buffer = buffer[:0]
+		bufBytes = 0
+		return nil
+	}
+
+	// add ingests one raw record body into the buffer, spilling first when it
+	// would overflow the budget so the new record lands in a fresh buffer.
+	add := func(raw []byte) error {
+		p, perr := packRecord(raw)
+		if perr != nil {
+			return perr
+		}
+		size := packedSize(raw)
+		if len(buffer) > 0 && bufBytes+size > budget {
+			if err := flush(); err != nil {
+				return err
+			}
+		}
+		buffer = append(buffer, p)
+		bufBytes += size
+		return nil
+	}
+
+	// Consume the probe record, then the rest of the stream.
+	if firstErr == nil {
+		if err := add(firstRaw); err != nil {
+			return err
+		}
+	}
+	if firstErr == nil {
+		for {
+			raw, err := rr.ReadRaw()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return err
+			}
+			if err := add(raw); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Fast path: zero shards → sort the buffer in place and write to out.
+	if len(shards) == 0 {
+		sort.SliceStable(buffer, func(a, b int) bool { return cmp(&buffer[a], &buffer[b]) < 0 })
+		return writePackedOutput(out, hdr, &packedSliceIter{recs: buffer}, opts)
+	}
+	// Otherwise: flush the tail and k-way merge.
+	if err := flush(); err != nil {
+		return err
+	}
+	readers := make([]*sam.BAMReader, 0, len(shards))
+	defer func() {
+		for _, br := range readers {
+			_ = br.Close()
+		}
+	}()
+	for _, p := range shards {
+		f, oerr := os.Open(p)
+		if oerr != nil {
+			return oerr
+		}
+		br, oerr := sam.NewBAMReader(f)
+		if oerr != nil {
+			_ = f.Close()
+			return oerr
+		}
+		readers = append(readers, br)
+	}
+	merged, merr := newPackedMergeIterator(readers, cmp)
+	if merr != nil {
+		return merr
+	}
+	return writePackedOutput(out, hdr, merged, opts)
+}
+
+// rawReader is the optional interface a sam.Reader exposes when it can hand back
+// undecoded BAM record bodies. The BAM reader (and the alnio wrappers around it)
+// implement it; SAM and CRAM readers do not, so sort detects the packed fast
+// path by type-asserting to this interface and probing its first read.
+type rawReader interface {
+	ReadRaw() ([]byte, error)
+}
+
+// packedRec is a buffered/spilled record on the packed sort fast path: the
+// verbatim on-disk BAM record body plus the few sort-key fields decoded once
+// at read time. It carries NO *sam.Record — the comparator works straight off
+// the cached key fields and the raw bytes, and the raw bytes are emitted to the
+// output unchanged, eliminating the per-record decode→re-encode round-trip.
+//
+// refID/pos are the on-disk BAM values (refID == -1 and pos == -1 are the
+// unmapped/unset sentinels). name is a sub-slice of raw (the read name WITHOUT
+// its trailing NUL) used by the -n/-N name comparators. For -t the matching tag
+// is decoded lazily from raw's aux region by the comparator (see packedTagCmp).
+type packedRec struct {
+	raw   []byte
+	refID int32
+	pos   int32
+	flag  uint16
+	name  []byte
+}
+
+// packRecord builds a packedRec from an owned BAM record body, decoding only the
+// fixed-offset sort-key fields (refID@0, pos@4, flag@14) and slicing out the
+// read name (read_name@32, l_read_name@8 bytes minus the trailing NUL). It does
+// NOT decode CIGAR/SEQ/QUAL/aux — those bytes ride along in raw untouched.
+func packRecord(raw []byte) (packedRec, error) {
+	if len(raw) < 32 {
+		return packedRec{}, fmt.Errorf("samtools sort: BAM record body too small (%d)", len(raw))
+	}
+	refID := int32(binary.LittleEndian.Uint32(raw[0:4]))
+	pos := int32(binary.LittleEndian.Uint32(raw[4:8]))
+	lReadName := int(raw[8])
+	flag := binary.LittleEndian.Uint16(raw[14:16])
+	nameEnd := 32 + lReadName
+	if nameEnd > len(raw) {
+		return packedRec{}, fmt.Errorf("samtools sort: truncated read name")
+	}
+	name := raw[32:nameEnd]
+	// Drop the trailing NUL the BAM read name carries, mirroring decodeInto.
+	if len(name) > 0 && name[len(name)-1] == 0 {
+		name = name[:len(name)-1]
+	}
+	return packedRec{raw: raw, refID: refID, pos: pos, flag: flag, name: name}, nil
+}
+
+// packedRefRank maps an on-disk BAM refID to the rank the coordinate comparator
+// orders on: real refs keep their id, the unmapped sentinel (-1) becomes a value
+// that sorts after every real reference — identical to the refIndex map's
+// unmapped fallback (1<<30) used by the *sam.Record comparator.
+func packedRefRank(refID int32) int {
+	if refID < 0 {
+		return 1 << 30
+	}
+	return int(refID)
+}
+
+// packedCoordCmp reproduces coordCmp field-for-field on packed records: order by
+// reference rank, then 0-based position (monotonic with the 1-based pos coordCmp
+// compares), then the reverse-strand FLAG bit (forward before reverse). Returns
+// -1, 0, or 1.
+func packedCoordCmp(a, b *packedRec) int {
+	ra := packedRefRank(a.refID)
+	rb := packedRefRank(b.refID)
+	if ra != rb {
+		if ra < rb {
+			return -1
+		}
+		return 1
+	}
+	if a.pos != b.pos {
+		if a.pos < b.pos {
+			return -1
+		}
+		return 1
+	}
+	arev := a.flag&sam.FlagReverse != 0
+	brev := b.flag&sam.FlagReverse != 0
+	if arev != brev {
+		if !arev {
+			return -1
+		}
+		return 1
+	}
+	return 0
+}
+
+// packedNameCmp reproduces nameLess on packed records: QNAME (natural-numeric or
+// plain byte compare) then the FLAG-derived secondary key. Returns -1, 0, or 1.
+func packedNameCmp(a, b *packedRec, natural bool) int {
+	c := strnumCmpBytes(a.name, b.name, natural)
+	if c != 0 {
+		return c
+	}
+	ka := flagSortKey(a.flag)
+	kb := flagSortKey(b.flag)
+	if ka != kb {
+		if ka < kb {
+			return -1
+		}
+		return 1
+	}
+	return 0
+}
+
+// packedTagCmp reproduces tagCmp on packed records for `samtools sort -t TAG`.
+// It decodes only the matching tag from each record's raw aux region (via
+// sam.FindRawAuxTag), then mirrors tagCmp's normalised-type/value ordering and
+// its coordinate fallback exactly. On a malformed aux stream it errors via the
+// returned bool=false sentinel — callers using this on the packed path have
+// already validated each record body's fixed region, so a decode error here is
+// surfaced by treating the tag as absent (which matches "tags equal → coord
+// fallback" only when both error; to stay safe we fall back to coord). Returns
+// -1, 0, or 1.
+func packedTagCmp(a, b *packedRec, tag string) int {
+	av, aok := packedGetAux(a, tag)
+	bv, bok := packedGetAux(b, tag)
+	switch {
+	case !aok && bok:
+		return -1
+	case aok && !bok:
+		return 1
+	case !aok && !bok:
+		return packedCoordCmp(a, b)
+	}
+
+	atype := normalizeAuxType(av.Type)
+	btype := normalizeAuxType(bv.Type)
+	if atype != btype {
+		if atype == 'c' && btype == 'f' {
+			atype = 'f'
+		} else if atype == 'f' && btype == 'c' {
+			btype = 'f'
+		} else {
+			if atype < btype {
+				return -1
+			}
+			return 1
+		}
+	}
+
+	switch atype {
+	case 'c':
+		ai, _ := av.Int()
+		bi, _ := bv.Int()
+		if ai != bi {
+			if ai < bi {
+				return -1
+			}
+			return 1
+		}
+	case 'f':
+		af := auxFloat(av)
+		bf := auxFloat(bv)
+		if af != bf {
+			if af < bf {
+				return -1
+			}
+			return 1
+		}
+	case 'A':
+		as, _ := av.Value.(string)
+		bs, _ := bv.Value.(string)
+		ac, bc := byte(0), byte(0)
+		if len(as) > 0 {
+			ac = as[0]
+		}
+		if len(bs) > 0 {
+			bc = bs[0]
+		}
+		if ac != bc {
+			if ac < bc {
+				return -1
+			}
+			return 1
+		}
+	case 'H':
+		as, _ := av.Value.(string)
+		bs, _ := bv.Value.(string)
+		if as != bs {
+			if as < bs {
+				return -1
+			}
+			return 1
+		}
+	}
+	return packedCoordCmp(a, b)
+}
+
+// packedGetAux decodes the single aux field with the given tag from a packed
+// record's raw aux region. A malformed aux stream or a missing tag both report
+// "absent" (ok=false); the comparator then orders the record exactly as tagCmp
+// orders a tag-less record (tags-absent sort first, with a coordinate fallback
+// when both are absent).
+func packedGetAux(p *packedRec, tag string) (sam.Aux, bool) {
+	off, err := sam.RawAuxOffset(p.raw)
+	if err != nil {
+		return sam.Aux{}, false
+	}
+	a, ok, ferr := sam.FindRawAuxTag(p.raw[off:], tag)
+	if ferr != nil || !ok {
+		return sam.Aux{}, false
+	}
+	return a, true
+}
+
+// strnumCmpBytes is strnumCmp over byte slices (the packed read name is a raw
+// sub-slice of the BAM body, avoiding a per-record string allocation). It is a
+// byte-for-byte mirror of strnumCmp; the two share their semantics exactly.
+func strnumCmpBytes(a, b []byte, natural bool) int {
+	if !natural {
+		return bytesCompare(a, b)
+	}
+	pa, pb := 0, 0
+	for pa < len(a) && pb < len(b) {
+		if !isDigit(a[pa]) || !isDigit(b[pb]) {
+			if a[pa] != b[pb] {
+				return int(a[pa]) - int(b[pb])
+			}
+			pa++
+			pb++
+			continue
+		}
+		for pa < len(a) && a[pa] == '0' {
+			pa++
+		}
+		for pb < len(b) && b[pb] == '0' {
+			pb++
+		}
+		for pa < len(a) && pb < len(b) && isDigit(a[pa]) && a[pa] == b[pb] {
+			pa++
+			pb++
+		}
+		var ca, cb int
+		if pa < len(a) {
+			ca = int(a[pa])
+		}
+		if pb < len(b) {
+			cb = int(b[pb])
+		}
+		diff := ca - cb
+		for pa < len(a) && pb < len(b) && isDigit(a[pa]) && isDigit(b[pb]) {
+			pa++
+			pb++
+		}
+		if pa < len(a) && isDigit(a[pa]) {
+			return 1
+		}
+		if pb < len(b) && isDigit(b[pb]) {
+			return -1
+		}
+		if diff != 0 {
+			return diff
+		}
+	}
+	if pa < len(a) {
+		return 1
+	}
+	if pb < len(b) {
+		return -1
+	}
+	return 0
+}
+
+// bytesCompare returns the sign of a lexicographic byte comparison, matching the
+// plain (non-natural) branch of strnumCmp where Go's string `<`/`>` reduces to a
+// byte-wise compare.
+func bytesCompare(a, b []byte) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[i] != b[i] {
+			if a[i] < b[i] {
+				return -1
+			}
+			return 1
+		}
+	}
+	if len(a) < len(b) {
+		return -1
+	}
+	if len(a) > len(b) {
+		return 1
+	}
+	return 0
+}
+
+// makePackedLess builds the three-way packed comparator for opts, mirroring
+// makeRecordLess. It returns a func reporting a<0 / 0 / a>0 so both the stable
+// in-memory sort (as a bool via <0) and the merge heap's equal-key tie-break can
+// share one comparator.
+func makePackedCmp(opts SortOptions) func(a, b *packedRec) int {
+	switch opts.Order {
+	case SortByName:
+		return func(a, b *packedRec) int { return packedNameCmp(a, b, false) }
+	case SortByNameNatural:
+		return func(a, b *packedRec) int { return packedNameCmp(a, b, true) }
+	case SortByTag:
+		tag := opts.Tag
+		return func(a, b *packedRec) int { return packedTagCmp(a, b, tag) }
+	default:
+		return func(a, b *packedRec) int { return packedCoordCmp(a, b) }
+	}
+}
+
+// packedSize estimates a buffered raw record's real Go heap footprint, used to
+// decide when to spill on the packed path. A packedRec holds one heap allocation
+// — the raw []byte body — plus the small struct/slot bookkeeping; it carries no
+// expanded *sam.Record, so the footprint is close to the on-disk record size.
+// This is why the packed path packs far more records per shard than the fat
+// *sam.Record budget: the same 768 MiB holds many more raw bodies, cutting the
+// shard count without raising peak RSS above upstream's packed bam1_t budget.
+func packedSize(raw []byte) int64 {
+	const structBytes = 64 // packedRec struct + its slot in the []packedRec buffer
+	n := (len(raw) + 15) &^ 15
+	return int64(structBytes + n)
+}
+
+// packedIter is the packed-path analogue of recordIter: it yields the next raw
+// BAM record body (and the input index it came from) or (nil, _, EOF) when
+// exhausted. The src index lets the merge tie-break on input order so equal-key
+// records keep their relative position, exactly as the *sam.Record merge does.
+type packedIter interface {
+	Next() (packedRec, error)
+}
+
+// packedSliceIter iterates an in-memory []packedRec (the zero-shard fast path).
+type packedSliceIter struct {
+	recs []packedRec
+	i    int
+}
+
+func (s *packedSliceIter) Next() (packedRec, error) {
+	if s.i >= len(s.recs) {
+		return packedRec{}, io.EOF
+	}
+	r := s.recs[s.i]
+	s.i++
+	return r, nil
+}
+
+// packedMergeIterator does a k-way heap-merge across n BAM shard readers, pulling
+// raw record bodies (ReadRaw) and decoding only each record's sort key for the
+// heap comparison. The merged bytes are emitted verbatim by writePackedOutput.
+type packedMergeIterator struct {
+	h *packedHeap
+}
+
+func newPackedMergeIterator(readers []*sam.BAMReader, cmp func(a, b *packedRec) int) (packedIter, error) {
+	h := &packedHeap{cmp: cmp}
+	heap.Init(h)
+	for i, rd := range readers {
+		raw, err := rd.ReadRaw()
+		if err == io.EOF {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		p, perr := packRecord(raw)
+		if perr != nil {
+			return nil, perr
+		}
+		heap.Push(h, packedEntry{rec: p, src: i, reader: rd})
+	}
+	return &packedMergeIterator{h: h}, nil
+}
+
+func (m *packedMergeIterator) Next() (packedRec, error) {
+	if m.h.Len() == 0 {
+		return packedRec{}, io.EOF
+	}
+	top := heap.Pop(m.h).(packedEntry)
+	raw, err := top.reader.ReadRaw()
+	if err == nil {
+		p, perr := packRecord(raw)
+		if perr != nil {
+			return packedRec{}, perr
+		}
+		heap.Push(m.h, packedEntry{rec: p, src: top.src, reader: top.reader})
+	} else if err != io.EOF {
+		return top.rec, err
+	}
+	return top.rec, nil
+}
+
+type packedEntry struct {
+	rec    packedRec
+	src    int
+	reader *sam.BAMReader
+}
+
+type packedHeap struct {
+	items []packedEntry
+	cmp   func(a, b *packedRec) int
+}
+
+func (h *packedHeap) Len() int { return len(h.items) }
+func (h *packedHeap) Less(i, j int) bool {
+	c := h.cmp(&h.items[i].rec, &h.items[j].rec)
+	if c != 0 {
+		return c < 0
+	}
+	// Tie-break on source index so the merge is deterministic and equal-key
+	// records keep input order, mirroring recordHeap.Less.
+	return h.items[i].src < h.items[j].src
+}
+func (h *packedHeap) Swap(i, j int)      { h.items[i], h.items[j] = h.items[j], h.items[i] }
+func (h *packedHeap) Push(x interface{}) { h.items = append(h.items, x.(packedEntry)) }
+func (h *packedHeap) Pop() interface{} {
+	n := len(h.items)
+	x := h.items[n-1]
+	h.items = h.items[:n-1]
+	return x
 }
 
 // recordIter is a lazy iterator that returns the next record or (nil, EOF)
@@ -716,6 +1269,44 @@ func writeShard(dir, prefix string, idx int, hdr *sam.Header, recs []*sam.Record
 	return path, nil
 }
 
+// writePackedShard is writeShard for the packed path: it writes the spill file's
+// header then each record's size prefix + raw body verbatim via WriteRaw, with
+// no decode/re-encode. Like writeShard it always uses the single-threaded BGZF
+// writer (the parallel pool is reserved for the final output). The spilled bytes
+// decode to the same records the merge reads back, so the merged output is
+// byte-for-byte unchanged from a re-encoded shard.
+func writePackedShard(dir, prefix string, idx int, hdr *sam.Header, recs []packedRec) (string, error) {
+	path := filepath.Join(dir, fmt.Sprintf("%s.%d.%d.bam", prefix, os.Getpid(), idx))
+	f, err := os.Create(path)
+	if err != nil {
+		return "", err
+	}
+	bw := sam.NewBAMWriter(f)
+	if err := bw.WriteHeader(hdr); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return "", err
+	}
+	for i := range recs {
+		if err := bw.WriteRaw(recs[i].raw); err != nil {
+			_ = bw.Close()
+			_ = f.Close()
+			_ = os.Remove(path)
+			return "", err
+		}
+	}
+	if err := bw.Close(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	return path, nil
+}
+
 // writeOutput writes the iterator's records to out as BAM or SAM per opts,
 // stamping the header's @HD SO field on the way.
 func writeOutput(out io.Writer, hdr *sam.Header, it recordIter, opts SortOptions) error {
@@ -761,6 +1352,75 @@ func writeOutput(out io.Writer, hdr *sam.Header, it recordIter, opts SortOptions
 	}
 	closed = true
 	return w.Close()
+}
+
+// writePackedOutput writes a packed iterator's records to out, stamping @HD SO
+// like writeOutput. For BAM output (the perf-critical, common case) it emits
+// each raw record body verbatim via WriteRaw — no decode/re-encode — keeping the
+// parallel BGZF back end (-@/--threads). For SAM text output (not perf-critical)
+// it decodes each raw body to a *sam.Record and writes it through the SAM
+// writer, exactly as the decode path's writeOutput does.
+func writePackedOutput(out io.Writer, hdr *sam.Header, it packedIter, opts SortOptions) error {
+	stampSortOrder(hdr, opts.Order)
+
+	if opts.OutputSAM {
+		w := sam.NewSAMWriter(out)
+		if err := w.WriteHeader(hdr); err != nil {
+			_ = w.Close()
+			return err
+		}
+		// A header-only BAM reader used purely to decode buffered raw bodies.
+		dec := sam.NewBAMBodyReader(nil, hdr)
+		for {
+			p, err := it.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				_ = w.Close()
+				return err
+			}
+			rec, derr := dec.DecodeRecordBody(p.raw)
+			if derr != nil {
+				_ = w.Close()
+				return derr
+			}
+			if err := w.Write(rec); err != nil {
+				_ = w.Close()
+				return err
+			}
+		}
+		return w.Close()
+	}
+
+	// BAM output: raw passthrough through the (optionally parallel) BGZF writer.
+	bw := sam.NewBAMWriterThreads(out, opts.Threads)
+	closed := false
+	closeOnErr := func() {
+		if !closed {
+			_ = bw.Close()
+		}
+	}
+	if err := bw.WriteHeader(hdr); err != nil {
+		closeOnErr()
+		return err
+	}
+	for {
+		p, err := it.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			closeOnErr()
+			return err
+		}
+		if err := bw.WriteRaw(p.raw); err != nil {
+			closeOnErr()
+			return err
+		}
+	}
+	closed = true
+	return bw.Close()
 }
 
 // stampSortOrder rewrites the @HD line's SO: and SS: fields (creating an

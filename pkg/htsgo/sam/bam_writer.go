@@ -176,6 +176,26 @@ func (bw *BAMWriter) Write(rec *Record) error {
 	return err
 }
 
+// WriteRaw emits one pre-encoded BAM record body straight to the BGZF stream:
+// it writes the 4-byte little-endian block_size prefix (len(body)) followed by
+// body verbatim, bypassing encodeRecord entirely. body must be a complete BAM
+// record body — the fixed 32-byte prefix followed by read name, CIGAR, packed
+// SEQ, QUAL and aux — exactly as ReadRaw returns it.
+//
+// WriteRaw works with both BGZF back ends: the single-threaded spill writer and
+// the parallel MultiWriter used for the final output. The on-disk bytes are
+// identical to encoding the same record through Write, so a raw passthrough is
+// byte-for-byte equivalent to a decode→re-encode round-trip for any record that
+// the writer would not otherwise mutate.
+func (bw *BAMWriter) WriteRaw(body []byte) error {
+	binary.LittleEndian.PutUint32(bw.szBuf[:], uint32(len(body)))
+	if _, err := bw.bw.Write(bw.szBuf[:]); err != nil {
+		return err
+	}
+	_, err := bw.bw.Write(body)
+	return err
+}
+
 // Close flushes the BGZF stream and emits the EOF block.
 func (bw *BAMWriter) Close() error {
 	if bw.closed {

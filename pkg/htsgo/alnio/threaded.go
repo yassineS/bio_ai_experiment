@@ -113,6 +113,17 @@ func (m *mrCloseReader) ReadInto(dst *sam.Record) error {
 	return nil
 }
 
+// ReadRaw forwards a raw, undecoded BAM record-body read to the wrapped BAM
+// reader when it supports one, so samtools sort buffers/spills the on-disk
+// record bytes verbatim even on the parallel BGZF path. It returns an error when
+// the wrapped reader is not a BAM reader.
+func (m *mrCloseReader) ReadRaw() ([]byte, error) {
+	if rr, ok := m.Reader.(interface{ ReadRaw() ([]byte, error) }); ok {
+		return rr.ReadRaw()
+	}
+	return nil, ErrNoRawRead
+}
+
 // ReadShallowInto forwards a shallow (fixed-prefix only) decode to the wrapped
 // BAM reader when it supports one. This lets counters that touch only flags,
 // MAPQ and the mate reference (e.g. flagstat) skip the variable-length region
@@ -240,6 +251,17 @@ func (s *threadedSamReader) ReadInto(dst *sam.Record) error {
 	}
 	*dst = *rec
 	return nil
+}
+
+// ReadRaw forwards a raw, undecoded BAM record-body read to the wrapped BAM
+// reader when it supports one, so samtools sort buffers/spills the on-disk
+// record bytes verbatim even on the parallel BGZF path. It returns an error when
+// the wrapped reader is not a BAM reader.
+func (s *threadedSamReader) ReadRaw() ([]byte, error) {
+	if rr, ok := s.Reader.(interface{ ReadRaw() ([]byte, error) }); ok {
+		return rr.ReadRaw()
+	}
+	return nil, ErrNoRawRead
 }
 
 // ReadShallowInto forwards a shallow (fixed-prefix only) decode to the wrapped

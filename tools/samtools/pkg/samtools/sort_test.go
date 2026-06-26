@@ -185,6 +185,81 @@ func TestSortMultiShard(t *testing.T) {
 	}
 }
 
+// TestSortPackedMatchesDecode is the byte-identity gate for the packed-spill
+// fast path: for every sort mode (coordinate, -N, -n, -t) and both the in-memory
+// and the every-record-spills configurations, sorting a BAM (packed path) must
+// produce the SAME final BAM bytes as sorting the equivalent SAM (decode path).
+// A comparator or spill/merge mismatch surfaces here as a byte diff.
+func TestSortPackedMatchesDecode(t *testing.T) {
+	bamIn := samToBAM(t, unsortedSAM)
+
+	modes := []struct {
+		name string
+		opts SortOptions
+	}{
+		{"coordinate", SortOptions{Order: SortCoordinate, OutputBAM: true}},
+		{"name-lex", SortOptions{Order: SortByName, OutputBAM: true}},
+		{"name-natural", SortOptions{Order: SortByNameNatural, OutputBAM: true}},
+		{"tag-NM", SortOptions{Order: SortByTag, Tag: "NM", OutputBAM: true}},
+		{"tag-missing", SortOptions{Order: SortByTag, Tag: "ZZ", OutputBAM: true}},
+	}
+	for _, m := range modes {
+		for _, spill := range []bool{false, true} {
+			t.Run(m.name+map[bool]string{false: "/in-mem", true: "/spill"}[spill], func(t *testing.T) {
+				decOpts := m.opts
+				pkOpts := m.opts
+				if spill {
+					decOpts.MaxMemBytes = 1
+					decOpts.TmpPrefix = t.TempDir()
+					pkOpts.MaxMemBytes = 1
+					pkOpts.TmpPrefix = t.TempDir()
+				}
+				var decOut, pkOut bytes.Buffer
+				if err := Sort(strings.NewReader(unsortedSAM), &decOut, decOpts); err != nil {
+					t.Fatalf("decode-path Sort: %v", err)
+				}
+				if err := Sort(bytes.NewReader(bamIn), &pkOut, pkOpts); err != nil {
+					t.Fatalf("packed-path Sort: %v", err)
+				}
+				if !bytes.Equal(decOut.Bytes(), pkOut.Bytes()) {
+					// Fall back to a record-level diff for a readable failure.
+					dr := readBAMRecords(t, decOut.Bytes())
+					pr := readBAMRecords(t, pkOut.Bytes())
+					if len(dr) != len(pr) {
+						t.Fatalf("record count: decode=%d packed=%d", len(dr), len(pr))
+					}
+					for i := range dr {
+						if dr[i].QName != pr[i].QName || dr[i].RName != pr[i].RName || dr[i].Pos != pr[i].Pos || dr[i].Flag != pr[i].Flag {
+							t.Fatalf("record %d differs: decode=%s/%s/%d packed=%s/%s/%d",
+								i, dr[i].QName, dr[i].RName, dr[i].Pos, pr[i].QName, pr[i].RName, pr[i].Pos)
+						}
+					}
+					t.Fatalf("packed BAM bytes differ from decode path (records match field-wise; header/encoding diff)")
+				}
+			})
+		}
+	}
+}
+
+// TestSortPackedSAMOutput verifies the packed path's SAM-output branch (raw
+// bodies decoded on the way out) matches the decode path's SAM output exactly.
+func TestSortPackedSAMOutput(t *testing.T) {
+	bamIn := samToBAM(t, unsortedSAM)
+	for _, order := range []SortOrder{SortCoordinate, SortByName, SortByNameNatural} {
+		var decOut, pkOut bytes.Buffer
+		opts := SortOptions{Order: order, OutputSAM: true}
+		if err := Sort(strings.NewReader(unsortedSAM), &decOut, opts); err != nil {
+			t.Fatalf("decode SAM Sort: %v", err)
+		}
+		if err := Sort(bytes.NewReader(bamIn), &pkOut, opts); err != nil {
+			t.Fatalf("packed SAM Sort: %v", err)
+		}
+		if decOut.String() != pkOut.String() {
+			t.Errorf("order %d: packed SAM output differs from decode path:\n--decode--\n%s\n--packed--\n%s", order, decOut.String(), pkOut.String())
+		}
+	}
+}
+
 func TestSortEmptyTag(t *testing.T) {
 	if err := Sort(strings.NewReader(unsortedSAM), &bytes.Buffer{}, SortOptions{Order: SortByTag, Tag: ""}); err != ErrEmptyTag {
 		t.Errorf("expected ErrEmptyTag, got %v", err)
