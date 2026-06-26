@@ -219,11 +219,10 @@ The major status docs were consolidated (see `docs/README.md`, the docs map):
 `PROJECT_STATUS.md` (summary table) and `docs/PARITY_ROADMAP.md` (gap detail)
 are the source of truth; `tools/README.md`, `tools/PORTING_STATUS.md`, and the
 `.github/agents/*` structure diagrams were corrected to the single-module
-reality and now link to those two rather than restating status.
-
-A few point-in-time summaries are retained for history only under
-`docs/archive/` (e.g. the former `tools/IMPLEMENTATION_SUMMARY.md` lineage) —
-don't read them for "where are we now."
+reality and now link to those two rather than restating status. The former
+`docs/archive/` point-in-time summaries (the old `tools/IMPLEMENTATION_SUMMARY.md`
+lineage) have been removed — their state is captured by commit history and the
+canonical status files above.
 
 When in doubt, trust the actual code and the two source-of-truth status docs
 over any older Markdown, and feel free to fix stale docs as part of related work.

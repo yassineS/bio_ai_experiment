@@ -96,8 +96,7 @@ bio_ai_experiment/
 │   ├── PARITY_ROADMAP.md      # authoritative gap list
 │   ├── UPSTREAM_BUGS.md       # bugs in originals we do not carry
 │   ├── CLI_CONVENTIONS.md     # CLI rules
-│   ├── manuscript/            # manuscript plan + labeled bug corpus
-│   └── archive/               # historical Phase 0/1 docs
+│   └── manuscript/            # manuscript plan + labeled bug corpus
 ├── analysis/                  # tool ranking + research
 ├── scripts/                   # repo scripts (e.g. recompute-metrics.sh)
 ├── reference_code/            # upstream sources as submodules (parity work)

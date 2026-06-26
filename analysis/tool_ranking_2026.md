@@ -102,7 +102,7 @@ PMC7931819).
 | # | Tool | One-line description | Bioconda total dl | Last release | Maintained? | In `tools/`? | Recommendation |
 |---|------|----------------------|------------------:|--------------|:-----------:|:------------:|----------------|
 | 5 | **minimap2** | Dominant long-read / spliced aligner | n/a | 2.30 r1287 (Jun 2025) | yes (2.2k★, Heng Li) | no | **skip-port-core, wrapper OK** — porting a 30k-LOC SIMD aligner is a multi-quarter project with no parity win |
-| 6 | **bwa / bwa-mem2** | Short-read aligner (still the standard) | n/a | bwa 0.7.19 (Mar 2025); bwa-mem2 2.3 (Jul 2025) | yes | no (see `tools/BWA_IMPLEMENTATION_DECISION.md`) | skip (already decided) |
+| 6 | **bwa / bwa-mem2** | Short-read aligner (still the standard) | n/a | bwa 0.7.19 (Mar 2025); bwa-mem2 2.3 (Jul 2025) | yes | no | skip (already decided) |
 | 7 | **fastp** | All-in-one FASTQ QC/trim/filter — modern default | ~631k | 1.3.3 (Apr 2026) | yes | yes | keep, parity-track |
 | 8 | **cutadapt** | Adapter trimming, very widely used | n/a | 5.2 (Oct 2025) | yes (Python; Marcel Martin) | no | wrapper / skip — Python rewrite would lose users; Rust port already exists |
 | 9 | **Trim Galore** | Wrapper around cutadapt+FastQC | n/a | **2.2.0 (May 2026), full Rust rewrite** | yes | no | **skip — upstream just rewrote it** |

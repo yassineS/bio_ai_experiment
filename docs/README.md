@@ -49,12 +49,6 @@ testing, and documentation roles, plus a
 POSIX CLIs instead); see
 [`../.github/agents/mcp-server-agent.md`](../.github/agents/mcp-server-agent.md).
 
-## Archived docs
-
-Point-in-time summaries that are kept for history (not current status) live in
-[`archive/`](archive/). Don't read them for "where are we now" — use
-`PROJECT_STATUS.md`.
-
 ## Documentation conventions
 
 - Keep Markdown well-formed: the markdown lint over `**/*.md` is part of the

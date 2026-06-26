@@ -142,16 +142,17 @@ Three levels of documentation:
    - Command reference
    - Performance notes
 
-3. **Tool Analysis** - In `docs/tools/`
+3. **Parity notes** - the per-tool `README.md` plus the authoritative gap
+   list in [`PARITY_ROADMAP.md`](PARITY_ROADMAP.md)
    - Original tool comparison
    - Implementation notes
-   - Migration guide
+   - Remaining feature gaps
 
 ## Implementation Workflow
 
 ### 1. Analyze Original Tool
 
-Create analysis in `docs/tools/[tool]-analysis.md`:
+Capture the analysis in the tool's `README.md` and the parity gap list:
 
 - What does the tool do?
 - What formats does it use?
@@ -227,8 +228,8 @@ Test coverage checklist:
 Create comprehensive documentation:
 
 - [ ] godoc comments on all exported items
-- [ ] README.md with examples
-- [ ] Tool analysis document
+- [ ] README.md with examples and parity notes
+- [ ] Update the parity gap list (`PARITY_ROADMAP.md`)
 - [ ] Update main README if needed
 
 ## Code Style
@@ -547,5 +548,5 @@ See `tools/seqtk/` for a complete reference implementation demonstrating:
 
 - Check existing implementations in `tools/`
 - Review `pkg/htsgo/` for format handling
-- Read tool analyses in `docs/tools/`
+- Read each tool's `README.md` and the gap list in `docs/PARITY_ROADMAP.md`
 - Open an issue for questions
