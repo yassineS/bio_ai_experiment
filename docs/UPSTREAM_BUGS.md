@@ -1188,7 +1188,7 @@ divergence is confined to the flag.
 - **Disposition.** Track-only — Go-port limitation, not an upstream bug.
   `tools/skewer/pkg/skewer/parity_test.go > case05` has `t.Skip` with a
   pointer to
-  [tools/PARITY_VALIDATION.md > "skewer"](../tools/PARITY_VALIDATION.md#skewer).
+  the `tools/skewer` README parity notes.
 
 ## sickle
 
@@ -1201,7 +1201,7 @@ initially looked suspicious are documented in
 The seqtk parity audit (PR for `prinseq-seqtk-parity-validation`)
 fixed four discrepancies on **our side** (not upstream); they are
 listed under
-[tools/PARITY_VALIDATION.md > seqtk parity validation](../tools/PARITY_VALIDATION.md).
+the `tools/seqtk` README parity notes.
 The audit also surfaced three behavioural divergences where byte
 parity is impractical without porting upstream-specific RNG / algorithm
 machinery; we track them here so the parity tests can point at a
@@ -1278,7 +1278,7 @@ stable anchor.
 The prinseq parity audit (PR for `prinseq-seqtk-parity-validation`)
 fixed three discrepancies on **our side** (not upstream); they are
 listed under
-[tools/PARITY_VALIDATION.md > prinseq parity validation](../tools/PARITY_VALIDATION.md).
+the `tools/prinseq` README parity notes.
 No upstream bugs surfaced — PRINSEQ-lite's documented behaviour
 agreed with the corpus we tested for every option we exercised
 (see the prinseq table for the 18 cases).

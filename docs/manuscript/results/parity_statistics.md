@@ -56,7 +56,7 @@ reported with two 95% intervals:
   Counting them would conflate coverage with correctness. Source: the
   "Validated parity against upstream test suites" table in
   [`README.md`](../../../README.md) (rows summing to 314 / 223 / 89) and
-  [`tools/PARITY_VALIDATION.md`](../../../tools/PARITY_VALIDATION.md) for the
+  `tools/PARITY_VALIDATION.md` for the
   per-subcommand breakdown.
 - **Conformance (89 / 89).** Independent third-party corpora — the htscodecs
   rANS / arithmetic codec vectors and htslib SAM/BAM/CRAM `test/` fixtures —
