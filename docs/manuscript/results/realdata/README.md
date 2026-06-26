@@ -277,6 +277,28 @@ optimisation targets (not defects):
 > on upstream-written CRAM is unchanged, tracked separately). Reaching ≤2×
 > requires streaming a slice's series blocks rather than decompressing them all
 > up front — a follow-up tracked in `docs/PARITY_ROADMAP.md`.
+>
+> **Update — `samtools view -C` CRAM encode wall (task #33, now byte-exact and
+> FASTER):** encoding BAM→CRAM (`view -C -T hs37d5.fa.gz`) was dominated by the
+> serial per-contig `@SQ M5` (reference MD5) hashing — for a whole-genome
+> reference it hashes every reference-present contig (~3.1 Gbp). **Measurement
+> caveat:** the literal GIAB number looked like 25× only because the BAM's mito
+> is named `M` while hs37d5 uses `MT`, so upstream's M5 loop bails to embedded
+> reference and hashes *nothing* (~0.8 s); the genuine, apples-to-apples gap
+> (the same hashing work, BAM reheadered so `MT` matches) was **~1.43×**
+> (ours 19.8 s vs upstream 13.8 s). Fixed by **parallelising** the per-contig
+> hash across a worker pool — each worker on its own independent
+> `fasta.RandomAccess` handle (no shared seek state) — leaving the M5 math
+> untouched. Apples-to-apples encode wall is now **0.37× (small) / 0.46×
+> (large) — i.e. ~2.2–2.7× *faster* than upstream**. Every emitted `@SQ` `M5`
+> is **byte-identical** to both upstream and the pre-change build (proven:
+> `M5`-set md5 `e9184efd…`, decoded records `aef8f476…` unchanged), the live
+> `*Upstream*` cross-check tests pass under `-race`, and encode RSS is
+> unchanged. Two separate, out-of-scope gaps were noted alongside: ours-written
+> external-reference CRAM is ~12.8 % larger than upstream (a block-codec/size
+> follow-up), and replicating upstream's `embed_ref` auto-fallback on a
+> name-mismatched reference would be a deliberate output change — both tracked
+> in `docs/PARITY_ROADMAP.md`.
 
 ## Status — real-data bugs found
 

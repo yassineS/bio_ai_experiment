@@ -15,6 +15,7 @@ import (
 	kgzip "github.com/klauspost/compress/gzip"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/cram/codec"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -178,6 +179,19 @@ type RecordWriter struct {
 	// emitted verbatim as the @SQ UR: tag (see WriterOptions.ReferencePath).
 	// Empty suppresses UR injection.
 	referencePath string
+
+	// precomputedM5 holds the @SQ M5 (reference MD5) tags computed up front in
+	// headerForEncode, keyed by contig name. The whole-genome M5 hash is the
+	// writer's dominant header-write cost (every reference-present contig is
+	// hashed in full), so it is fanned across a worker pool — each worker on its
+	// own independent FASTA handle — instead of being hashed serially inside the
+	// @SQ loop. A value of "" records a contig whose bases could not be fetched
+	// (no M5 emitted, matching upstream). Nil when the precompute did not run
+	// (no reference, or the serial-from-augment fallback), in which case
+	// augmentSQLine falls back to contigMD5. The map's bytes are identical to
+	// the serial result: the worker/handle/goroutine choice never changes a
+	// contig's MD5.
+	precomputedM5 map[string]string
 
 	// refIndex maps a reference name to its zero-based @SQ position, so a
 	// record's RName / RNext can be turned into the integer ids the CRAM
@@ -670,6 +684,11 @@ func (rw *RecordWriter) headerForEncode() *sam.Header {
 	if rw.refProvider == nil && rw.referencePath == "" {
 		return rw.header
 	}
+	// Compute every absent @SQ M5 up front, in parallel where possible; the
+	// per-contig hash is the writer's dominant header-write cost. augmentSQLine
+	// then reads the result by name (falling back to a serial hash for any
+	// contig the precompute did not cover), so the emitted bytes are unchanged.
+	rw.precomputedM5 = rw.precomputeContigM5s()
 	cp := *rw.header
 	cp.Lines = make([]sam.HeaderLine, len(rw.header.Lines))
 	for i, line := range rw.header.Lines {
@@ -714,7 +733,15 @@ func (rw *RecordWriter) augmentSQLine(line sam.HeaderLine) sam.HeaderLine {
 	contigInRef := rw.refProvider != nil && rw.refProvider.Length(name) > 0
 	var m5 string
 	if !haveM5 && contigInRef {
-		m5 = rw.contigMD5(name)
+		// Prefer the value precomputed (in parallel) by precomputeContigM5s;
+		// fall back to a serial hash for any name the precompute did not cover
+		// (e.g. it ran serial-from-augment, or a name was somehow missed) so no
+		// contig silently loses its M5. The two paths produce identical bytes.
+		if precomputed, ok := rw.precomputedM5[name]; ok {
+			m5 = precomputed
+		} else {
+			m5 = rw.contigMD5(name)
+		}
 	}
 	addUR := !haveUR && rw.referencePath != "" && (haveM5 || m5 != "")
 
@@ -746,6 +773,24 @@ func (rw *RecordWriter) contigMD5(name string) string {
 	if n <= 0 {
 		return ""
 	}
+	return hashContigBases(func(off, end int64) ([]byte, error) {
+		return rw.refProvider.Fetch(name, off, end)
+	}, n)
+}
+
+// hashContigBases returns the lower-case hex MD5 of a contig's n bases, fetched
+// in 1 MiB chunks via fetch. It returns "" if any chunk cannot be fetched
+// (matching upstream's "cannot hash a reference it could not load"). The MD5 of
+// the in-order chunk concatenation equals the MD5 of the whole contig, so the
+// chunk size, the handle fetch reads through, and the goroutine that drives it
+// never change the result — this is what lets contigMD5 (shared provider) and
+// precomputeContigM5s (per-worker independent handles) agree byte-for-byte. The
+// 1 MiB chunk bounds the transient hash buffer so peak RSS stays bounded even
+// across N parallel workers (N × ~1 MiB).
+func hashContigBases(fetch func(off, end int64) ([]byte, error), n int64) string {
+	if n <= 0 {
+		return ""
+	}
 	const chunk = 1 << 20 // 1 MiB: bounds the transient hash buffer.
 	h := md5.New()
 	for off := int64(0); off < n; off += chunk {
@@ -753,13 +798,134 @@ func (rw *RecordWriter) contigMD5(name string) string {
 		if end > n {
 			end = n
 		}
-		bases, err := rw.refProvider.Fetch(name, off, end)
+		bases, err := fetch(off, end)
 		if err != nil || bases == nil {
 			return ""
 		}
 		h.Write(bases)
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// precomputeContigM5s computes, before the @SQ loop runs, the M5 tag for every
+// reference-present @SQ contig that lacks one — exactly the set augmentSQLine
+// would otherwise hash serially. For a -T FASTA/BGZF reference (referencePath
+// set) it fans the per-contig hashing across a worker pool: the writer's
+// dominant header-write cost on a whole-genome reference is hashing all the
+// contigs (~3.1 Gbp for GIAB), and the contigs are independent. Each worker
+// opens its OWN fasta.RandomAccess handle (its own file descriptor and its own
+// seek/inflate state), so no seek-stateful handle is shared across goroutines.
+// Length lookups go through the shared provider (a pure index read, safe for
+// concurrent use). The result is byte-identical to the serial path: hashing
+// order, handle, and goroutine never change a contig's MD5. A "" entry records
+// an unfetchable contig (no M5 emitted, exactly as today). It returns nil when
+// no contig needs an M5.
+func (rw *RecordWriter) precomputeContigM5s() map[string]string {
+	if rw.refProvider == nil {
+		return nil
+	}
+	// Collect, in header order, the @SQ names that LACK an M5 and are present
+	// in the reference — the precise set augmentSQLine hashes today.
+	var names []string
+	seen := make(map[string]struct{})
+	for _, line := range rw.header.Lines {
+		if line.Tag != "SQ" {
+			continue
+		}
+		var name string
+		haveM5 := false
+		for _, f := range line.Fields {
+			switch f.Tag {
+			case "SN":
+				name = f.Value
+			case "M5":
+				haveM5 = true
+			}
+		}
+		if haveM5 || name == "" {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		if rw.refProvider.Length(name) <= 0 {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return nil
+	}
+
+	// Without a reference path we cannot open independent file handles (the
+	// provider may be an in-memory map or a custom provider whose only handle
+	// is the shared, seek-stateful one), so hash serially through the shared
+	// provider — unchanged behaviour. The map provider is already fast.
+	if rw.referencePath == "" {
+		out := make(map[string]string, len(names))
+		for _, name := range names {
+			out[name] = rw.contigMD5(name)
+		}
+		return out
+	}
+
+	// referencePath is set: parallelise across worker-private handles.
+	workers := rw.encodeThreads
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > len(names) {
+		workers = len(names)
+	}
+
+	jobs := make(chan string, len(names))
+	for _, name := range names {
+		jobs <- name
+	}
+	close(jobs)
+
+	out := make(map[string]string, len(names))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Each worker opens its OWN handle: an independent file
+			// descriptor with its own .fai/.gzi and inflate state, so no
+			// seek-stateful state is shared between goroutines. If the open
+			// fails, this worker degrades to the shared serial provider
+			// rather than crashing; the bytes are identical either way.
+			ra, err := fasta.OpenRandomAccess(rw.referencePath)
+			if err != nil {
+				ra = nil
+			} else {
+				defer ra.Close()
+			}
+			for name := range jobs {
+				var m5 string
+				if ra != nil {
+					n := rw.refProvider.Length(name)
+					nm := name
+					m5 = hashContigBases(func(off, end int64) ([]byte, error) {
+						return ra.Fetch(nm, off, end)
+					}, n)
+				} else {
+					// Fallback: the shared provider is seek-stateful, so
+					// serialise these reads behind the mutex.
+					mu.Lock()
+					m5 = rw.contigMD5(name)
+					mu.Unlock()
+				}
+				mu.Lock()
+				out[name] = m5
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	return out
 }
 
 // resolveReferenceProvider chooses the writer's reference source: an explicit

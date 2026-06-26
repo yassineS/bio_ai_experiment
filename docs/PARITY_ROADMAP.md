@@ -319,6 +319,25 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   `pkg/htsgo/cram` decode-core change (touches `slice.go` `newSeriesSource` and
   the per-slice block buffers) and carries codec-correctness risk, so it is a
   deliberate follow-up, not folded into the memory-knee fix above.
+- **`samtools view -C` CRAM encode wall — FIXED (task #33).** Serial per-contig
+  `@SQ M5` (reference MD5) hashing dominated header-write (≈80 % of CPU; whole
+  reference genome hashed). Now parallelised across a worker pool, each worker on
+  its own independent `fasta.RandomAccess` handle (no shared seek state); the M5
+  math and emitted bytes are unchanged (`@SQ M5` byte-identical to upstream and
+  to the pre-change build). Apples-to-apples encode wall (the M/MT `embed_ref`
+  bail artifact neutralised) went **1.43× slower → 0.37–0.46× (faster than
+  upstream)**. **Two separate, out-of-scope gaps surfaced:**
+  (1) **CRAM size** — ours-written external-reference CRAM is ~12.8 % larger than
+  upstream on real GIAB (e.g. 6.23 MB vs 5.52 MB). This is `chooseBlockCompression`
+  codec selection (we offer raw / gzip-L7 / rANS-4x8; upstream's default profile
+  and its rANS order-1 selection differ), NOT M5 — a size-parity follow-up,
+  separate from the wall fix. (2) **`embed_ref` auto-fallback** — upstream, on a
+  reference whose first contig name mismatches the FASTA (GIAB `M` vs hs37d5
+  `MT`), bails the whole M5 loop and switches to an embedded-reference CRAM
+  (smaller, no external `M5`); ours keeps hashing the matching contigs and writes
+  a reference-based CRAM. Replicating upstream's auto-fallback would *change the
+  emitted file* (embedded ref, no `M5`), so it is a deliberate behaviour-alignment
+  decision, not a perf fix — tracked here, not folded into #33.
 - The large-tier heavy cells (`sam_mpileup`, `bcf_call`, `bcf_isec`) were
   mis-reported as OOM; that was **disk exhaustion** (a ~17 GB temp output on a
   5 GB-free overlay), not RAM — all three are bounded and run with a big-disk
