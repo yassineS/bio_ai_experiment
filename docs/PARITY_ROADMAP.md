@@ -330,7 +330,26 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   type used by every tool, tracked as its own follow-up. Task #40 shipped a
   byte-identical decode-churn cleanup (an in-place MD/NM aux splice replacing a
   per-record reallocation, ~38 % fewer decode allocations, marginally faster) but
-  peak RSS stays ~3.6× — the leaner-record change is the only path below 2×.
+  peak RSS stays ~3.6×.
+  **Task #43 — PARTIAL CLOSE, leaner-record direction TESTED via aux-packing
+  (merged `885baec`, byte-exact, real GIAB).** The first slice of the leaner
+  representation shipped: a `RawAux` passthrough on the
+  `view -b -T <ref> <cram>` path — the CRAM decoder builds each record's aux as a
+  raw on-disk BAM aux byte block and the BAM writer emits it verbatim (the eager
+  `[]sam.Aux` path is untouched for every other consumer; gated, with a defensive
+  lazy materialise). Decoded-record md5 is ours == upstream on both CRAMs and the
+  roundtrip is clean, zero new test failures, #42's packed-sort path still green.
+  Worst-of-five peak RSS: up_chr20.cram **3.83× → 3.55×** (77.3 → 71.7 MB,
+  upstream 20.2), up_small.cram **3.85× → 3.69×** (72.8 → 69.7 MB, upstream 18.9);
+  wall **1.54× → 1.49×**. It did NOT reach ≤2×: an A/B proved the ~72 MB peak is
+  the GC-immune transient per-record decode-allocation BURST (the #40 root cause),
+  not the resident aux fat — packing aux trims only ~6 MB.
+  **REMAINING (the path to ≤2×, new follow-up):** the full `bam1_t`-style
+  single-allocation packed record (name + cigar + seq + qual + aux in one `data`
+  block) is needed to cut the per-slice decode-allocation burst. This is the
+  large cross-cutting change (the #40 diagnosis's rejected Option C; ~441
+  `.Seq`/`.Qual`/`.Aux` field sites across the tree), tracked as the named
+  follow-up.
 - **`samtools view -C` CRAM encode wall — FIXED (task #33).** Serial per-contig
   `@SQ M5` (reference MD5) hashing dominated header-write (≈80 % of CPU; whole
   reference genome hashed). Now parallelised across a worker pool, each worker on
