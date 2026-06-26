@@ -10,10 +10,10 @@ progress content lives in exactly one place and contributors don't re-fork it.
 |-----------|-------|-------|
 | Top-level "distance to done" completion table | [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md) | Skimmable per-tool % + biggest boulders. **Owns** the summary view. |
 | Authoritative per-tool parity gap list | [`PARITY_ROADMAP.md`](PARITY_ROADMAP.md) | The canonical, detailed "what's missing per subcommand/flag" tracker. **Owns** the gap detail. |
-| Per-subcommand feature inventory + test/coverage notes | [`../tools/PORTING_STATUS.md`](../tools/PORTING_STATUS.md) | Feature-by-feature checklist; defers the headline % to `PROJECT_STATUS.md`. |
-| Validated-parity test methodology + skip ledger | [`../tools/PARITY_VALIDATION.md`](../tools/PARITY_VALIDATION.md) | How parity is proven against upstream corpora. |
+| Per-subcommand feature inventory + test/coverage notes | [`PARITY_ROADMAP.md`](PARITY_ROADMAP.md) + per-tool [`../tools/<tool>/README.md`](../tools/) | Feature-by-feature gaps live in the parity roadmap; per-tool READMEs carry the usage + parity notes. |
+| Validated-parity test methodology + skip ledger | [`FULL_VALIDATION.md`](FULL_VALIDATION.md) + [`CONFORMANCE.md`](CONFORMANCE.md) | How parity is proven against upstream corpora, and the validation run recipes. |
 | Upstream bugs we fixed on port | [`UPSTREAM_BUGS.md`](UPSTREAM_BUGS.md) | Deviations from upstream that are intentional fixes. |
-| Documented intentional CLI differences | [`../tools/CLI_DIFFERENCES.md`](../tools/CLI_DIFFERENCES.md) | Where our flags/behaviour intentionally differ. |
+| Documented intentional CLI differences | [`CLI_CONVENTIONS.md`](CLI_CONVENTIONS.md) + per-tool [`../tools/<tool>/README.md`](../tools/) | The canonical CLI flag spec; per-tool READMEs note where flags/behaviour intentionally differ. |
 | Which **new** tools to port next | [`../analysis/tool_ranking_2026.md`](../analysis/tool_ranking_2026.md) | A priority list for *new* ports, not a deprioritise filter for existing ones. |
 | How to use a specific tool | `../tools/<tool>/README.md` | Per-tool usage + parity notes. |
 | Repo layout, build/test commands, deps policy | [`../CLAUDE.md`](../CLAUDE.md) | The orientation doc for contributors and AI agents. |
@@ -48,12 +48,6 @@ testing, and documentation roles, plus a
 **deprecated** — MCP servers are not being built (the project ships drop-in
 POSIX CLIs instead); see
 [`../.github/agents/mcp-server-agent.md`](../.github/agents/mcp-server-agent.md).
-
-## Archived docs
-
-Point-in-time summaries that are kept for history (not current status) live in
-[`archive/`](archive/). Don't read them for "where are we now" — use
-`PROJECT_STATUS.md`.
 
 ## Documentation conventions
 
