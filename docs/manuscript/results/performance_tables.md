@@ -22,7 +22,7 @@ inter-quartile range; the 95% CI is a bootstrap on the wall ratio (H1a).
 | small | bedtools | `genomecov` | 23.6 ± 2.4 | 18.3 ± 0.4 | 0.77× | [0.72, 0.81] | 0.83 | slower |
 | small | bedtools | `sort` | 8.5 ± 2.3 | 6.3 ± 0.2 | 0.73× | [0.60, 0.80] | 0.84 | slower |
 | small | bedtools | `merge` | 6.4 ± 1.0 | 3.6 ± 0.8 | 0.57× | [0.28, 1.11] | 0.73 | slower |
-| small | samtools | `sort` | 226.8 ± 1.2 | 292.2 ± 1.9 | 1.29× | [1.27, 1.30] | 1.29 | faster |
+| small | samtools | `sort` | 186.1 ± 1.9 | 284.4 ± 12.7 | 1.53× | [1.49, 1.72] | 1.52 | faster |
 | small | samtools | `view (bam$\to$bam)` | 245.4 ± 3.7 | 310.2 ± 11.9 | 1.26× | [1.14, 1.39] | 1.30 | faster |
 | small | samtools | `view (bam$\to$cram)` | 154.4 ± 9.4 | 184.2 ± 3.3 | 1.19× | [1.13, 1.27] | 0.48 | faster |
 | small | samtools | `stats` | 146.5 ± 0.8 | 119.3 ± 4.5 | 0.81× | [0.62, 0.85] | 0.76 | slower |
@@ -48,7 +48,7 @@ inter-quartile range; the 95% CI is a bootstrap on the wall ratio (H1a).
 | medium | bedtools | `genomecov` | 252.4 ± 6.2 | 246.9 ± 1.9 | 0.98× | [0.94, 0.99] | 0.99 | par |
 | medium | bedtools | `sort` | 36.6 ± 3.8 | 30.7 ± 0.4 | 0.84× | [0.77, 0.89] | 0.92 | slower |
 | medium | bedtools | `merge` | 16.3 ± 1.2 | 11.2 ± 0.2 | 0.69× | [0.65, 0.74] | 0.73 | slower |
-| medium | samtools | `sort` | 1741.7 ± 5.3 | 2435.6 ± 16.4 | 1.40× | [1.28, 1.45] | 1.36 | faster |
+| medium | samtools | `sort` | 1492.2 ± 307.9 | 2497.3 ± 36.9 | 1.67× | [1.35, 1.75] | 1.62 | faster |
 | medium | samtools | `view (bam$\to$bam)` | 1947.6 ± 88.3 | 2599.6 ± 52.0 | 1.33× | [1.28, 1.39] | 1.38 | faster |
 | medium | samtools | `view (bam$\to$cram)` | 714.0 ± 33.1 | 849.3 ± 58.1 | 1.19× | [1.09, 1.28] | 0.30 | faster |
 | medium | samtools | `stats` | 1142.5 ± 24.1 | 877.9 ± 5.3 | 0.77× | [0.76, 0.78] | 0.77 | slower |
@@ -75,8 +75,8 @@ inter-quartile range; the 95% CI is a bootstrap on the wall ratio (H1a).
 | large | bedtools | `sort` | 181.9 ± 5.7 | 183.7 ± 1.8 | 1.01× | [0.99, 1.06] | 0.80 | par |
 | large | bedtools | `merge` | 98.9 ± 13.3 | 64.8 ± 0.1 | 0.66× | [0.61, 0.72] | 0.70 | slower |
 | large | samtools | `view (bam$\to$bam)` | 15674.9 ± 255.6 | 22085.0 ± 218.4 | 1.41× | [1.38, 1.45] | 1.44 | faster |
+| large | samtools | `sort` | 29540.3 ± 4901.1 | 35724.6 ± 1393.4 | 1.21× | [0.94, 1.38] | 1.23 | faster |
 | large | samtools | `view (bam$\to$cram)` | 5788.4 ± 63.0 | 6856.5 ± 11.9 | 1.18× | [1.17, 1.20] | 0.28 | faster |
-| large | samtools | `sort` | 31743.8 ± 2920.9 | 34595.7 ± 33.0 | 1.09× | [0.93, 1.10] | 1.08 | par |
 | large | samtools | `view (cram$\to$bam)` | 29442.7 ± 212.4 | 22710.3 ± 430.1 | 0.77× | [0.76, 0.80] | 0.68 | slower |
 | large | samtools | `flagstat` | 3338.0 ± 16.4 | 2543.7 ± 18.4 | 0.76× | [0.75, 0.77] | 0.76 | slower |
 | large | samtools | `stats` | 9626.0 ± 119.3 | 7278.5 ± 26.9 | 0.76× | [0.75, 0.77] | 0.76 | slower |
