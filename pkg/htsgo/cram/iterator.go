@@ -35,11 +35,22 @@ type RecordReader struct {
 	// pending holds records decoded from the current slice that have not
 	// yet been returned by Read; a slice is decoded in one shot so that
 	// its interleaved data series are read in a single consistent pass.
+	// Only ONE slice's records are held at a time — refilling overwrites the
+	// buffer (pending[:0]) so the prior slice's records are released, keeping
+	// the live working set to a single slice rather than a whole container.
 	pending []*sam.Record
 	// next is the index of the next pending record to return.
 	next int
 	// done is set once the stream is exhausted.
 	done bool
+
+	// curDC is the data container currently being streamed slice-by-slice;
+	// nil before the first refill and once the stream is exhausted.
+	curDC *DataContainer
+	// curDCIndex is curDC's structural container index, kept for error context.
+	curDCIndex int
+	// curSliceIdx is the index of the next slice to decode within curDC.
+	curSliceIdx int
 	// needsReference is set once any decoded record reached a base an
 	// external reference would supply.
 	needsReference bool
@@ -269,17 +280,44 @@ func (rr *RecordReader) ReadAll() ([]*sam.Record, error) {
 	}
 }
 
-// fillNextSlice advances to the next data container's next slice and
-// decodes all of its records into the pending buffer. It skips
-// non-data containers (the file-header container is already consumed)
-// and sets done at end of stream.
+// fillNextSlice decodes exactly ONE slice into the pending buffer, advancing
+// through the current data container's slices across successive calls and
+// moving on to the next container when the current one is exhausted. Decoding a
+// single slice per refill — rather than a whole container — keeps the live
+// working set bounded to one slice of fat sam.Records: the next refill
+// overwrites pending (pending[:0]), releasing the prior slice's records.
+//
+// It skips non-data containers (the file-header container is already consumed)
+// and sets done at end of stream. Record order is byte-identical to the
+// whole-container path: containers in file order, slices in index order
+// (0,1,2,…), records within a slice in order — exactly as decodeContainerInto
+// produced. Empty slices (a slice that decodes to zero records, rare) are
+// skipped transparently: the loop simply advances to the next slice/container
+// until it has records or reaches EOF.
 func (rr *RecordReader) fillNextSlice() error {
 	rr.pending = rr.pending[:0]
 	rr.next = 0
 	for {
+		// If a container is mid-stream, emit its next slice.
+		if rr.curDC != nil && rr.curSliceIdx < len(rr.curDC.Slices) {
+			si := rr.curSliceIdx
+			recs, err := rr.decodeSlice(rr.curDC.Compression, rr.curDC.Slices[si], rr.curDCIndex, si)
+			if err != nil {
+				rr.done = true
+				return err
+			}
+			rr.curSliceIdx++
+			rr.pending = append(rr.pending, recs...)
+			if len(rr.pending) > 0 {
+				return nil
+			}
+			continue // an empty slice — advance to the next one.
+		}
+		// The current container is exhausted (or there is none): read the next.
 		c, err := rr.rd.Next()
 		if err == io.EOF {
 			rr.done = true
+			rr.curDC = nil
 			return nil
 		}
 		if err != nil {
@@ -289,14 +327,15 @@ func (rr *RecordReader) fillNextSlice() error {
 		if len(c.Blocks) == 0 || c.Blocks[0].ContentType != ContentCompressionHeader {
 			continue // a non-data container; keep looking.
 		}
-		if err := rr.decodeContainerInto(c, &rr.pending); err != nil {
+		dc, err := ParseDataContainer(c)
+		if err != nil {
 			rr.done = true
-			return err
+			return wrapf(err, "container %d", c.Index)
 		}
-		if len(rr.pending) > 0 {
-			return nil
-		}
-		// A container whose slices held no records (rare) — keep reading.
+		rr.curDC = dc
+		rr.curDCIndex = c.Index
+		rr.curSliceIdx = 0
+		// Loop again: the first branch now decodes slice 0.
 	}
 }
 

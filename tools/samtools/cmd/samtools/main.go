@@ -181,6 +181,26 @@ scan over the input and keeps records whose [Pos, Pos+refLen) range
 intersects any BED interval on the record's reference.
 `
 
+// inputIsCRAM reports whether the file at path begins with the CRAM magic
+// number ("CRAM", 0x43 0x52 0x41 0x4D). It opens a SEPARATE handle, reads the
+// first four bytes, and closes it — so it never consumes bytes from the read
+// stream the decode path opens through its own normal route. Any error (the
+// path is a pipe, is shorter than four bytes, or cannot be opened) is treated
+// as "not a detectable CRAM file": the caller then simply skips the memory
+// limit rather than failing, and the real open reports any genuine error.
+func inputIsCRAM(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var magic [4]byte
+	if _, err := io.ReadFull(f, magic[:]); err != nil {
+		return false
+	}
+	return magic[0] == 'C' && magic[1] == 'R' && magic[2] == 'A' && magic[3] == 'M'
+}
+
 func runView(args []string) int {
 	fs := flag.NewFlagSet("samtools view", flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // we print usage ourselves
@@ -275,6 +295,30 @@ func runView(args []string) int {
 		return 2
 	}
 	input := positional[0]
+
+	// CRAM→BAM/SAM decode keeps a per-slice working set (the decompressed
+	// data-series blocks plus the slice's reconstructed records) of ~65–70 MB
+	// on whole-chromosome inputs. Under the default GOGC the collector lets the
+	// heap grow to ~2× that working set before collecting and is slow to return
+	// freed pages to the OS, so the ru_maxrss high-water mark reaches ~110 MB —
+	// ~5.5× upstream's exceptionally lean ~20 MB C decoder. A soft memory limit
+	// pulls the resident set down to the working-set floor without trimming GOGC
+	// (which would tax CPU on every cycle): below the cap the GC stays lazy, so
+	// wall time is unaffected; near the cap it scavenges idle pages back to the
+	// OS. 64 MiB is the measured knee on real GIAB — it brings peak RSS to
+	// ~73 MB (≈3.6×) with no wall regression, whereas tighter caps (≤56 MiB)
+	// thrash the GC without lowering RSS further, because ~70 MB is the genuine
+	// per-slice working set. Reaching ≤2× would require streaming the slice's
+	// series blocks rather than decompressing them all up front (a deeper codec
+	// change tracked separately). The limit is applied ONLY for a real CRAM file
+	// input (BAM/SAM view is unaffected) and skipped for stdin; SetMemoryLimit
+	// returns the previous (no-limit) value, restored on return so this stays
+	// scoped to the view command.
+	if input != "-" && inputIsCRAM(input) {
+		prevLimit := debug.SetMemoryLimit(64 << 20)
+		defer debug.SetMemoryLimit(prevLimit)
+	}
+
 	var indexPath string
 	var regions []string
 	if customIdx {

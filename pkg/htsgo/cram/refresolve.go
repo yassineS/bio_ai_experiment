@@ -39,8 +39,13 @@ type referenceResolver struct {
 
 // refWindowSize bounds the reference window the decoder holds resident: each
 // FASTA fetch reads at least this many bases starting at the slice, so adjacent
-// slices reuse it, but a whole human chromosome (~250 MB) is never loaded.
-const refWindowSize = 8 << 20 // 8 MiB
+// slices reuse it, but a whole human chromosome (~250 MB) is never loaded. A
+// slice spans only tens of kb (far less than this window), so a run of
+// adjacent coordinate-sorted slices still reuses one fetch; the window only
+// bounds how many bases are read ahead, never which bases a span returns, so
+// reconstructed SEQ/MD/NM are unchanged. Trimmed from 8 MiB to 2 MiB to shave
+// ~6 MiB of fixed resident overhead off CRAM->BAM decode RSS.
+const refWindowSize = 2 << 20 // 2 MiB
 
 // hasSource reports whether the resolver can supply any reference at
 // all. A resolver with no FASTA, REF_CACHE or custom source behaves as

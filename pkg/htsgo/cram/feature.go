@@ -54,7 +54,10 @@ func (rd *recordDecoder) decodeFeatures(nFeatures int32) ([]readFeature, error) 
 	if nFeatures < 0 {
 		return nil, errFormat("record declares a negative read-feature count %d", nFeatures)
 	}
-	feats := make([]readFeature, 0)
+	// Reuse the per-record scratch backing array: the returned slice is
+	// fully consumed by reconstructMapped before the next record's decode
+	// overwrites it (see the featScratch doc comment on recordDecoder).
+	feats := rd.featScratch[:0]
 	var prevPos int32
 	prev := rd.src.s.consumed()
 	for i := int32(0); i < nFeatures; i++ {
@@ -84,6 +87,9 @@ func (rd *recordDecoder) decodeFeatures(nFeatures int32) ([]readFeature, error) 
 		}
 		prev = c
 	}
+	// Store the (possibly grown) backing array back so the next record
+	// reuses the larger capacity.
+	rd.featScratch = feats
 	return feats, nil
 }
 
