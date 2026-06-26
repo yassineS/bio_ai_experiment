@@ -10,7 +10,8 @@ name: CI
 # manually dispatched (Actions tab → "Run workflow"). Re-enable by restoring the
 # `push:` / `pull_request:` blocks once the work settles. The jobs themselves are
 # green — the only standing failure was markdown lint over the auto-generated
-# docs/manuscript/results/ reports, now excluded from the lint globs below.
+# bench/validation reports (docs/manuscript/results/ and pipeline/.fixtures/),
+# machine output rather than prose, now excluded from the lint globs below.
 
 on:
   workflow_dispatch:
@@ -176,6 +177,7 @@ jobs:
             **/*.md
             !reference_code
             !docs/manuscript/results
+            !pipeline/.fixtures
 
   # Independent re-execution of the byte-exact parity suite against freshly built
   # upstream binaries. This is the canonical, non-self-reported validation the
