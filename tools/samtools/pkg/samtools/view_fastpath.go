@@ -44,6 +44,40 @@ func samFastPathEligible(opts *ViewOptions) bool {
 	return true
 }
 
+// rawAuxBAMSinkEligible reports whether the CRAM→BAM decode may use the
+// memory-lean raw-aux passthrough: the CRAM decoder builds each record's aux as
+// a raw on-disk BAM aux byte block (sam.Record.RawAux) that the BAM writer emits
+// verbatim, so the heavier []sam.Aux is never materialised.
+//
+// It is eligible only when the sink is a BAM writer AND nothing on the path
+// reads a record's aux fields. The aux-reading touch points are the read-group
+// filter (-r/-R, which calls GetAux("RG")) and the -d/-D tag filters (which read
+// the tag value); every other view filter (flag/MAPQ/region/BED/-N qname/-s
+// subsample) is decided from non-aux fields. A SAM text or CRAM sink reads the
+// decoded aux to re-serialise it, so those are excluded. Count mode writes no
+// records and gains nothing, so it stays on the eager path too. When unsure the
+// predicate errs OFF, leaving today's eager behaviour and its byte output
+// unchanged. The mode is a no-op for non-CRAM input (the BAM/SAM readers never
+// set RawAux), so this only ever engages on the CRAM→BAM path.
+func rawAuxBAMSinkEligible(opts *ViewOptions) bool {
+	if opts.OutputCRAM {
+		return false
+	}
+	if !opts.OutputBAM && !opts.Uncompressed {
+		return false // SAM text or any non-BAM sink reads the decoded aux.
+	}
+	if opts.Count {
+		return false // counting writes no records; no passthrough benefit.
+	}
+	if opts.ReadGroup != "" || len(opts.ReadGroupSet) > 0 {
+		return false // -r/-R reads RG via GetAux.
+	}
+	if len(opts.TagFilters) > 0 {
+		return false // -d/-D reads aux tag values.
+	}
+	return true
+}
+
 // fastRegionPredicate builds a region-overlap test over the cheaply decoded
 // FastFields, keyed on the raw refID so no header name lookup is needed. It
 // returns nil when no regions are configured (meaning "keep all"); otherwise a

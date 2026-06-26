@@ -42,6 +42,10 @@ func (sw *SAMWriter) Write(rec *Record) error {
 	if !sw.headerDone {
 		sw.headerDone = true // allow header-less output
 	}
+	// Defensive lazy guard: the CRAM→BAM passthrough may set RawAux instead of
+	// Aux. Text SAM needs the decoded fields, so materialise them on demand.
+	// This is a no-op for the common case where Aux is already set.
+	rec.materialiseAux()
 	if _, err := sw.bw.WriteString(rec.QName); err != nil {
 		return err
 	}

@@ -306,10 +306,20 @@ func (bw *BAMWriter) encodeRecord(rec *Record) ([]byte, error) {
 		buf.Write(pad)
 	}
 
-	// AUX.
-	for _, a := range rec.Aux {
-		if err := encodeBAMAux(buf, a); err != nil {
-			return nil, err
+	// AUX. When the record carries a raw on-disk aux byte block (the CRAM→BAM
+	// view passthrough), it is already in BAM aux binary layout — write it
+	// verbatim, contributing len(rec.RawAux) to the record body and therefore to
+	// the block_size prefix Write/encodeRecord computes from the returned slice.
+	// The bytes are byte-for-byte what re-encoding the equivalent []Aux through
+	// the loop below would produce, so the on-disk record is identical to the
+	// eager path. Otherwise serialise each decoded Aux field as before.
+	if rec.RawAux != nil {
+		buf.Write(rec.RawAux)
+	} else {
+		for _, a := range rec.Aux {
+			if err := encodeBAMAux(buf, a); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return buf.Bytes(), nil
@@ -493,6 +503,145 @@ func writeBAMIntCompact(buf *bytes.Buffer, v int64) {
 		var b [4]byte
 		binary.LittleEndian.PutUint32(b[:], uint32(int32(v)))
 		buf.Write(b[:])
+	}
+}
+
+// AppendBAMAux appends one aux field to dst in BAM binary form and returns the
+// grown slice. The emitted bytes are byte-for-byte identical to what
+// encodeBAMAux writes for the same Aux: a 2-byte tag, a 1-byte BAM type letter,
+// then the value (with a generic 'i' aux narrowed to the smallest BAM integer
+// type by appendBAMIntCompact, exactly as the writer does). It is the shared
+// serialiser the BAM record writer and the CRAM→BAM raw-aux passthrough both
+// use, so a record decoded into a raw aux block is identical to one decoded
+// eagerly and re-encoded.
+func AppendBAMAux(dst []byte, a Aux) ([]byte, error) {
+	if len(a.Tag) != 2 {
+		return dst, fmt.Errorf("sam: aux tag must be 2 chars, got %q", a.Tag)
+	}
+	dst = append(dst, a.Tag[0], a.Tag[1])
+	switch a.Type {
+	case 'A':
+		s, _ := a.Value.(string)
+		if len(s) >= 1 {
+			dst = append(dst, 'A', s[0])
+		} else {
+			dst = append(dst, 'A', 0)
+		}
+	case 'c':
+		v, _ := a.Value.(int64)
+		dst = append(dst, 'c', byte(int8(v)))
+	case 'C':
+		v, _ := a.Value.(int64)
+		dst = append(dst, 'C', byte(v))
+	case 's':
+		v, _ := a.Value.(int64)
+		var b [2]byte
+		binary.LittleEndian.PutUint16(b[:], uint16(int16(v)))
+		dst = append(dst, 's', b[0], b[1])
+	case 'S':
+		v, _ := a.Value.(int64)
+		var b [2]byte
+		binary.LittleEndian.PutUint16(b[:], uint16(v))
+		dst = append(dst, 'S', b[0], b[1])
+	case 'i':
+		v, _ := a.Value.(int64)
+		// Choose the most compact integer encoding when writing from a
+		// generic 'i' aux to keep BAM files small.
+		dst = appendBAMIntCompact(dst, v)
+	case 'I':
+		v, _ := a.Value.(int64)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(v))
+		dst = append(dst, 'I', b[0], b[1], b[2], b[3])
+	case 'f':
+		v, _ := a.Value.(float64)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], math.Float32bits(float32(v)))
+		dst = append(dst, 'f', b[0], b[1], b[2], b[3])
+	case 'Z':
+		s, _ := a.Value.(string)
+		dst = append(dst, 'Z')
+		dst = append(dst, s...)
+		dst = append(dst, 0)
+	case 'H':
+		s, _ := a.Value.(string)
+		dst = append(dst, 'H')
+		dst = append(dst, s...)
+		dst = append(dst, 0)
+	case 'B':
+		dst = append(dst, 'B', a.ArrayType)
+		var sz [4]byte
+		binary.LittleEndian.PutUint32(sz[:], uint32(len(a.ArrayValues)))
+		dst = append(dst, sz[0], sz[1], sz[2], sz[3])
+		for _, v := range a.ArrayValues {
+			switch a.ArrayType {
+			case 'c':
+				n, _ := v.(int64)
+				dst = append(dst, byte(int8(n)))
+			case 'C':
+				n, _ := v.(int64)
+				dst = append(dst, byte(n))
+			case 's':
+				n, _ := v.(int64)
+				var b [2]byte
+				binary.LittleEndian.PutUint16(b[:], uint16(int16(n)))
+				dst = append(dst, b[0], b[1])
+			case 'S':
+				n, _ := v.(int64)
+				var b [2]byte
+				binary.LittleEndian.PutUint16(b[:], uint16(n))
+				dst = append(dst, b[0], b[1])
+			case 'i':
+				n, _ := v.(int64)
+				var b [4]byte
+				binary.LittleEndian.PutUint32(b[:], uint32(int32(n)))
+				dst = append(dst, b[0], b[1], b[2], b[3])
+			case 'I':
+				n, _ := v.(int64)
+				var b [4]byte
+				binary.LittleEndian.PutUint32(b[:], uint32(n))
+				dst = append(dst, b[0], b[1], b[2], b[3])
+			case 'f':
+				f, _ := v.(float64)
+				var b [4]byte
+				binary.LittleEndian.PutUint32(b[:], math.Float32bits(float32(f)))
+				dst = append(dst, b[0], b[1], b[2], b[3])
+			default:
+				return dst, fmt.Errorf("sam: unsupported B array subtype %q", a.ArrayType)
+			}
+		}
+	default:
+		return dst, fmt.Errorf("sam: unknown aux type %q", a.Type)
+	}
+	return dst, nil
+}
+
+// appendBAMIntCompact appends an integer aux value using the smallest BAM
+// integer type that can hold it, returning the grown slice. It is the
+// byte-slice analogue of the writer's compact-integer rule and emits identical
+// bytes.
+func appendBAMIntCompact(dst []byte, v int64) []byte {
+	switch {
+	case v >= 0 && v <= 0xff:
+		return append(dst, 'C', byte(v))
+	case v >= -128 && v < 0:
+		return append(dst, 'c', byte(int8(v)))
+	case v >= 0 && v <= 0xffff:
+		var b [2]byte
+		binary.LittleEndian.PutUint16(b[:], uint16(v))
+		return append(dst, 'S', b[0], b[1])
+	case v >= -32768 && v < 0:
+		var b [2]byte
+		binary.LittleEndian.PutUint16(b[:], uint16(int16(v)))
+		return append(dst, 's', b[0], b[1])
+	case v >= 0 && v <= 0xffffffff:
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(v))
+		return append(dst, 'I', b[0], b[1], b[2], b[3])
+	default:
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(int32(v)))
+		return append(dst, 'i', b[0], b[1], b[2], b[3])
 	}
 }
 

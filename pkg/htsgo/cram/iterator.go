@@ -68,6 +68,31 @@ type RecordReader struct {
 	threads int
 	par     *parallelDriver
 	refMu   sync.Mutex
+
+	// rawAuxBAMSink, when true, switches every per-record decode to build the
+	// record's aux fields as a raw on-disk BAM aux byte block (sam.Record.RawAux)
+	// instead of the eager []sam.Aux slice, leaving rec.Aux nil. It is an opt-in
+	// memory-lean mode the CRAM→BAM view path turns on (via SetRawAuxBAMSink)
+	// only when nothing in the consumer reads rec.Aux and the sink is a BAM
+	// writer that emits RawAux verbatim. Default false: the eager aux path is
+	// then used unchanged, byte-identical to the prior behaviour, for every
+	// other consumer (mpileup/stats/calmd/markdup/sort -t/SAM+CRAM writers).
+	rawAuxBAMSink bool
+}
+
+// SetRawAuxBAMSink toggles the memory-lean raw-aux decode mode. When enabled
+// (and called before the first Read), every decoded record carries its aux
+// fields as a raw on-disk BAM aux byte block in sam.Record.RawAux, with rec.Aux
+// left nil, so a BAM-output sink can write the bytes verbatim without ever
+// materialising the heavier []sam.Aux form. It MUST be enabled only when no
+// consumer on the path reads rec.Aux (no RG/-d/-D/aux-touching filter) and the
+// output is BAM. The default (false) leaves the eager aux path untouched and
+// byte-identical to the prior behaviour for every other consumer.
+func (rr *RecordReader) SetRawAuxBAMSink(on bool) {
+	if rr.next > 0 || rr.done || rr.par != nil {
+		return
+	}
+	rr.rawAuxBAMSink = on
 }
 
 // NewRecordReader reads the CRAM file definition and the embedded SAM
@@ -387,6 +412,7 @@ func (rr *RecordReader) decodeSlice(h *CompressionHeader, sl *Slice, containerId
 		return nil, wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
 	}
 	dec.namePrefix = rr.namePrefix
+	dec.rawAuxBAMSink = rr.rawAuxBAMSink
 	recs, suppress, err := dec.decodeSliceRecords(sl.Header.NumRecords)
 	if err != nil {
 		return nil, wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
@@ -470,6 +496,14 @@ func regenerateMDNM(recs []*sam.Record, suppress []mdnmSuppress, refBases []byte
 		if i < len(suppress) {
 			sup = suppress[i]
 		}
+		// The raw-aux view passthrough (rec.RawAux set, rec.Aux nil) regenerates
+		// MD/NM as raw BAM aux bytes spliced before a trailing RG, byte-identical
+		// to the eager struct splice below — see regenerateMDNMRaw. Branching here
+		// keeps the common eager path literally unchanged.
+		if rec.RawAux != nil {
+			regenerateMDNMRaw(rec, sup, refBases, refOffset)
+			continue
+		}
 		// Direct linear scan over the (small, <=~12-tag) aux list rather than
 		// rec.GetAux, which builds and discards an aux-index map per record;
 		// this path runs for every mapped record of every slice (~10k/slice),
@@ -502,6 +536,55 @@ func regenerateMDNM(recs []*sam.Record, suppress []mdnmSuppress, refBases []byte
 		rec.Aux = insertBeforeTrailingRG(rec.Aux, add)
 		rec.InvalidateAuxIndex()
 	}
+}
+
+// regenerateMDNMRaw regenerates MD:Z/NM:i for one mapped record on the raw-aux
+// view passthrough (rec.RawAux set, rec.Aux nil). It mirrors the eager path in
+// regenerateMDNM byte-for-byte: it scans rec.RawAux for an existing MD/NM tag
+// (without decoding any value) and applies the same cF-suppression gate, then —
+// when a tag is wanted — computes it and splices the raw MD/NM bytes in just
+// before a trailing data-series RG, preserving the MD<NM<RG byte order
+// insertBeforeTrailingRG produces for structs. The MD/NM bytes are serialised
+// through the shared sam.AppendBAMAux, so they equal what the eager struct path
+// would emit through encodeBAMAux for the same values.
+func regenerateMDNMRaw(rec *sam.Record, sup mdnmSuppress, refBases []byte, refOffset int) {
+	hasMD, hasNM, rgStart, err := sam.WalkRawAux(rec.RawAux)
+	if err != nil {
+		return // a malformed block is left untouched, as the eager path would not splice it either.
+	}
+	wantMD := !hasMD && !sup.md
+	wantNM := !hasNM && !sup.nm
+	if !wantMD && !wantNM {
+		return
+	}
+	md, nm := mdnm.Compute(rec, refBases, refOffset)
+	var add []byte
+	if wantMD {
+		add, _ = sam.AppendBAMAux(add, sam.Aux{Tag: "MD", Type: 'Z', Value: md})
+	}
+	if wantNM {
+		add, _ = sam.AppendBAMAux(add, sam.Aux{Tag: "NM", Type: 'i', Value: int64(nm)})
+	}
+	if len(add) == 0 {
+		return
+	}
+	rec.RawAux = spliceRawBeforeRG(rec.RawAux, add, rgStart)
+}
+
+// spliceRawBeforeRG returns raw with add inserted at rgStart (the byte offset of
+// a trailing data-series RG), or appended at the end when rgStart < 0 (no
+// trailing RG). It is the raw-bytes analogue of insertBeforeTrailingRG, placing
+// the regenerated MD/NM ahead of the data-series RG exactly as the eager struct
+// splice does.
+func spliceRawBeforeRG(raw, add []byte, rgStart int) []byte {
+	if rgStart < 0 || rgStart > len(raw) {
+		return append(raw, add...)
+	}
+	out := make([]byte, 0, len(raw)+len(add))
+	out = append(out, raw[:rgStart]...)
+	out = append(out, add...)
+	out = append(out, raw[rgStart:]...)
+	return out
 }
 
 // insertBeforeTrailingRG returns aux with add spliced in immediately before a

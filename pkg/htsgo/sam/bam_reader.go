@@ -697,6 +697,116 @@ func decodeBAMAux(buf []byte) ([]Aux, error) {
 	return decodeBAMAuxInto(nil, buf)
 }
 
+// DecodeBAMAux parses a raw on-disk BAM aux byte block (the form carried by
+// Record.RawAux) into a fresh []Aux. It is the inverse of serialising a []Aux
+// through AppendBAMAux: re-encoding the result reproduces buf byte-for-byte
+// (modulo the canonical compact-integer choice the writer would also make). It
+// is the exported entry point for callers that hold a raw aux block and need the
+// decoded fields.
+func DecodeBAMAux(buf []byte) ([]Aux, error) {
+	return decodeBAMAuxInto(nil, buf)
+}
+
+// rawAuxStep returns the total byte length of one aux entry at the start of buf
+// (the 3-byte tag+type header plus the value), so a caller can walk a raw BAM
+// aux block tag by tag without decoding any values. It returns an error when the
+// entry is truncated or its type byte is unknown.
+func rawAuxStep(buf []byte) (int, error) {
+	if len(buf) < 3 {
+		return 0, fmt.Errorf("sam: truncated aux header")
+	}
+	typ := buf[2]
+	rest := buf[3:]
+	switch typ {
+	case 'A', 'c', 'C':
+		if len(rest) < 1 {
+			return 0, fmt.Errorf("sam: truncated aux value")
+		}
+		return 4, nil
+	case 's', 'S':
+		if len(rest) < 2 {
+			return 0, fmt.Errorf("sam: truncated aux value")
+		}
+		return 5, nil
+	case 'i', 'I', 'f':
+		if len(rest) < 4 {
+			return 0, fmt.Errorf("sam: truncated aux value")
+		}
+		return 7, nil
+	case 'Z', 'H':
+		end := bytes.IndexByte(rest, 0)
+		if end < 0 {
+			return 0, fmt.Errorf("sam: unterminated aux 'Z'/'H'")
+		}
+		return 3 + end + 1, nil
+	case 'B':
+		if len(rest) < 5 {
+			return 0, fmt.Errorf("sam: truncated aux 'B' header")
+		}
+		sub := rest[0]
+		count := int(binary.LittleEndian.Uint32(rest[1:5]))
+		var elemSize int
+		switch sub {
+		case 'c', 'C':
+			elemSize = 1
+		case 's', 'S':
+			elemSize = 2
+		case 'i', 'I', 'f':
+			elemSize = 4
+		default:
+			return 0, fmt.Errorf("sam: unknown aux 'B' subtype %q", sub)
+		}
+		need := count * elemSize
+		if len(rest) < 5+need {
+			return 0, fmt.Errorf("sam: truncated aux 'B' body")
+		}
+		return 3 + 5 + need, nil
+	default:
+		return 0, fmt.Errorf("sam: unknown aux type %q", typ)
+	}
+}
+
+// WalkRawAux scans a raw on-disk BAM aux byte block without decoding any value.
+// It reports whether the block carries an MD tag and an NM tag, and the byte
+// offset at which a trailing data-series RG tag begins (or -1 when the final tag
+// is not RG). It is used by the CRAM→BAM raw-aux MD/NM regeneration to decide
+// what to splice and where, mirroring the eager path's struct scan
+// (regenerateMDNM) and trailing-RG splice (insertBeforeTrailingRG) but operating
+// on raw bytes so no []Aux is materialised. It returns an error only when the
+// block is malformed.
+func WalkRawAux(buf []byte) (hasMD, hasNM bool, trailingRGStart int, err error) {
+	trailingRGStart = -1
+	off := 0
+	for off < len(buf) {
+		if len(buf)-off < 3 {
+			return false, false, -1, fmt.Errorf("sam: truncated aux header")
+		}
+		t0, t1 := buf[off], buf[off+1]
+		step, serr := rawAuxStep(buf[off:])
+		if serr != nil {
+			return false, false, -1, serr
+		}
+		isRG := t0 == 'R' && t1 == 'G'
+		if t0 == 'M' && t1 == 'D' {
+			hasMD = true
+		}
+		if t0 == 'N' && t1 == 'M' {
+			hasNM = true
+		}
+		// Record the start of this tag if it is RG; the loop overwrites it for
+		// every RG, but since the data-series RG is always the final tag the
+		// last write is the trailing-RG offset. Reset to -1 when a non-RG tag
+		// follows so only a genuinely trailing RG is reported.
+		if isRG {
+			trailingRGStart = off
+		} else {
+			trailingRGStart = -1
+		}
+		off += step
+	}
+	return hasMD, hasNM, trailingRGStart, nil
+}
+
 // FindRawAuxTag walks the binary aux stream in buf and decodes ONLY the entry
 // whose 2-char tag equals tag, returning it and true. It stops at the first
 // match without decoding the rest of the stream, so callers that compare a

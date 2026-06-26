@@ -508,6 +508,12 @@ func (rw *RecordWriter) Write(rec *sam.Record) error {
 	if rec == nil {
 		return fmt.Errorf("cram: cannot write a nil record")
 	}
+	// Defensive lazy guard: the CRAM→BAM decode passthrough may hand the writer
+	// a record carrying RawAux instead of a decoded Aux slice (it should not on
+	// the gated path, but the writer buffers the pointer and reads .Aux below /
+	// at encode time, so materialise the aux fields here so correctness never
+	// depends on the gate). A no-op when Aux is already set.
+	rec.MaterialiseAux()
 	if err := rw.checkRecord(rec); err != nil {
 		return err
 	}
