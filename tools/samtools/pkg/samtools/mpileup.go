@@ -108,30 +108,6 @@ func MpileupFile(opts MpileupOptions, out io.Writer) error {
 		return fmt.Errorf("samtools mpileup: no input files")
 	}
 
-	// Open inputs.
-	readers := make([]sam.Reader, len(opts.Inputs))
-	closers := make([]io.Closer, len(opts.Inputs))
-	for i, path := range opts.Inputs {
-		f, err := openSeekable(path)
-		if err != nil {
-			closeAll(closers)
-			return fmt.Errorf("samtools mpileup: %w", err)
-		}
-		closers[i] = f
-		rd, err := alnio.NewReader(f)
-		if err != nil {
-			closeAll(closers)
-			return fmt.Errorf("samtools mpileup: %s: %w", path, err)
-		}
-		readers[i] = rd
-	}
-	defer closeAll(closers)
-	// BAI seek is left to a future PR (matches upstream view semantics):
-	// the linear-scan path here is byte-for-byte equivalent because the
-	// downstream pileup is a post-filter against region.ResolveRegions. The
-	// region-via-BAI fast path is tracked in
-	// docs/PARITY_ROADMAP.md#samtools as a follow-up.
-
 	// Open the reference if given.
 	var refFA *fasta.RandomAccess
 	if opts.FastaRef != "" {
@@ -152,6 +128,44 @@ func MpileupFile(opts MpileupOptions, out io.Writer) error {
 		}
 		posFilter = pf
 	}
+
+	// Indexed region fast path: a single coordinate-sorted BAM restricted to
+	// -r regions and carrying a .csi/.bai index is read by seeking to the
+	// region's index chunks, so only the region's reads are decoded — matching
+	// upstream's indexed seek instead of linearly scanning a whole-genome BAM
+	// (which churned through every record). openBAMRegionReader returns nil for
+	// anything it cannot seek (no index, CRAM/SAM, unsorted), so the linear path
+	// below is the unchanged fallback. Output is identical: the streaming pileup
+	// still tiles the same region windows.
+	if len(opts.Inputs) == 1 && len(opts.Regions) > 0 && !opts.AllPositions && !opts.AllPositionsAllChroms {
+		rr, rerr := openBAMRegionReader(opts.Inputs[0], opts.Regions)
+		if rerr != nil {
+			return fmt.Errorf("samtools mpileup: %w", rerr)
+		}
+		if rr != nil {
+			defer rr.Close()
+			return runMpileup([]sam.Reader{rr}, out, opts, refFA, posFilter)
+		}
+	}
+
+	// Linear path: open every input through alnio (BAM/CRAM/SAM) and scan it.
+	readers := make([]sam.Reader, len(opts.Inputs))
+	closers := make([]io.Closer, len(opts.Inputs))
+	for i, path := range opts.Inputs {
+		f, err := openSeekable(path)
+		if err != nil {
+			closeAll(closers)
+			return fmt.Errorf("samtools mpileup: %w", err)
+		}
+		closers[i] = f
+		rd, err := alnio.NewReader(f)
+		if err != nil {
+			closeAll(closers)
+			return fmt.Errorf("samtools mpileup: %s: %w", path, err)
+		}
+		readers[i] = rd
+	}
+	defer closeAll(closers)
 
 	return runMpileup(readers, out, opts, refFA, posFilter)
 }
