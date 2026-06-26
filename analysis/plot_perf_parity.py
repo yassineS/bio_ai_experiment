@@ -110,15 +110,34 @@ def shade(hexc, amt):
     return (r * (1 + amt), g * (1 + amt), b * (1 + amt))
 
 
+# x-offset (in axis-fraction coords, via get_yaxis_transform) for the rotated
+# tool-family band labels in the horizontal-bar figures. The formal theme's wide
+# left margin puts the subfunction tick labels well to the left of the axis, so
+# the band label has to sit further out (more negative) to clear them — otherwise
+# "samtools"/"bcftools"/… overlap the per-subfunction names.
+FAMILY_LABEL_X = -0.72
+
+
 def logticks(ax, which="x"):
     """Draw visible major+minor tick *marks* on a log axis (the formal theme
     suppresses them). Labels stay as the locators set them — only the marks come
-    back, so the sparse labelling is unchanged while the log decades stay legible."""
+    back, so the sparse labelling is unchanged while the log decades stay legible.
+
+    The formal "rabat" theme ships with ``xtick.minor.visible = False``; setting a
+    minor LogLocator alone is not guaranteed to force the minor *marks* on across
+    matplotlib versions, so we both flip minor visibility on explicitly and give
+    the marks a length/width/colour. Major marks are restored to a slightly
+    heavier weight than the theme default so the labelled decades read clearly."""
     axes = ("x", "y") if which == "both" else (which,)
     for a in axes:
-        ax.tick_params(axis=a, which="major", length=4.5, width=0.9,
+        axis = ax.xaxis if a == "x" else ax.yaxis
+        # Force the minor marks on (theme default is off) without touching the
+        # minor *formatter* — the sparse label set the locators produce is kept.
+        axis.set_tick_params(which="minor", bottom=(a == "x"), top=(a == "x"),
+                             left=(a == "y"), right=(a == "y"))
+        ax.tick_params(axis=a, which="major", length=5.0, width=1.0,
                        color=COLOURS["gray_48"], direction="out")
-        ax.tick_params(axis=a, which="minor", length=2.5, width=0.6,
+        ax.tick_params(axis=a, which="minor", length=2.6, width=0.6,
                        color=COLOURS["gray_48"], direction="out")
 
 
@@ -230,7 +249,7 @@ def fig_speedup(cells):
         fam_rows[tool].append(yb)
     for tool, ys in fam_rows.items():
         ymid = sum(ys) / len(ys)
-        ax.text(-0.50, ymid, tool, transform=ax.get_yaxis_transform(),
+        ax.text(FAMILY_LABEL_X, ymid, tool, transform=ax.get_yaxis_transform(),
                 rotation=90, va="center", ha="center", fontsize=10,
                 fontweight="bold", color=TOOL_COLOUR[tool])   # match the bar hue
     for sy in sep:
@@ -243,10 +262,10 @@ def fig_speedup(cells):
     ax.legend(handles=handles, title="tier (shade)", loc="upper right", frameon=True,
               framealpha=0.95, edgecolor=COLOURS["gray_16"], fontsize=9,
               ncol=1, title_fontsize=9)
-    fig.subplots_adjust(left=0.42, right=0.97, bottom=0.07, top=0.91)
+    fig.subplots_adjust(left=0.47, right=0.97, bottom=0.07, top=0.91)
     mj.title_block(fig, "Per-subcommand speedup vs upstream",
                    "median over reps · 95% bootstrap CI · grouped by tool",
-                   left=0.42, tighten=False)
+                   left=0.47, tighten=False)
     for ext in ("pdf", "png"):
         fig.savefig(os.path.join(FIGS, f"fig_speedup.{ext}"), dpi=200)
     plt.close(fig)
@@ -310,7 +329,7 @@ def fig_memory(cells):
     for (tool, name), yb in zip(rows, ypos):
         fam_rows[tool].append(yb)
     for tool, ys in fam_rows.items():
-        ax.text(-0.50, sum(ys) / len(ys), tool, transform=ax.get_yaxis_transform(),
+        ax.text(FAMILY_LABEL_X, sum(ys) / len(ys), tool, transform=ax.get_yaxis_transform(),
                 rotation=90, va="center", ha="center", fontsize=10,
                 fontweight="bold", color=TOOL_COLOUR[tool])
     for sy in sep:
@@ -321,10 +340,10 @@ def fig_memory(cells):
     ax.legend(handles=handles, title="tier (shade)", loc="lower right", frameon=True,
               framealpha=0.95, edgecolor=COLOURS["gray_16"], fontsize=9,
               ncol=1, title_fontsize=9)
-    fig.subplots_adjust(left=0.42, right=0.97, bottom=0.07, top=0.91)
+    fig.subplots_adjust(left=0.47, right=0.97, bottom=0.07, top=0.91)
     mj.title_block(fig, "Per-subcommand peak memory vs upstream",
                    "peak RSS ratio · grouped by tool · < 1× = leaner than upstream",
-                   left=0.42, tighten=False)
+                   left=0.47, tighten=False)
     for ext in ("pdf", "png"):
         fig.savefig(os.path.join(FIGS, f"fig_memory.{ext}"), dpi=200)
     plt.close(fig)
@@ -594,6 +613,10 @@ def main():
     fig_scatter(cells)
     fig_compression()
     out = perf_table(cells) + parity_table()
+    # Drop any trailing blank lines so the file ends with a single newline
+    # (the section builders pad with a trailing "" — avoids markdownlint MD012).
+    while out and out[-1] == "":
+        out.pop()
     with open(os.path.join(RES, "performance_tables.md"), "w") as f:
         f.write("\n".join(out) + "\n")
     print("wrote performance_tables.md +", len([x for x in os.listdir(FIGS) if x.endswith(('.pdf', '.png'))]), "figure files")
