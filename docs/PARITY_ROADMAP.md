@@ -358,6 +358,26 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   accumulate-then-render pipeline (touches `mpileup_overlap.go` +
   `mpileup_pileup.go`'s `gapQual` capture), carrying real regression risk, so it
   is a deliberate follow-up, not folded into the `-Q` filter fix.
+- **`samtools sort` wall — IMPROVED (task #39); structural residual.** `sort -@4`
+  was ~3x upstream at matched memory. Profiling showed `sort.SliceStable`/heap/
+  comparator are negligible (<4%); the costs were excessive spilling (57 vs 4
+  shards), ~22% GC from per-record allocation churn, and a `-@4` threading
+  regression (each spill spawned a fresh parallel-BGZF pool while the sort never
+  parallelised). Fixed by a single-threaded spill writer (parallel writer
+  reserved for final output) + per-record encode/decode allocation pooling
+  (byte-identical): full `-@4` **3.06x → 2.36x**, subset `-@4` **12.25x →
+  4.39x**, peak RSS **0.78x** upstream, decoded records byte-identical.
+  **REMAINING (the path to ≤2x / ~1x):** ours decodes→re-encodes every record
+  through the Go BAM codec (interface-boxed `Aux`, GC) on every spill+merge
+  round-trip and uses the klauspost BGZF backend, whereas upstream copies packed
+  `bam1_t` arenas with no per-record decode. Closing the gap needs (a) a
+  **packed/arena spill format** that stores raw BAM bytes per shard (no
+  re-decode), and (b) a **parallel in-memory sort** (upstream's `sort_blocks`).
+  An interim attempt to scale the spill byte-budget by thread count was reverted
+  — a buffered Go `*sam.Record`'s real heap footprint is several times its
+  packed size, so it blew peak RSS to 2.01x for no wall gain; the byte budget is
+  not a safe RSS lever. Both remaining pieces are larger, higher-risk
+  restructures (touch the core sort/spill/merge loop), tracked here.
 - The large-tier heavy cells (`sam_mpileup`, `bcf_call`, `bcf_isec`) were
   mis-reported as OOM; that was **disk exhaustion** (a ~17 GB temp output on a
   5 GB-free overlay), not RAM — all three are bounded and run with a big-disk
