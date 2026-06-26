@@ -338,6 +338,26 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   a reference-based CRAM. Replicating upstream's auto-fallback would *change the
   emitted file* (embedded ref, no `M5`), so it is a deliberate behaviour-alignment
   decision, not a perf fix — tracked here, not folded into #33.
+- **`samtools mpileup` near-indel depth — LARGELY FIXED (task #36).** Deletion
+  `*` / ref-skip `>`/`<` placeholders bypassed the `-Q`/`--min-BQ` filter, so
+  depth was over-counted at indel flanks (region 20: 542 positions `-B`, 3200
+  BAQ-on, ours always higher). Now the filter applies to every pileup entry (the
+  placeholders already carry the post-gap base's quality, matching upstream's
+  `bam_get_qual[p->qpos]`): **−B 542 → 7 positions, BAQ-on 3200 → 2**, the
+  `20:126156` case byte-exact, region 20:30–31 Mb + `-Q 0` 0-diff, no new test
+  failures, RSS unchanged. **REMAINING (the residual 7/2 positions):** a separate,
+  pre-existing **overlap-removal streaming-order** divergence. `applyOverlapRemoval`
+  (`mpileup_overlap.go`) de-weights mate-pair overlaps EAGERLY over the whole
+  contig before accumulation, whereas htslib's `bam_plp` applies each pair's
+  `tweak_overlap_quality` incrementally as the later mate is pushed (at its ref
+  start), and the tweak both sums and zeroes qualities — so a deletion `*`
+  borrowing the post-gap base's quality needs an original-vs-tweaked value that
+  varies per column (a single `visibleFrom` threshold cannot express it; a naive
+  position-aware model was tried and regressed to baseline). Closing it requires
+  an incremental / position-aware overlap tweak — a restructure of the
+  accumulate-then-render pipeline (touches `mpileup_overlap.go` +
+  `mpileup_pileup.go`'s `gapQual` capture), carrying real regression risk, so it
+  is a deliberate follow-up, not folded into the `-Q` filter fix.
 - The large-tier heavy cells (`sam_mpileup`, `bcf_call`, `bcf_isec`) were
   mis-reported as OOM; that was **disk exhaustion** (a ~17 GB temp output on a
   5 GB-free overlay), not RAM — all three are bounded and run with a big-disk
