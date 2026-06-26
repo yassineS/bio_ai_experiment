@@ -307,23 +307,27 @@ r1	0	chr1	6	60	5M	*	0	0	ACGTA	II+II
 	}
 }
 
-func TestMpileup_IgnoreOverlaps_DropsOneHalf(t *testing.T) {
-	// Two paired reads (same QName) overlapping at chr1:10-12.
+func TestMpileup_OverlapRemoval_DefaultDeWeightsPair(t *testing.T) {
+	// Two proper-pair mates (same QName) overlapping at chr1:10-12.
 	sam := `@HD	VN:1.6
 @SQ	SN:chr1	LN:30
 @RG	ID:x
 pair	99	chr1	10	60	3M	=	10	5	ACG	III
 pair	147	chr1	10	60	3M	=	10	-5	ACG	III
 `
-	// Without -x: depth = 2 everywhere.
-	out := runMpileupOnSAM(t, []string{sam}, MpileupOptions{}, nil, nil)
-	if !strings.Contains(out, "\t2\t") {
-		t.Errorf("without -x expected depth=2:\n%s", out)
+	// DEFAULT (matching upstream): overlap detection de-weights the pair — one
+	// mate's overlapping bases are zeroed (and dropped by -Q), the other keeps
+	// the summed quality — so the fragment is counted once: depth 1. This is the
+	// opposite of the pre-fix behaviour, where overlap removal wrongly ran only
+	// under -x and never summed qualities.
+	out := runMpileupOnSAM(t, []string{sam}, MpileupOptions{MinBaseQ: DefaultMpileupMinBaseQ}, nil, nil)
+	if !strings.Contains(out, "\t1\t") {
+		t.Errorf("default expected depth=1 (overlap removed):\n%s", out)
 	}
-	// With -x: depth = 1 (one half of the pair is dropped).
-	out2 := runMpileupOnSAM(t, []string{sam}, MpileupOptions{IgnoreOverlaps: true}, nil, nil)
-	if !strings.Contains(out2, "\t1\t") {
-		t.Errorf("with -x expected depth=1:\n%s", out2)
+	// -x (--ignore-overlaps-removal) disables detection: both mates counted, depth 2.
+	out2 := runMpileupOnSAM(t, []string{sam}, MpileupOptions{MinBaseQ: DefaultMpileupMinBaseQ, IgnoreOverlaps: true}, nil, nil)
+	if !strings.Contains(out2, "\t2\t") {
+		t.Errorf("with -x expected depth=2 (overlap kept):\n%s", out2)
 	}
 }
 

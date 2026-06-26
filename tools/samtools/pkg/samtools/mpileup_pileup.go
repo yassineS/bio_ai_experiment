@@ -151,12 +151,9 @@ func emitMpileupWindow(bw *bufio.Writer, chrom string, beg0, end0, refLen int,
 		}
 	}
 
-	// Optionally remove overlapping mate-pair contributions (-x).
-	if opts.IgnoreOverlaps {
-		for i := 0; i < nIn; i++ {
-			dropOverlapEvents(events[i], perInputChromRecs[i])
-		}
-	}
+	// Mate-pair overlap removal is applied to the records' qualities before this
+	// per-tile accumulation (see runMpileup / runMpileupStreaming), matching
+	// htslib's bam_plp, so nothing is dropped here.
 
 	// Optionally fetch a reference slab so each line can carry the right
 	// refbase column. Empty when no FASTA was supplied (upstream emits 'N').
@@ -704,69 +701,6 @@ func accumulateRecordEvents(rec *sam.Record, readIdx, beg0, end0 int, evs [][]pi
 		}
 		evs[t.col] = append(evs[t.col], ev)
 	}
-}
-
-// dropOverlapEvents implements `-x / --ignore-overlaps`: when two records
-// with the same QName cover the same reference position (i.e. mate-pair
-// overlap), one half's events are masked. The convention matches upstream
-// `bam_plp_overlap`: keep the higher-quality base, drop the lower; on
-// ties keep the first-seen.
-func dropOverlapEvents(events [][]pileupEvent, recs []*sam.Record) {
-	if len(recs) < 2 {
-		return
-	}
-	// Build a quick QName -> []recordIdx map so we know which read pairs
-	// could overlap.
-	byQName := map[string][]int{}
-	for i, r := range recs {
-		if r.Flag&sam.FlagPaired == 0 {
-			continue
-		}
-		byQName[r.QName] = append(byQName[r.QName], i)
-	}
-	if len(byQName) == 0 {
-		return
-	}
-	// Resolve the overlap one position at a time.
-	for col := range events {
-		evs := events[col]
-		if len(evs) < 2 {
-			continue
-		}
-		// Group events by QName via their readIdx.
-		seenByQName := map[string]int{}
-		for i := range evs {
-			if evs[i].dropped {
-				continue
-			}
-			qname := recs[evs[i].readIdx].QName
-			if recs[evs[i].readIdx].Flag&sam.FlagPaired == 0 {
-				continue
-			}
-			prev, ok := seenByQName[qname]
-			if !ok {
-				seenByQName[qname] = i
-				continue
-			}
-			// We have two events for the same QName at this position
-			// — keep the higher-quality base, drop the other.
-			if eventQual(evs[i]) > eventQual(evs[prev]) {
-				evs[prev].dropped = true
-				seenByQName[qname] = i
-			} else {
-				evs[i].dropped = true
-			}
-		}
-	}
-}
-
-// eventQual returns the qual for ordering purposes; non-base events get
-// 0 so a real base wins.
-func eventQual(e pileupEvent) byte {
-	if e.kind == pileupEventBase {
-		return e.qual
-	}
-	return 0
 }
 
 // upper / lower are tiny byte ASCII case helpers (we want zero-alloc).

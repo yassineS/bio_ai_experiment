@@ -309,6 +309,15 @@ func runMpileup(readers []sam.Reader, out io.Writer, opts MpileupOptions, refFA 
 			perInputChromRecs = append(perInputChromRecs, recs[chrom])
 		}
 
+		// Mate-pair overlap removal (on by default, disabled by -x): adjust each
+		// pair's qualities once, in coordinate order, before accumulation — the
+		// same point and order as bam_plp, so the result is byte-identical.
+		if !opts.IgnoreOverlaps {
+			for i := range perInputChromRecs {
+				applyOverlapRemoval(perInputChromRecs[i])
+			}
+		}
+
 		// Fetch the contig once for the per-row reference base, so the tiled
 		// emit slices it instead of issuing a Fetch per tile.
 		var contig []byte
@@ -409,6 +418,7 @@ func runMpileupStreaming(rd sam.Reader, out io.Writer, opts MpileupOptions, refF
 	defer bw.Flush()
 
 	doBAQ := refFA != nil && !opts.NoBAQ
+	doOverlap := !opts.IgnoreOverlaps // mate-pair overlap removal is on by default
 	baqFlag := textMpileupBAQFlag(opts)
 	src := newMpileupSource(rd, opts, hdr)
 	var sc mpileupScratch
@@ -462,6 +472,10 @@ func runMpileupStreaming(rd sam.Reader, out io.Writer, opts MpileupOptions, refF
 		}
 
 		var active []*sam.Record
+		// overlaps holds the earlier-seen mate of each pair until the later one
+		// arrives (reset per chrom), so overlap removal is applied as reads enter
+		// the pileup, in coordinate order — the same order htslib's bam_plp uses.
+		overlaps := make(map[string]*sam.Record)
 		for _, w := range windows {
 			wBeg, wEnd := w[0], w[1]
 			if wBeg < 0 {
@@ -496,6 +510,11 @@ func runMpileupStreaming(rd sam.Reader, out io.Writer, opts MpileupOptions, refF
 							if r := baq.SamProbRealn(p, contig, baqFlag); r < -3 {
 								return fmt.Errorf("samtools mpileup: BAQ alignment failed for read %q", p.QName)
 							}
+						}
+						// Overlap removal runs after BAQ (matching bam_plp), tweaking
+						// this read's qualities against an already-seen mate.
+						if doOverlap {
+							overlapPush(p, overlaps)
 						}
 						active = append(active, p)
 					}
