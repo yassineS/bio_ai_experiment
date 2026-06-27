@@ -406,6 +406,44 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   order, emitting each column as it is reached — a major mpileup-engine
   restructure (follow-up #44). The 7/2-position residual (99.99993 % of region 20
   already byte-identical) stands until then.
+  **Task #44 attempt-1 (this run) CONFIRMED the streaming-engine diagnosis with
+  trace-level evidence and shipped no code (clean zero-regression revert).** The
+  diagnose proposed a SURGICAL fix — a one-step `a_iseq`/`b_iseq` off-by-one in
+  `tweakOverlapQuality`'s cross-deletion catch-up. Side-by-side htslib
+  (`sam.c`)/Go traces RIGOROUSLY DISPROVED it: our `tweakOverlapQuality` is a
+  faithful line-by-line port of `tweak_overlap_quality` (identical
+  `iref`/`iseq`/`qual` at every step), so the per-pair tweak is NOT the cause.
+  The true residual is a **push-vs-cursor INTERLEAVING artefact**: in
+  `bam_plp`, a deletion `*` placeholder's quality (`bam_get_qual[qpos]`, the
+  post-gap base) is read when the pileup CURSOR reaches the deletion, whereas
+  `tweak_overlap_quality` fires when the SECOND MATE IS PUSHED — so whether the
+  `*` borrows the pre- or post-tweak quality is DATA-DEPENDENT on read
+  interleaving (trace-proven: 20:17617199 resolves pre-tweak; 20:60709531 and
+  20:36570298 post-tweak). No per-pair / per-record rule can express it (stronger
+  evidence than #41's algebraic refutation). A trial heuristic closed 4 of 7
+  windows but REGRESSED 3, so it was REVERTED to the clean baseline. Measured
+  residual unchanged: full contig-20 `-B` = **7 positions / 9,711,557 lines
+  (99.99993 % byte-identical)**, BAQ-on = **2**; control window 0-diff; mpileup
+  RSS unchanged (~1.68–1.76×); consensus/BCF untouched. Byte-exact overlap
+  parity genuinely requires the full `bam_plp` push-then-emit STREAMING ENGINE —
+  correctly deferred (too large/risky for an automated refine; the #41
+  no-regression rule forbids shipping the regressing heuristic).
+- **`samtools consensus` — discovered residuals (recorded during #44 baseline,
+  out of #44 scope).** Three separate, independent gaps surfaced while
+  establishing the mpileup baseline and are tracked here so they are not lost:
+  - **`consensus -r <region>` OOMs (~11.5 GB SIGKILL even for a 1 kb window) on
+    the full GIAB BAM.** The `-r` path ignores the `.bai`/`.csi` index and scans
+    the whole file — the SAME class of bug already fixed for `mpileup -r` in
+    commit 295a98a (which seeks the index for `-r` regions). A real, separate,
+    fixable parity/perf bug: apply the same index-seek to the consensus `-r`
+    path.
+  - **`consensus -f pileup --mode simple` — 4 residual qual positions**
+    (20:30038166, 20:30073764, 20:30075378, 20:30193753) from a DIFFERENT cause
+    than the overlap tweak: `consensus_pileup.c`'s running-minimum
+    deletion-quality rule.
+  - **`consensus` default Bayesian `-f fasta` — ~1198 structural off-by-one
+    diffs**, a separate, larger gap (not the overlap tweak, not the pileup
+    running-minimum rule).
 - **`samtools sort` wall — FIXED (task #39 then #42, now ≈ parity).** `sort -@4`
   was ~3x upstream at matched memory. Profiling showed `sort.SliceStable`/heap/
   comparator are negligible (<4%); the costs were excessive spilling (57 vs 4
