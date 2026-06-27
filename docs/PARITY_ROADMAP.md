@@ -432,15 +432,24 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   `TestMpileupIndexedRegionMatchesLinear` + the mpileup parity tests green;
   `go test` 0 new failures. Note `samtools mpileup -g` itself was removed upstream
   ("use bcftools mpileup"), so the BCF path is only reached via `bcftools mpileup`.
-  **Remaining (DEFERRED from task #50):** whole-contig `bcftools mpileup -r 20` is
-  bounded (OOM → ~6.4–6.9 GB, exit 0, byte-exact slice) but still ~65× upstream's
-  106 MB — the whole-contig bucket + BAQ + snapshot phase is resident. Unlike
-  `consensus -r` (cut to 4.58× by block-streaming in #50), this engine has ~10
-  whole-contig pointer-keyed pre-passes (depth cap, mate classification, drain
-  thresholds, 2× BAQ, 3× quality snapshots, overlap merge) with UNBOUNDED mate
-  distance, so read-windowing needs a larger incremental redesign with a bounded
-  pending-mate carry — deferred from #50 (judged infeasible in a 3-attempt budget)
-  and tracked as a separate streaming task.
+  **Whole-contig read buffer — FIXED (task #51, merged 6624f37).** `bcftools
+  mpileup -r 20` peaked ~6.6 GB (~62.6× upstream's 106 MB) — the whole-contig
+  read bucket + two contig-sized secondary structures (the BAQ `column` sized to
+  the absolute read-end coord, and three full-Qual snapshot maps). The #50
+  diagnosis that this was infeasible was DISPROVEN: there is no whole-contig-global
+  pass (upstream's `mpileup_reg` is pure per-position; every pass is
+  per-read-local or mate-paired, mate-finding by QName in coordinate order,
+  bounded by insert size). The indexed `-r` path now streams the contig in 200 kbp
+  coordinate BLOCKS (`mpileup_blocked.go`) with a 5 kbp flank on each side (the
+  right flank covers the indel realignment window and is clamped to the user's
+  region end so `-r X-Y` is chunking-invariant), emitting only `[blockBeg,
+  blockEnd)`; the BAQ `column` was rebased to `[minPos,maxPos)` (the absolute
+  sizing was 74 % of allocations — empty leading slots). MEASURED worst-of-3 on
+  real GIAB: `mpileup -r 20` **6639 MB → 701 MB (62.6× → 6.55×)**, wall 124 s →
+  82 s; whole-contig md5 `26f35a70` byte-exact, 0-diff at every block boundary +
+  region-end-on-indel; sub-regions `75925820`/`8f374940` unchanged; new
+  `mpileup_blocked_test.go`. The residual 6.55× is unreachable to 1× byte-exact
+  (heavier Go records + extra Qual snapshots htslib lacks).
 - **`samtools consensus` — discovered residuals (recorded during #44 baseline,
   out of #44 scope).** Several separate, independent gaps surfaced while
   establishing the mpileup baseline and are tracked here so they are not lost
