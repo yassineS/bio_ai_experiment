@@ -440,8 +440,8 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
 - **`samtools consensus` — discovered residuals (recorded during #44 baseline,
   out of #44 scope).** Several separate, independent gaps surfaced while
   establishing the mpileup baseline and are tracked here so they are not lost
-  (the `-r` OOM and the `-f pileup` 4-position deletion-quality gap are now
-  fixed; the bayesian `-f fasta` and insertion-pad residuals remain open):
+  (the `-r` OOM and the `-f pileup` deletion + insertion-pad running-min
+  quality gaps are now fixed; the bayesian `-f fasta` residual remains open):
   - **`consensus -r <region>` OOM — FIXED (task #45, merged 60c81b2).** The
     `-r` path used to ignore the `.bai`/`.csi` index and scan the whole file,
     OOMing (~11.5 GB SIGKILL even for a 1 kb window) on the full GIAB BAM —
@@ -476,13 +476,21 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
     **0-diff**, and the CDEL running-min rule closed genome-wide. NO-REGRESS:
     `-f fasta --mode simple` md5 `b057be94` unchanged, bayesian `73519a08`
     unchanged, `mpileup -B` vs upstream 0-diff, 0 new test failures.
-  - **`consensus -f pileup --mode simple` — insertion-pad running-min
-    (OPEN, discovered during task #48).** A separate, still-open residual:
-    upstream's insertion-pad running-minimum (`consensus_pileup.c:182-191`,
-    the `p->nth < nth` branch for reads whose insertion is shorter than the
-    nth inserted column) is not yet matched — ~6 diffs in the
-    `20:31000000-31100000` window. Distinct from the deletion running-min the
-    CDEL fix above closed.
+  - **`consensus -f pileup --mode simple` — insertion-pad running-min —
+    FIXED (task #49, merged 84a5809 / 8557aa1).** Upstream's insertion-pad
+    running-minimum (`consensus_pileup.c:182-191`, the `p->nth < nth` branch
+    for reads whose insertion is shorter than the nth inserted column) is now
+    matched: the insertion column pad `*` placeholder quality carries a
+    per-read running `MIN(p->qual, b_qual[seq_offset+1])` (0 past read end),
+    render-scoped to `callConsensusSimpleInsertions` (no struct field, no
+    change to the #48 `delPileupQual` path, the fasta/bayesian call, or
+    mpileup). MEASURED on real GIAB (bioval) vs upstream: the residual at
+    `20:31032760` (insertion columns nth=1/2/3) 6-diff → **0**, the broad
+    `20:30000000-33000000 -f pileup --mode simple` window **0-diff**, the #48
+    CDEL control stays 0-diff. NO-REGRESS: `-f fasta --mode simple` md5
+    `b057be94` unchanged, bayesian `73519a08` unchanged, `mpileup -B` 0-diff,
+    0 new test failures. Together with #48 this closes the `-f pileup --mode
+    simple` deletion + insertion running-min quality parity.
   - **`consensus` default Bayesian `-f fasta` — ~1198 structural off-by-one
     diffs**, a separate, larger gap (not the overlap tweak, not the pileup
     running-minimum rules).
