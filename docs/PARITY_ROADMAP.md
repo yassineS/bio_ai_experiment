@@ -431,12 +431,26 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
 - **`samtools consensus` — discovered residuals (recorded during #44 baseline,
   out of #44 scope).** Three separate, independent gaps surfaced while
   establishing the mpileup baseline and are tracked here so they are not lost:
-  - **`consensus -r <region>` OOMs (~11.5 GB SIGKILL even for a 1 kb window) on
-    the full GIAB BAM.** The `-r` path ignores the `.bai`/`.csi` index and scans
-    the whole file — the SAME class of bug already fixed for `mpileup -r` in
-    commit 295a98a (which seeks the index for `-r` regions). A real, separate,
-    fixable parity/perf bug: apply the same index-seek to the consensus `-r`
-    path.
+  - **`consensus -r <region>` OOM — FIXED (task #45, merged 60c81b2).** The
+    `-r` path used to ignore the `.bai`/`.csi` index and scan the whole file,
+    OOMing (~11.5 GB SIGKILL even for a 1 kb window) on the full GIAB BAM —
+    the SAME class of bug already fixed for `mpileup -r` in commit 295a98a.
+    `ConsensusFile` now takes the indexed fast path (reuses
+    `openBAMRegionReader`/`bam.UnionChunks`, the same machinery `mpileup -r`
+    got), so a `-r` region seeks the index chunks instead of draining the
+    whole 2.9 GB BAM; it falls back to the unchanged linear scan for
+    no-index/CRAM/SAM/unsorted/stdin/`-a`/`-aa`. Two output-invariant engine
+    memory optimisations (64 KiB pileupEvent tiling + post-`nmInit` field
+    release) keep whole-contig `-r 20` from OOMing. MEASURED on real GIAB
+    (bioval), worst-of-5: `consensus -r 20:30000000-30050000 -f fasta --mode
+    simple` went **11518 MB / OOM → 23–24.7 MB** (upstream 15.9 MB; ~1.55×,
+    was ~725×), md5 byte-exact == upstream (`cmp` IDENTICAL); ours-indexed ==
+    ours-linear across 6 regions × 3 modes and a 0-diff whole-chr20 bayesian
+    run; new `consensus_indexed_test.go`. **Remaining:** whole-contig
+    `consensus -r 20` is now bounded (OOM → ~2.1–2.8 GB, exit 0, byte-exact)
+    but still ~20× upstream's 137 MB — that is the SEPARATE per-read Go-record
+    buffer, the same streaming residual class flagged for `mpileup -r` under
+    295a98a, and is out of scope here.
   - **`consensus -f pileup --mode simple` — 4 residual qual positions**
     (20:30038166, 20:30073764, 20:30075378, 20:30193753) from a DIFFERENT cause
     than the overlap tweak: `consensus_pileup.c`'s running-minimum
