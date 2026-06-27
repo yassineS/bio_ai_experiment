@@ -49,6 +49,19 @@ const (
 // width (`-l/--line-len`) for FASTA / FASTQ output.
 const DefaultConsensusLineLen = 70
 
+// consensusTileWidth is the reference span a single events buffer covers
+// inside emitConsensusContig. Each window is processed in tiles of this width
+// so the per-position pileupEvent array is O(tile) rather than O(window):
+// without it a whole-contig walk (e.g. `consensus -r 20`) allocates one
+// [][]pileupEvent slice per base across the entire 63 Mb contig — tens of GB —
+// even though the indexed reader already restricts the decode to the contig.
+// Tiling caps that allocation at O(tile x depth); the position walk and every
+// cross-tile accumulator (pileupLastPos, firstCovIdx/lastCovIdx, seqBuf) are
+// unchanged, so the per-position calls — and the output — are byte-identical to
+// the single-window walk (each position's events depend only on the reads
+// overlapping it, never on the window bounds).
+const consensusTileWidth = 64 * 1024
+
 // DefaultConsensusMinBaseQ is the upstream samtools consensus `--min-BQ`
 // default (0 — distinct from mpileup's 13).
 const DefaultConsensusMinBaseQ = 0
@@ -242,11 +255,39 @@ type ConsensusOptions struct {
 // Opens the input file and delegates to Consensus. errOut is retained for
 // API compatibility; both bayesian and simple modes are fully implemented,
 // so no fallback warning is emitted.
+//
+// Indexed region fast path: a single coordinate-sorted BAM restricted to -r
+// regions and carrying a .csi/.bai index is read by seeking to the region's
+// index chunks (the same openBAMRegionReader helper MpileupFile uses), so only
+// the region's reads are decoded — instead of draining every record of a
+// whole-genome BAM into bucketByChrom (an ~11.5 GB OOM on a chromosome-wide
+// query). openBAMRegionReader returns nil for anything it cannot seek (no
+// index, CRAM/SAM, unsorted), and -a/-aa are deliberately routed to the linear
+// path too (a region-restricted all-positions emit is rare and the linear path
+// stays correct, just not memory-bounded), so the unchanged linear path below
+// remains the fallback. Output is byte-identical: consensusFromReader tiles the
+// same region windows over the records the region filter (buildRegionFilter /
+// UnionChunks) keeps — overlap reads that start before beg are retained exactly
+// as htslib's iterator does — so the fast path just feeds the engine the same
+// reads from fewer file bytes.
 func ConsensusFile(opts ConsensusOptions, out io.Writer, errOut io.Writer) error {
 	if opts.Input == "" {
 		return fmt.Errorf("samtools consensus: no input file")
 	}
 	_ = errOut
+
+	if len(opts.Regions) > 0 && !opts.AllPositions && !opts.AllContigs && opts.Input != "-" {
+		rr, rerr := openBAMRegionReader(opts.Input, opts.Regions)
+		if rerr != nil {
+			return fmt.Errorf("samtools consensus: %w", rerr)
+		}
+		if rr != nil {
+			defer rr.Close()
+			applyConsensusDefaults(&opts)
+			return consensusFromReader(rr, rr.Header(), out, opts)
+		}
+	}
+
 	f, err := os.Open(opts.Input)
 	if err != nil {
 		return fmt.Errorf("samtools consensus: %w", err)
@@ -265,8 +306,18 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) error {
 	if err != nil {
 		return fmt.Errorf("samtools consensus: %w", err)
 	}
-	hdr := rd.Header()
+	return consensusFromReader(rd, rd.Header(), out, opts)
+}
 
+// consensusFromReader is the shared consensus engine fed by both the linear
+// path (Consensus, via sam.NewReader) and the indexed region fast path
+// (ConsensusFile, via openBAMRegionReader). The caller must have already run
+// applyConsensusDefaults(&opts) and supplied the reader's parsed header. The
+// reader is drained into per-chrom buckets and the configured format is
+// emitted; output is identical regardless of which reader supplied the records
+// (the fast path simply yields fewer reads — only those overlapping the
+// regions).
+func consensusFromReader(rd sam.Reader, hdr *sam.Header, out io.Writer, opts ConsensusOptions) error {
 	// Bucket records by chromosome up front. We reuse the same filter
 	// strategy as the mpileup walker (drop unmapped/secondary/etc,
 	// apply MAPQ floor), with the consensus-specific tweak that we
@@ -693,6 +744,22 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 		}
 	}
 
+	// Release each record's auxiliary-tag and read-name payloads: from here on
+	// the engine only reads coordinates, CIGAR, SEQ, QUAL, FLAG and MAPQ. The
+	// sole aux consumer is the bayesian MD-cost step inside nmInit above, which
+	// has now run for every record, and the simple caller never reads aux at
+	// all. On a whole-contig walk these payloads are buffered for every read of
+	// the contig (the aux block is tens to hundreds of bytes each), so freeing
+	// them here meaningfully lowers the resident set without changing any
+	// per-position call. The records are owned by the caller's per-contig
+	// bucket, which is not reused after this contig is emitted, so clearing the
+	// fields is safe.
+	for _, rec := range recs {
+		rec.RawAux = nil
+		rec.Aux = nil
+		rec.QName = ""
+	}
+
 	for _, w := range windows {
 		beg0 := w[0]
 		end0 := w[1]
@@ -709,201 +776,228 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 		// last_pos == beg0 means "nothing emitted yet inside the window", so
 		// the first fill covers beg0+1..). Whole-contig walks use beg0 == 0.
 		pileupLastPos = beg0
-		// Build per-position event slices for this window by reusing
-		// the mpileup accumulator. This guarantees the consensus is
-		// byte-faithful with what `samtools mpileup` reports for the
-		// same input.
-		width := end0 - beg0
-		events := make([][]pileupEvent, width)
 		accOpts := MpileupOptions{
 			MinBaseQ: opts.MinBaseQ,
 			MinMAPQ:  opts.MinMAPQ,
 		}
-		for ridx, rec := range recs {
-			accumulateRecordEvents(rec, ridx, beg0, end0, events, accOpts, nil, chrom)
-		}
-
-		// Walk positions.
-		for pos0 := beg0; pos0 < end0; pos0++ {
-			pos1 := pos0 + 1
-			if posFilter != nil && !posFilter.contains(chrom, pos1) {
-				continue
+		// Process the window in consensusTileWidth tiles so the per-position
+		// pileupEvent array is O(tile) rather than O(window): a whole-contig
+		// walk would otherwise allocate one event slice per base across the
+		// entire contig (tens of GB on chr20). The position walk, the per-tile
+		// event content, and every cross-tile accumulator (pileupLastPos,
+		// firstCovIdx/lastCovIdx, seqBuf/qualBuf) are unchanged, so the output
+		// is byte-identical to a single-window walk. recs is coordinate-sorted
+		// (bucketByChrom sorts by Pos), so startIdx is a monotonic lower bound
+		// that skips reads ending before the current tile; accumulateRecordEvents
+		// ignores any straggler that does not actually overlap the tile.
+		startIdx := 0
+		for tBeg := beg0; tBeg < end0; tBeg += consensusTileWidth {
+			tEnd := tBeg + consensusTileWidth
+			if tEnd > end0 {
+				tEnd = end0
 			}
-			col := pos0 - beg0
-			var call consensusCall
-			var totalDepth int
-			if opts.Mode == ConsensusModeBayesian {
-				call, totalDepth = callConsensusBayesian(events[col], recs, bayesReads, bayes, bayesProbs)
-			} else {
-				call, totalDepth = callConsensus(events[col], opts)
+			// Advance the lower bound past reads that end before this tile; they
+			// cannot overlap this or any later tile.
+			for startIdx < len(recs) && int(recs[startIdx].EndPosition()) <= tBeg {
+				startIdx++
+			}
+			// Build per-position event slices for this tile by reusing the
+			// mpileup accumulator (the same call as the single-window walk, just
+			// scoped to [tBeg, tEnd)). This keeps the consensus byte-faithful
+			// with what `samtools mpileup` reports for the same input.
+			events := make([][]pileupEvent, tEnd-tBeg)
+			for ridx := startIdx; ridx < len(recs); ridx++ {
+				rec := recs[ridx]
+				// recs is sorted by Pos: once a read starts at or after tEnd, no
+				// later read overlaps this tile from the left either.
+				if int(rec.Pos)-1 >= tEnd {
+					break
+				}
+				accumulateRecordEvents(rec, ridx, tBeg, tEnd, events, accOpts, nil, chrom)
 			}
 
-			switch opts.Format {
-			case ConsensusPileup:
-				column := hasPileupColumn(events[col])
-				if !pileupAll {
-					// Without -a, zero-coverage positions never produce a
-					// row at all.
-					if !column {
-						continue
-					}
-				} else if !column {
-					// With -a, a genuine zero-coverage position is NOT a
-					// pileup callback in upstream; it is emitted only by the
-					// placeholder gap mechanism when the next real column is
-					// reached (or by the contig tail fill). Defer it.
+			// Walk positions.
+			for pos0 := tBeg; pos0 < tEnd; pos0++ {
+				pos1 := pos0 + 1
+				if posFilter != nil && !posFilter.contains(chrom, pos1) {
 					continue
 				}
-				// We are at a genuine pileup column. Upstream's basic_pileup
-				// is invoked once per nth (nth==0 base column, then one call
-				// per insertion column) and re-runs its gap-fill / suppression
-				// / last_pos block on EVERY call (bam_consensus.c:2185-2298).
-				// We model that here by looping nth over the base column and
-				// each insertion column, performing the same per-nth steps so
-				// the output matches upstream line-for-line — including its
-				// quirk of re-emitting a leading gap at each nth while last_pos
-				// stays unadvanced through a suppressed nth==0 deletion.
-				var insCols []bayesInsertionColumn
-				if !opts.NoShowIns {
-					insCols = consensusInsertionColumns(events[col], recs, bayesReads, bayes, bayesProbs, pos1, opts)
+				col := pos0 - tBeg
+				var call consensusCall
+				var totalDepth int
+				if opts.Mode == ConsensusModeBayesian {
+					call, totalDepth = callConsensusBayesian(events[col], recs, bayesReads, bayes, bayesProbs)
+				} else {
+					call, totalDepth = callConsensus(events[col], opts)
 				}
-				// --het-only is an intentional divergence (upstream parses but
-				// never acts on it — a dead option; see docs/UPSTREAM_BUGS.md).
-				// A non-het position is dropped entirely: under -a we still
-				// advance pileupLastPos past it so the het-suppressed column is
-				// not resurrected as a zero-depth placeholder row by a later
-				// column's gap fill, honouring --het-only's "drop entirely"
-				// contract. This short-circuits the whole position (nth==0 and
-				// all insertion columns), since the position is suppressed.
-				if opts.HetOnly && !call.isHet {
-					if pileupAll {
-						pileupLastPos = pos1
-					}
-					continue
-				}
-				for nth := 0; nth <= len(insCols); nth++ {
-					// Per-nth gap fill: upstream re-runs empty_pileup2 at the
-					// top of every basic_pileup call (bam_consensus.c:2227), so
-					// a gap preceding a position whose nth==0 deletion row is
-					// suppressed (leaving last_pos unadvanced) is re-emitted at
-					// the next nth — reproduced here by gap-filling inside the
-					// nth loop rather than once before it.
-					if pileupAll && pos1 > pileupLastPos+1 {
-						if err := writeEmptyPileupRows(bw, chrom, pileupLastPos+1, pos1-1, posFilter, ref); err != nil {
-							return err
-						}
-					}
-					if nth == 0 {
-						// Honour --show-del: when the call is '*' and ShowDel
-						// is false, suppress the nth==0 row (bam_consensus.c:
-						// 2244). This suppresses ONLY the reference row; the
-						// nth>0 insertion columns follow on their own merits.
-						// A suppressed deletion column does NOT advance
-						// pileupLastPos (upstream returns early without updating
-						// c->last_pos), so the gap before it is re-filled at the
-						// next nth — upstream's duplicate placeholder rows.
-						if call.base == '*' && !opts.ShowDel {
+
+				switch opts.Format {
+				case ConsensusPileup:
+					column := hasPileupColumn(events[col])
+					if !pileupAll {
+						// Without -a, zero-coverage positions never produce a
+						// row at all.
+						if !column {
 							continue
 						}
-						if err := writeConsensusPileupRow(bw, chrom, pos1, totalDepth, call, events[col], opts); err != nil {
+					} else if !column {
+						// With -a, a genuine zero-coverage position is NOT a
+						// pileup callback in upstream; it is emitted only by the
+						// placeholder gap mechanism when the next real column is
+						// reached (or by the contig tail fill). Defer it.
+						continue
+					}
+					// We are at a genuine pileup column. Upstream's basic_pileup
+					// is invoked once per nth (nth==0 base column, then one call
+					// per insertion column) and re-runs its gap-fill / suppression
+					// / last_pos block on EVERY call (bam_consensus.c:2185-2298).
+					// We model that here by looping nth over the base column and
+					// each insertion column, performing the same per-nth steps so
+					// the output matches upstream line-for-line — including its
+					// quirk of re-emitting a leading gap at each nth while last_pos
+					// stays unadvanced through a suppressed nth==0 deletion.
+					var insCols []bayesInsertionColumn
+					if !opts.NoShowIns {
+						insCols = consensusInsertionColumns(events[col], recs, bayesReads, bayes, bayesProbs, pos1, opts)
+					}
+					// --het-only is an intentional divergence (upstream parses but
+					// never acts on it — a dead option; see docs/UPSTREAM_BUGS.md).
+					// A non-het position is dropped entirely: under -a we still
+					// advance pileupLastPos past it so the het-suppressed column is
+					// not resurrected as a zero-depth placeholder row by a later
+					// column's gap fill, honouring --het-only's "drop entirely"
+					// contract. This short-circuits the whole position (nth==0 and
+					// all insertion columns), since the position is suppressed.
+					if opts.HetOnly && !call.isHet {
+						if pileupAll {
+							pileupLastPos = pos1
+						}
+						continue
+					}
+					for nth := 0; nth <= len(insCols); nth++ {
+						// Per-nth gap fill: upstream re-runs empty_pileup2 at the
+						// top of every basic_pileup call (bam_consensus.c:2227), so
+						// a gap preceding a position whose nth==0 deletion row is
+						// suppressed (leaving last_pos unadvanced) is re-emitted at
+						// the next nth — reproduced here by gap-filling inside the
+						// nth loop rather than once before it.
+						if pileupAll && pos1 > pileupLastPos+1 {
+							if err := writeEmptyPileupRows(bw, chrom, pileupLastPos+1, pos1-1, posFilter, ref); err != nil {
+								return err
+							}
+						}
+						if nth == 0 {
+							// Honour --show-del: when the call is '*' and ShowDel
+							// is false, suppress the nth==0 row (bam_consensus.c:
+							// 2244). This suppresses ONLY the reference row; the
+							// nth>0 insertion columns follow on their own merits.
+							// A suppressed deletion column does NOT advance
+							// pileupLastPos (upstream returns early without updating
+							// c->last_pos), so the gap before it is re-filled at the
+							// next nth — upstream's duplicate placeholder rows.
+							if call.base == '*' && !opts.ShowDel {
+								continue
+							}
+							if err := writeConsensusPileupRow(bw, chrom, pos1, totalDepth, call, events[col], opts); err != nil {
+								return err
+							}
+							// Upstream sets c->last_pos = pos when any row for the
+							// position is emitted, including an insertion row; we set
+							// it here once the first non-suppressed nth emits.
+							pileupLastPos = pos1
+							continue
+						}
+						// nth>0 insertion column. Upstream emits one pileup row per
+						// inserted column when --show-ins is on (the default), for
+						// both simple and bayesian modes.
+						ic := insCols[nth-1]
+						if ic.call.base == '*' && !opts.ShowDel {
+							continue
+						}
+						if err := writeConsensusInsertionPileupRow(bw, chrom, pos1, nth, ic, opts); err != nil {
 							return err
 						}
-						// Upstream sets c->last_pos = pos when any row for the
-						// position is emitted, including an insertion row; we set
-						// it here once the first non-suppressed nth emits.
+						// Emitting an insertion row also advances last_pos
+						// (bam_consensus.c:2295). When the nth==0 deletion was
+						// suppressed this is the only place the position's last_pos
+						// gets set, preventing a spurious re-emission downstream.
 						pileupLastPos = pos1
+					}
+				default:
+					// FASTA / FASTQ accumulate. Every position is appended
+					// (uncovered ones as 'N', or the reference base under
+					// -T/--reference) so internal gaps fill; the covered span is
+					// bracketed by firstCovIdx/lastCovIdx and leading/trailing N is
+					// trimmed unless -a. Upstream's basic_fasta gap fill
+					// (bam_consensus.c:2423-2436) copies c->ref[pos] for the gap
+					// bytes and sets their qual to ref_qual+'!' (else 'N'/'!').
+					if call.base == 0 {
+						if ref != nil {
+							seqBuf = append(seqBuf, ref.base(chrom, pos0))
+							qualBuf = append(qualBuf, byte(opts.RefQual)+'!')
+						} else {
+							seqBuf = append(seqBuf, 'N')
+							qualBuf = append(qualBuf, '!')
+						}
 						continue
 					}
-					// nth>0 insertion column. Upstream emits one pileup row per
-					// inserted column when --show-ins is on (the default), for
-					// both simple and bayesian modes.
-					ic := insCols[nth-1]
-					if ic.call.base == '*' && !opts.ShowDel {
-						continue
-					}
-					if err := writeConsensusInsertionPileupRow(bw, chrom, pos1, nth, ic, opts); err != nil {
-						return err
-					}
-					// Emitting an insertion row also advances last_pos
-					// (bam_consensus.c:2295). When the nth==0 deletion was
-					// suppressed this is the only place the position's last_pos
-					// gets set, preventing a spurious re-emission downstream.
-					pileupLastPos = pos1
-				}
-			default:
-				// FASTA / FASTQ accumulate. Every position is appended
-				// (uncovered ones as 'N', or the reference base under
-				// -T/--reference) so internal gaps fill; the covered span is
-				// bracketed by firstCovIdx/lastCovIdx and leading/trailing N is
-				// trimmed unless -a. Upstream's basic_fasta gap fill
-				// (bam_consensus.c:2423-2436) copies c->ref[pos] for the gap
-				// bytes and sets their qual to ref_qual+'!' (else 'N'/'!').
-				if call.base == 0 {
-					if ref != nil {
-						seqBuf = append(seqBuf, ref.base(chrom, pos0))
-						qualBuf = append(qualBuf, byte(opts.RefQual)+'!')
-					} else {
+					// --het-only: render every non-heterozygous position as
+					// 'N' to preserve coordinates (homozygous and no-call
+					// positions are masked, not deleted). We treat the 'N'
+					// exactly like an uncovered position — it fills internal
+					// gaps but does not extend the covered span, so leading
+					// and trailing non-het runs trim away (unless -a). The
+					// intended behaviour the flag implies; upstream samtools
+					// parses --het-only but never acts on it (a dead option —
+					// see docs/UPSTREAM_BUGS.md).
+					if opts.HetOnly && !call.isHet {
 						seqBuf = append(seqBuf, 'N')
 						qualBuf = append(qualBuf, '!')
+						continue
 					}
-					continue
-				}
-				// --het-only: render every non-heterozygous position as
-				// 'N' to preserve coordinates (homozygous and no-call
-				// positions are masked, not deleted). We treat the 'N'
-				// exactly like an uncovered position — it fills internal
-				// gaps but does not extend the covered span, so leading
-				// and trailing non-het runs trim away (unless -a). The
-				// intended behaviour the flag implies; upstream samtools
-				// parses --het-only but never acts on it (a dead option —
-				// see docs/UPSTREAM_BUGS.md).
-				if opts.HetOnly && !call.isHet {
-					seqBuf = append(seqBuf, 'N')
-					qualBuf = append(qualBuf, '!')
-					continue
-				}
-				// Emit the reference (nth==0) base unless it is a
-				// deletion placeholder suppressed by --show-del off. The
-				// suppression is scoped to the nth==0 base only: upstream
-				// invokes basic_fasta independently per nth, so a
-				// deletion-called reference column still has its nth>0
-				// insertion columns emitted below.
-				if !(call.base == '*' && !opts.ShowDel) {
-					if firstCovIdx < 0 {
-						firstCovIdx = len(seqBuf)
-					}
-					seqBuf = append(seqBuf, call.base)
-					qualBuf = append(qualBuf, phredByte(call.qual))
-					lastCovIdx = len(seqBuf)
-				}
-				if !opts.NoShowIns {
-					// Insertion columns (nth>0). Upstream's basic_fasta
-					// emits the inserted column's call whenever cb != '*'
-					// (bam_consensus.c:2439) — including 'N' calls — and,
-					// under --mark-ins, prepends a single '_' to BOTH the
-					// seq and qual stream once per inserted column
-					// (bam_consensus.c:2409-2412). A '*' inserted call is
-					// never emitted. This holds for simple and bayesian
-					// modes alike.
-					insCols := consensusInsertionColumns(events[col], recs, bayesReads, bayes, bayesProbs, pos1, opts)
-					for _, ic := range insCols {
-						cb := ic.call.base
-						if cb == 0 {
-							cb = 'N'
-						}
-						if cb == '*' {
-							continue
-						}
+					// Emit the reference (nth==0) base unless it is a
+					// deletion placeholder suppressed by --show-del off. The
+					// suppression is scoped to the nth==0 base only: upstream
+					// invokes basic_fasta independently per nth, so a
+					// deletion-called reference column still has its nth>0
+					// insertion columns emitted below.
+					if !(call.base == '*' && !opts.ShowDel) {
 						if firstCovIdx < 0 {
 							firstCovIdx = len(seqBuf)
 						}
-						if opts.MarkIns {
-							seqBuf = append(seqBuf, '_')
-							qualBuf = append(qualBuf, '_')
-						}
-						seqBuf = append(seqBuf, cb)
-						qualBuf = append(qualBuf, phredByte(ic.call.qual))
+						seqBuf = append(seqBuf, call.base)
+						qualBuf = append(qualBuf, phredByte(call.qual))
 						lastCovIdx = len(seqBuf)
+					}
+					if !opts.NoShowIns {
+						// Insertion columns (nth>0). Upstream's basic_fasta
+						// emits the inserted column's call whenever cb != '*'
+						// (bam_consensus.c:2439) — including 'N' calls — and,
+						// under --mark-ins, prepends a single '_' to BOTH the
+						// seq and qual stream once per inserted column
+						// (bam_consensus.c:2409-2412). A '*' inserted call is
+						// never emitted. This holds for simple and bayesian
+						// modes alike.
+						insCols := consensusInsertionColumns(events[col], recs, bayesReads, bayes, bayesProbs, pos1, opts)
+						for _, ic := range insCols {
+							cb := ic.call.base
+							if cb == 0 {
+								cb = 'N'
+							}
+							if cb == '*' {
+								continue
+							}
+							if firstCovIdx < 0 {
+								firstCovIdx = len(seqBuf)
+							}
+							if opts.MarkIns {
+								seqBuf = append(seqBuf, '_')
+								qualBuf = append(qualBuf, '_')
+							}
+							seqBuf = append(seqBuf, cb)
+							qualBuf = append(qualBuf, phredByte(ic.call.qual))
+							lastCovIdx = len(seqBuf)
+						}
 					}
 				}
 			}
