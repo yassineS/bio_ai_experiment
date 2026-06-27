@@ -414,15 +414,29 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
     (122 vs 127 MB); consensus md5 unchanged; `go test` 0 new failures.
   The streaming-`bam_plp`-engine follow-up (formerly the open #44/#41 item) is
   **DONE**.
-- **`bcftools mpileup -r` (and `samtools mpileup -g`) BCF path OOM — discovered
-  during task #46, out of #46 scope.** The BCF/genotype-likelihood `-r` path does
-  NOT seek the index: on a 10 kb region it scans the whole file and OOMs (~11.4 GB,
-  exit -9), the SAME class of bug as the consensus `-r` OOM fixed in #45 and the
-  text-pileup `mpileup -r` index-seek landed in 295a98a / c3785be. The fix is the
-  same index-seek pattern (reuse `openBAMRegionReader` / `bam.UnionChunks` instead
-  of draining the whole BAM). Note `samtools mpileup -g` itself was removed
-  upstream ("use bcftools mpileup"), so the BCF path is reached via
-  `bcftools mpileup`. A real, separate, fixable parity/perf bug — tracked here.
+- **`bcftools mpileup -r` BCF path OOM — FIXED (task #47, merged 8ff7ba5 /
+  2517dc5).** Discovered during task #46: the BCF/genotype-likelihood `-r` path
+  did NOT seek the index — on a 10 kb region it scanned the whole file and OOMed
+  (~11.4 GB, exit -9), the SAME class of bug as the consensus `-r` OOM fixed in
+  #45 and the text-pileup `mpileup -r` index-seek landed in 295a98a / c3785be.
+  `bcftools.MpileupFile` now (1) seeks the BAI/CSI index for `-r` regions (a
+  bcftools-local region reader on the shared `pkg/htsgo/bam.UnionChunks`, the same
+  fast path as samtools `mpileup -r` 295a98a / `consensus -r` #45) and (2)
+  materialises the per-contig events array one 1M-position window at a time. The
+  change is confined to `tools/bcftools/` (zero samtools/htsgo churn). MEASURED on
+  real GIAB (bioval): `mpileup -r 20:30000000-30010000` went **11.4 GB / OOM (exit
+  -9) → ~204 MB typical** (worst-of-5 892 MB transient GC), exit 0 (upstream
+  bcftools 106 MB), **byte-exact** — BCF/VCF body indexed == linear == upstream
+  for plain / `-a AD,DP,SP` / indel, and the per-window materialisation is 0-diff
+  indexed-vs-linear across all 1M-window boundary cases. New
+  `TestMpileupIndexedRegionMatchesLinear` + the mpileup parity tests green;
+  `go test` 0 new failures. Note `samtools mpileup -g` itself was removed upstream
+  ("use bcftools mpileup"), so the BCF path is only reached via `bcftools mpileup`.
+  **Remaining:** whole-contig `mpileup -r 20` is now bounded (OOM → ~6.4 GB, exit
+  0, byte-exact slice) but the whole-contig bucket+BAQ+snapshot phase is still
+  resident — that is the SAME per-read-buffer streaming residual class flagged for
+  samtools `mpileup -r 20` / `consensus -r 20` below (needs the streaming
+  `bam_plp` materialisation), tracked there.
 - **`samtools consensus` — discovered residuals (recorded during #44 baseline,
   out of #44 scope).** Three separate, independent gaps surfaced while
   establishing the mpileup baseline and are tracked here so they are not lost:
