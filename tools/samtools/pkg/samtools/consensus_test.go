@@ -355,6 +355,62 @@ func TestConsensus_FASTA_Insertion_MarkIns(t *testing.T) {
 	}
 }
 
+// TestConsensus_Pileup_Insertion_PadRunningMin pins task #49: in
+// `consensus -f pileup --mode simple` the '*' pad emitted for a read that
+// LACKS an inserted base in an nth>0 insertion column must carry upstream's
+// STATEFUL running-minimum quality, MIN(carried, b_qual[seq_offset+1]) with
+// seq_offset pinned at the read's last consumed base (consensus_pileup.c:
+// 183-191), not the read's M-base quality verbatim.
+//
+// Here rIns inserts "TT" after ref pos 2 (CIGAR 2M2I3M); rPad has a plain 5M
+// alignment, so in the nth=1/nth=2 insertion columns rPad pads with '*'. The
+// base at ref pos 2 in rPad has quality 'I' (40), but the NEXT base
+// (seq_offset+1, ref pos 3) has quality '5' (20). Upstream therefore renders
+// the pad '*' qual as the running minimum 20 ('5'), while the real inserted
+// base of rIns keeps its own quality 'I' (40). Without the running min the pad
+// would wrongly print 'I' (the pre-task-#49 behaviour).
+func TestConsensus_Pileup_Insertion_PadRunningMin(t *testing.T) {
+	const sam = `@HD	VN:1.6
+@SQ	SN:chr1	LN:10
+rIns	0	chr1	1	60	2M2I3M	*	0	0	ACTTGAA	IIIIIII
+rPad	0	chr1	1	60	5M	*	0	0	ACGAA	II5II
+`
+	out := runConsensusOnSAM(t, sam, ConsensusOptions{
+		Format: ConsensusPileup,
+		Mode:   ConsensusModeSimple,
+	})
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	// Collect the two nth>0 insertion rows (chrom pos 2, nth 1 and 2).
+	var ins []string
+	for _, ln := range lines {
+		f := strings.Split(ln, "\t")
+		if len(f) >= 3 && f[1] == "2" && (f[2] == "1" || f[2] == "2") {
+			ins = append(ins, ln)
+		}
+	}
+	if len(ins) != 2 {
+		t.Fatalf("expected 2 insertion rows (pos 2, nth 1/2), got %d:\n%s", len(ins), out)
+	}
+	// Stable event order is rIns then rPad, so the seq is "T*" and the qual
+	// column must be the inserted base's 'I' followed by the pad's running
+	// min '5' (NOT 'I'). Assert both nth rows.
+	for _, ln := range ins {
+		f := strings.Split(ln, "\t")
+		seq, qual := f[6], f[7]
+		if seq != "T*" {
+			t.Errorf("insertion row %q: seq = %q, want %q", ln, seq, "T*")
+		}
+		if qual != "I5" {
+			t.Errorf("insertion row %q: qual = %q, want %q (inserted base 'I' unchanged, pad '*' = running MIN '5')", ln, qual, "I5")
+		}
+		// Guard against a silent regression to the M-base quality: the pad's
+		// qual byte must be the running minimum, strictly below the M-base.
+		if qual[1] != '5' {
+			t.Errorf("insertion row %q: pad '*' qual = %q, want running min '5'; got the M-base qual instead", ln, string(qual[1]))
+		}
+	}
+}
+
 func TestConsensus_LineLen_Wrapping(t *testing.T) {
 	out := runConsensusOnSAM(t, allMatchSAM, ConsensusOptions{
 		Format:  ConsensusFASTA,
