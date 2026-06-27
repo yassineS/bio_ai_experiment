@@ -242,6 +242,77 @@ func TestConsensus_Pileup_ShowDelYes_KeepsStarRow(t *testing.T) {
 	}
 }
 
+// delRunMinQualSAM has a single read with a 2bp deletion (3M2D3M) where the
+// PRE-gap base (query index 2, ref pos 3) has a LOW quality (Phred 10 = '+')
+// and the POST-gap base (query index 3, ref pos 6) has a HIGH quality
+// (Phred 40 = 'I'). The deletion '*' placeholders fall at ref positions 4 and 5.
+//
+//	ref pos:  1  2  3 | 4  5 | 6  7  8
+//	op:       M  M  M | D  D | M  M  M
+//	qry idx:  0  1  2 |      | 3  4  5
+//	qual:     I  I  + |      | I  I  I   (Phred 40,40,10,40,40,40)
+const delRunMinQualSAM = `@HD	VN:1.6
+@SQ	SN:chr1	LN:20
+r1	0	chr1	1	60	3M2D3M	*	0	0	ACGTAC	II+III
+`
+
+// TestConsensus_Pileup_DeletionRunningMinQual locks upstream's RUNNING-minimum
+// deletion-quality rule for `samtools consensus -f pileup --mode simple`
+// (consensus_pileup.c:195-202): each '*' placeholder gets MIN(pre-gap base
+// qual, post-gap base qual). Here MIN(10, 40) = 10, so the '*' rows render
+// quality byte '+' (10+33=43), NOT the post-gap 'I' (40+33=73) that the raw
+// per-read placeholder quality would give. Crucially, the SAME read fed
+// through mpileup must keep the post-gap quality 'I' for its '*' placeholders
+// (mpileup's bam_plp engine renders the single post-gap base, no running min) —
+// the consensus running-min must NOT leak into the mpileup path.
+func TestConsensus_Pileup_DeletionRunningMinQual(t *testing.T) {
+	// (1) consensus -f pileup --mode simple: '*' qual == MIN(pre,post) = '+'.
+	out := runConsensusOnSAM(t, delRunMinQualSAM, ConsensusOptions{
+		Format:  ConsensusPileup,
+		Mode:    ConsensusModeSimple,
+		ShowDel: true,
+	})
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	starRows := 0
+	for _, ln := range lines {
+		f := strings.Split(ln, "\t")
+		if len(f) < 8 || f[6] != "*" {
+			continue
+		}
+		starRows++
+		// Column 8 (index 7) is the quality string; one '*' read here.
+		if f[7] != "+" {
+			t.Errorf("pos %s: deletion '*' qual = %q, want %q (running MIN(pre=10,post=40)+33); full row %q",
+				f[1], f[7], "+", ln)
+		}
+	}
+	if starRows != 2 {
+		t.Fatalf("expected 2 '*' deletion rows (ref pos 4,5), got %d:\n%s", starRows, out)
+	}
+
+	// (2) mpileup on the identical read: '*' placeholders keep the POST-gap
+	// quality 'I' (40+33). The consensus running-min override is render-scoped
+	// to the consensus pileup writer and must not perturb mpileup.
+	mp := runMpileupOnSAM(t, []string{delRunMinQualSAM}, MpileupOptions{}, nil, nil)
+	mpLines := strings.Split(strings.TrimRight(mp, "\n"), "\n")
+	mpStar := 0
+	for _, ln := range mpLines {
+		f := strings.Split(ln, "\t")
+		// mpileup columns: chrom pos ref depth bases quals ...
+		if len(f) < 6 || !strings.Contains(f[4], "*") {
+			continue
+		}
+		mpStar++
+		if f[5] != "I" {
+			t.Errorf("mpileup pos %s: '*' qual = %q, want %q (post-gap 40, unchanged); full row %q",
+				f[1], f[5], "I", ln)
+		}
+	}
+	if mpStar != 2 {
+		t.Fatalf("expected 2 mpileup '*' rows (ref pos 4,5), got %d:\n%s", mpStar, mp)
+	}
+}
+
 // insSAM has three reads with a 1bp insertion T between ref positions 2 and 3.
 const insSAM = `@HD	VN:1.6
 @SQ	SN:chr1	LN:4

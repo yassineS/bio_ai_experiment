@@ -1680,7 +1680,23 @@ func writeConsensusPileupRow(bw *bufio.Writer, chrom string, pos1, depth int,
 			if e.isReverse {
 				b = '#'
 			}
-			q = e.qual
+			// Upstream's consensus pileup engine gives each '*' the RUNNING
+			// minimum quality MIN(pre-gap base qual, post-gap base qual)
+			// (consensus_pileup.c:195-202): seq_offset stays pinned at the
+			// pre-gap base for the whole contiguous deletion run, so p->qual
+			// enters each D column holding the pre-gap base's quality and is
+			// MIN'd against the post-gap base. e.qual alone is only the post-gap
+			// base (the value mpileup's bam_plp engine renders), so it is >=
+			// upstream here; delPileupQual carries the pre-computed running min
+			// (value+1, 0 == no pre-gap base, e.g. a deletion at read start,
+			// where upstream also keeps the post-gap qual). Reading delPileupQual
+			// is confined to this pileup renderer; the simple/bayesian callers and
+			// mpileup keep using e.qual and stay byte-identical.
+			if e.delPileupQual != 0 {
+				q = e.delPileupQual - 1
+			} else {
+				q = e.qual
+			}
 		case pileupEventRefSkip:
 			// Upstream's consensus pileup engine keeps a ref-skip (CIGAR N)
 			// read in the column, counts it in depth, and renders its base as
