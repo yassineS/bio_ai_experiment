@@ -432,11 +432,15 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   `TestMpileupIndexedRegionMatchesLinear` + the mpileup parity tests green;
   `go test` 0 new failures. Note `samtools mpileup -g` itself was removed upstream
   ("use bcftools mpileup"), so the BCF path is only reached via `bcftools mpileup`.
-  **Remaining:** whole-contig `mpileup -r 20` is now bounded (OOM → ~6.4 GB, exit
-  0, byte-exact slice) but the whole-contig bucket+BAQ+snapshot phase is still
-  resident — that is the SAME per-read-buffer streaming residual class flagged for
-  samtools `mpileup -r 20` / `consensus -r 20` below (needs the streaming
-  `bam_plp` materialisation), tracked there.
+  **Remaining (DEFERRED from task #50):** whole-contig `bcftools mpileup -r 20` is
+  bounded (OOM → ~6.4–6.9 GB, exit 0, byte-exact slice) but still ~65× upstream's
+  106 MB — the whole-contig bucket + BAQ + snapshot phase is resident. Unlike
+  `consensus -r` (cut to 4.58× by block-streaming in #50), this engine has ~10
+  whole-contig pointer-keyed pre-passes (depth cap, mate classification, drain
+  thresholds, 2× BAQ, 3× quality snapshots, overlap merge) with UNBOUNDED mate
+  distance, so read-windowing needs a larger incremental redesign with a bounded
+  pending-mate carry — deferred from #50 (judged infeasible in a 3-attempt budget)
+  and tracked as a separate streaming task.
 - **`samtools consensus` — discovered residuals (recorded during #44 baseline,
   out of #44 scope).** Several separate, independent gaps surfaced while
   establishing the mpileup baseline and are tracked here so they are not lost
@@ -457,11 +461,19 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
     simple` went **11518 MB / OOM → 23–24.7 MB** (upstream 15.9 MB; ~1.55×,
     was ~725×), md5 byte-exact == upstream (`cmp` IDENTICAL); ours-indexed ==
     ours-linear across 6 regions × 3 modes and a 0-diff whole-chr20 bayesian
-    run; new `consensus_indexed_test.go`. **Remaining:** whole-contig
-    `consensus -r 20` is now bounded (OOM → ~2.1–2.8 GB, exit 0, byte-exact)
-    but still ~20× upstream's 137 MB — that is the SEPARATE per-read Go-record
-    buffer, the same streaming residual class flagged for `mpileup -r` under
-    295a98a, and is out of scope here.
+    run; new `consensus_indexed_test.go`. **Whole-contig per-read buffer —
+    IMPROVED (task #50, merged 2fdb4fc).** The remaining per-read Go-record
+    buffer (whole-contig `consensus -r 20` was ~2.5 GB, ~19.7× upstream's
+    137 MB) is now cut by streaming reads in coordinate blocks: the indexed
+    `-r` path pulls reads block-by-block (8 MiB blocks on the tile grid,
+    per-block `readIdx` rebase + `bayesReads` rebuild, boundary-spanning reads
+    carried with aux), so only ~one block is resident. MEASURED worst-of-3 on
+    real GIAB: `consensus -r 20 -f fasta --mode simple` **~2480 MB → 627 MB
+    (19.7× → 4.58×)**, wall ~10.5 s (no regression); whole-chr20 md5
+    `e8b052ff` == upstream, 0-diff at every 8 MiB block boundary, the #48/#49
+    `-f pileup` fixes + bayesian + mpileup/bcftools all unchanged; new
+    `consensus_block_test.go`. The residual 4.58× is the 8 MiB block of
+    resident reads (a smaller block could push it lower).
   - **`consensus -f pileup --mode simple` — 4-position deletion-quality gap —
     FIXED (task #48, merged b3d520d / f6ec27e).** The 4 positions
     (20:30038166, 20:30073764, 20:30075378, 20:30193753) rendered a deletion
