@@ -438,8 +438,10 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   samtools `mpileup -r 20` / `consensus -r 20` below (needs the streaming
   `bam_plp` materialisation), tracked there.
 - **`samtools consensus` — discovered residuals (recorded during #44 baseline,
-  out of #44 scope).** Three separate, independent gaps surfaced while
-  establishing the mpileup baseline and are tracked here so they are not lost:
+  out of #44 scope).** Several separate, independent gaps surfaced while
+  establishing the mpileup baseline and are tracked here so they are not lost
+  (the `-r` OOM and the `-f pileup` 4-position deletion-quality gap are now
+  fixed; the bayesian `-f fasta` and insertion-pad residuals remain open):
   - **`consensus -r <region>` OOM — FIXED (task #45, merged 60c81b2).** The
     `-r` path used to ignore the `.bai`/`.csi` index and scan the whole file,
     OOMing (~11.5 GB SIGKILL even for a 1 kb window) on the full GIAB BAM —
@@ -460,13 +462,30 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
     but still ~20× upstream's 137 MB — that is the SEPARATE per-read Go-record
     buffer, the same streaming residual class flagged for `mpileup -r` under
     295a98a, and is out of scope here.
-  - **`consensus -f pileup --mode simple` — 4 residual qual positions**
-    (20:30038166, 20:30073764, 20:30075378, 20:30193753) from a DIFFERENT cause
-    than the overlap tweak: `consensus_pileup.c`'s running-minimum
-    deletion-quality rule.
+  - **`consensus -f pileup --mode simple` — 4-position deletion-quality gap —
+    FIXED (task #48, merged b3d520d / f6ec27e).** The 4 positions
+    (20:30038166, 20:30073764, 20:30075378, 20:30193753) rendered a deletion
+    `*` placeholder's per-read quality as the single post-gap base quality,
+    whereas upstream (`consensus_pileup.c:195-202`) carries a running minimum
+    `MIN(pre-gap base qual, post-gap base qual)`. Fixed by carrying a
+    deletion-only `delPileupQual` field rendered ONLY by
+    `writeConsensusPileupRow`, so the shared `pileupEvent.qual` used by mpileup
+    is untouched (the #46 mpileup byte-exact path is preserved). MEASURED on
+    real GIAB (bioval) vs upstream: the 4 documented positions 2-diff → **0**,
+    the broad `20:30000000-30200000 -f pileup --mode simple` window
+    **0-diff**, and the CDEL running-min rule closed genome-wide. NO-REGRESS:
+    `-f fasta --mode simple` md5 `b057be94` unchanged, bayesian `73519a08`
+    unchanged, `mpileup -B` vs upstream 0-diff, 0 new test failures.
+  - **`consensus -f pileup --mode simple` — insertion-pad running-min
+    (OPEN, discovered during task #48).** A separate, still-open residual:
+    upstream's insertion-pad running-minimum (`consensus_pileup.c:182-191`,
+    the `p->nth < nth` branch for reads whose insertion is shorter than the
+    nth inserted column) is not yet matched — ~6 diffs in the
+    `20:31000000-31100000` window. Distinct from the deletion running-min the
+    CDEL fix above closed.
   - **`consensus` default Bayesian `-f fasta` — ~1198 structural off-by-one
     diffs**, a separate, larger gap (not the overlap tweak, not the pileup
-    running-minimum rule).
+    running-minimum rules).
 - **`samtools sort` wall — FIXED (task #39 then #42, now ≈ parity).** `sort -@4`
   was ~3x upstream at matched memory. Profiling showed `sort.SliceStable`/heap/
   comparator are negligible (<4%); the costs were excessive spilling (57 vs 4
