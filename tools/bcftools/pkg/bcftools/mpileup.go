@@ -613,17 +613,10 @@ func MpileupFile(opts MpileupOptions, out io.Writer) error {
 		in = append(in, input{path: p, file: f, reader: rd, sample: deriveSample(rd, p)})
 	}
 
-	// Pull records bucketed by chrom for every input.
-	perInputRecs := make([]map[string][]*sam.Record, len(in))
-	for i, x := range in {
-		recs, err := mpileupReadBAM(x.reader, opts)
-		if err != nil {
-			return fmt.Errorf("bcftools mpileup: %s: %w", x.path, err)
-		}
-		perInputRecs[i] = recs
-	}
-
 	// Resolve the chromosome iteration order: prefer the first input's header.
+	// The header is available without draining any records, so this is done
+	// before reading so the block-streaming path (which never buffers a whole
+	// chromosome) can tile regions up front.
 	hdr0 := in[0].reader.Header()
 	chromOrder := make([]string, 0, len(hdr0.Refs))
 	chromLen := make(map[string]int, len(hdr0.Refs))
@@ -637,6 +630,67 @@ func MpileupFile(opts MpileupOptions, out io.Writer) error {
 	regWindows, err := parseMpileupRegions(opts, chromLen)
 	if err != nil {
 		return err
+	}
+
+	// Block-streaming fast path. When every input is an indexed,
+	// coordinate-sorted BAM (the region-reader path was taken for all of
+	// them), an indexed -r/-R seek region exists, and the simple
+	// one-column-per-BAM sample model is in force (no -G/--ignore-RG), the
+	// contig is processed in coordinate BLOCKS instead of buffering every
+	// read plus two contig-sized structures. Each block re-reads only its
+	// own reads (block + left flank) from the index, bounding peak RSS to
+	// one block's worth rather than the whole contig's (~6.6 GB → tens of
+	// MB on human chr20). Anything that needs the whole read set up front
+	// (-G read-group dispatch, non-indexed/CRAM/SAM/stdin inputs, no -r
+	// region) falls through to the whole-buffer path below.
+	allIndexed := len(in) > 0
+	for _, x := range in {
+		if x.region == nil {
+			allIndexed = false
+			break
+		}
+	}
+	if allIndexed && len(seekSpecs) > 0 && len(regWindows) > 0 &&
+		opts.ReadGroups == "" && !opts.IgnoreRG {
+		// Build the per-input path+sample list and apply the -s/-S sample
+		// selection by name (the filter is read-independent).
+		paths := make([]string, len(in))
+		names := make([]string, len(in))
+		for i, x := range in {
+			paths[i] = x.path
+			names[i] = x.sample
+		}
+		keepPaths, keepNames, ferr := filterMpileupSamplesByName(opts, paths, names)
+		if ferr != nil {
+			return ferr
+		}
+		blockInputs := make([]mpileupBlockInput, len(keepPaths))
+		for i := range keepPaths {
+			blockInputs[i] = mpileupBlockInput{path: keepPaths[i], sample: keepNames[i]}
+		}
+		// The pre-opened readers are not used by the block driver (it
+		// re-seeks the index per block); close them now to release their
+		// file handles. The deferred close above is a no-op once region
+		// and file are nil.
+		for i := range in {
+			if in[i].region != nil {
+				_ = in[i].region.Close()
+				in[i].region = nil
+				in[i].reader = nil
+			}
+		}
+		return writeMpileupVCFBlocked(out, opts, ref, chromOrder, chromLen,
+			blockInputs, keepNames, regWindows)
+	}
+
+	// Pull records bucketed by chrom for every input.
+	perInputRecs := make([]map[string][]*sam.Record, len(in))
+	for i, x := range in {
+		recs, err := mpileupReadBAM(x.reader, opts)
+		if err != nil {
+			return fmt.Errorf("bcftools mpileup: %s: %w", x.path, err)
+		}
+		perInputRecs[i] = recs
 	}
 
 	// -G/--read-groups (or --ignore-RG) selects the read-group sample
@@ -664,69 +718,17 @@ func MpileupFile(opts MpileupOptions, out io.Writer) error {
 		samples[i] = x.sample
 	}
 	if len(opts.Samples) > 0 || opts.SamplesFile != "" {
-		// `^name` (in -s) or `^path` (in -S) flips to exclusion mode for
-		// the whole list, matching upstream's `if (sample_list[0]=='^')`
-		// gate in mpileup.c's read_samples (the `^` sticks across both
-		// -s and -S input). `-S` file lines may carry a second column
-		// (whitespace-separated) that renames the matched sample on the
-		// way out — mirroring upstream's bam_smpl_get_samples rename map.
-		exclude := false
-		want := map[string]struct{}{}
-		rename := map[string]string{}
-		add := func(name, alias string) {
-			if name == "" {
-				return
-			}
-			if name[0] == '^' {
-				exclude = true
-				name = name[1:]
-			}
-			if name == "" {
-				return
-			}
-			want[name] = struct{}{}
-			if alias != "" {
-				rename[name] = alias
-			}
-		}
-		for _, s := range opts.Samples {
-			add(s, "")
-		}
-		samplesPath := opts.SamplesFile
-		if strings.HasPrefix(samplesPath, "^") {
-			exclude = true
-			samplesPath = samplesPath[1:]
-		}
-		if samplesPath != "" {
-			pairs, err := LoadSamplesFilePairs(samplesPath)
-			if err != nil {
-				return fmt.Errorf("bcftools mpileup: %w", err)
-			}
-			for _, p := range pairs {
-				add(p[0], p[1])
-			}
-		}
-		matches := func(name string) bool {
-			_, ok := want[name]
-			if exclude {
-				return !ok
-			}
-			return ok
+		keepIdx, outNames, err := mpileupSampleSelection(opts, samples)
+		if err != nil {
+			return err
 		}
 		keep := in[:0]
 		keepRecs := perInputRecs[:0]
 		keepSamp := samples[:0]
-		for i, x := range in {
-			if !matches(x.sample) {
-				continue
-			}
-			outName := x.sample
-			if alias, ok := rename[x.sample]; ok {
-				outName = alias
-			}
-			keep = append(keep, x)
+		for n, i := range keepIdx {
+			keep = append(keep, in[i])
 			keepRecs = append(keepRecs, perInputRecs[i])
-			keepSamp = append(keepSamp, outName)
+			keepSamp = append(keepSamp, outNames[n])
 		}
 		in = keep
 		perInputRecs = keepRecs
@@ -734,6 +736,97 @@ func MpileupFile(opts MpileupOptions, out io.Writer) error {
 	}
 
 	return writeMpileupVCF(out, opts, ref, chromOrder, chromLen, perInputRecs, samples, regWindows)
+}
+
+// mpileupSampleSelection resolves the -s/--samples and -S/--samples-file
+// selection against the per-input sample names. It returns the indices of
+// the inputs to KEEP (in input order) and a parallel slice of their output
+// names (after any -S rename). When no selection is configured it keeps
+// every input under its own name. A leading `^` in -s or -S flips to
+// exclusion mode for the whole list, matching upstream's
+// `if (sample_list[0]=='^')` gate in mpileup.c's read_samples; -S file
+// lines may carry a whitespace-separated second column that renames the
+// matched sample on output (upstream's bam_smpl_get_samples rename map).
+func mpileupSampleSelection(opts MpileupOptions, names []string) (keepIdx []int, outNames []string, err error) {
+	if len(opts.Samples) == 0 && opts.SamplesFile == "" {
+		keepIdx = make([]int, len(names))
+		outNames = append([]string(nil), names...)
+		for i := range names {
+			keepIdx[i] = i
+		}
+		return keepIdx, outNames, nil
+	}
+	exclude := false
+	want := map[string]struct{}{}
+	rename := map[string]string{}
+	add := func(name, alias string) {
+		if name == "" {
+			return
+		}
+		if name[0] == '^' {
+			exclude = true
+			name = name[1:]
+		}
+		if name == "" {
+			return
+		}
+		want[name] = struct{}{}
+		if alias != "" {
+			rename[name] = alias
+		}
+	}
+	for _, s := range opts.Samples {
+		add(s, "")
+	}
+	samplesPath := opts.SamplesFile
+	if strings.HasPrefix(samplesPath, "^") {
+		exclude = true
+		samplesPath = samplesPath[1:]
+	}
+	if samplesPath != "" {
+		pairs, perr := LoadSamplesFilePairs(samplesPath)
+		if perr != nil {
+			return nil, nil, fmt.Errorf("bcftools mpileup: %w", perr)
+		}
+		for _, p := range pairs {
+			add(p[0], p[1])
+		}
+	}
+	matches := func(name string) bool {
+		_, ok := want[name]
+		if exclude {
+			return !ok
+		}
+		return ok
+	}
+	for i, name := range names {
+		if !matches(name) {
+			continue
+		}
+		outName := name
+		if alias, ok := rename[name]; ok {
+			outName = alias
+		}
+		keepIdx = append(keepIdx, i)
+		outNames = append(outNames, outName)
+	}
+	return keepIdx, outNames, nil
+}
+
+// filterMpileupSamplesByName applies mpileupSampleSelection to parallel
+// path/name slices and returns the kept paths plus their output names.
+// The block-streaming path uses this since it never buffers reads: the
+// -s/-S selection is purely name-based and so can run before any read.
+func filterMpileupSamplesByName(opts MpileupOptions, paths, names []string) (keepPaths, keepNames []string, err error) {
+	keepIdx, outNames, err := mpileupSampleSelection(opts, names)
+	if err != nil {
+		return nil, nil, err
+	}
+	keepPaths = make([]string, len(keepIdx))
+	for n, i := range keepIdx {
+		keepPaths[n] = paths[i]
+	}
+	return keepPaths, outNames, nil
 }
 
 // validateMpileupOptions applies upstream's defaults (mpileup.c:1381-1383).
@@ -1221,7 +1314,8 @@ func writeMpileupVCF(out io.Writer, opts MpileupOptions, ref *fasta.RandomAccess
 		if err != nil {
 			return fmt.Errorf("bcftools mpileup: fetch %s: %w", chrom, err)
 		}
-		if err := emitChromMpileup(w, em, chrom, refSlab, refLen, perInputChromRecs, opts, regWindows, &leak); err != nil {
+		// emitBeg=0, emitEnd=0 → no emit restriction (whole-buffer path).
+		if err := emitChromMpileup(w, em, chrom, refSlab, refLen, perInputChromRecs, opts, regWindows, &leak, 0, 0); err != nil {
 			return err
 		}
 	}
@@ -1232,9 +1326,20 @@ func writeMpileupVCF(out io.Writer, opts MpileupOptions, ref *fasta.RandomAccess
 // writes one record per position that has read coverage. Unlike the
 // pre-MAQ port, this emits a record for every covered position (not
 // only SNP candidates) with `<*>` as the unseen allele.
+//
+// emitBeg / emitEnd bound the absolute 0-based half-open coordinate span
+// for which records are WRITTEN. The full per-position pipeline (depth
+// cap, BAQ, overlap merge, snapshots, glfgen, indel) still runs over
+// every read in perInputChromRecs — only the w.Write step is gated to
+// [emitBeg, emitEnd). The whole-buffer driver passes emitBeg=0 and
+// emitEnd>=effLen so nothing is suppressed; the block-streaming driver
+// passes the block's [blockBeg, blockEnd) so the surrounding left-flank
+// reads serve as context only. emitEnd <= 0 is treated as "no upper
+// bound" (the whole-chromosome convention) so callers that do not know
+// effLen up front can pass (0, 0).
 func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab []byte, refLen int,
 	perInputChromRecs [][]*sam.Record, opts MpileupOptions,
-	regWindows map[string][][2]int, leak *biasLeak) error {
+	regWindows map[string][][2]int, leak *biasLeak, emitBeg, emitEnd int) error {
 
 	nIn := len(perInputChromRecs)
 	// -d/--max-depth: htslib applies the cap per alignment-start inside
@@ -1534,6 +1639,15 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 			if !regionContains(regWindows, chrom, pos1) {
 				continue
 			}
+			// Block-streaming emit gate: when driven block-by-block the
+			// left-flank columns [flankBeg, blockBeg) are processed for
+			// context (so BAQ/overlap/snapshot/depth-cap state at blockBeg
+			// matches a whole-contig run) but must NOT be written — the
+			// previous block already emitted them. emitEnd<=0 means "no
+			// upper bound" (whole-chromosome / whole-buffer driver).
+			if pos0 < emitBeg || (emitEnd > 0 && pos0 >= emitEnd) {
+				continue
+			}
 			refB := byte('N')
 			if pos0 < len(refSlab) {
 				refB = upperByte(refSlab[pos0])
@@ -1788,6 +1902,7 @@ func applyMpileupBAQ(perInputChromRecs [][]*sam.Record, refSlab []byte, opts Mpi
 	// PLP_IS_REALN flag plays the same role.
 	var infos []*mpileupReadBAQInfo
 	maxPos := 0
+	minPos := 1 << 62
 	for _, recs := range perInputChromRecs {
 		for _, rec := range recs {
 			if rec.IsUnmapped() || len(rec.Cigar) == 0 {
@@ -1801,17 +1916,34 @@ func applyMpileupBAQ(perInputChromRecs [][]*sam.Record, refSlab []byte, opts Mpi
 			if info.end > maxPos {
 				maxPos = info.end
 			}
+			if info.beg < minPos {
+				minPos = info.beg
+			}
 		}
 	}
 	if len(infos) == 0 {
 		return
 	}
-	// column[pos0] lists the reads overlapping that column.
-	column := make([][]*mpileupReadBAQInfo, maxPos)
+	// The column index lists, per covered reference column, the reads
+	// overlapping it. It is sized to the span the reads actually cover
+	// ([minPos, maxPos)) and indexed by (pos0-minPos) rather than by the
+	// absolute pos0: on the block-streaming path info.end is an ABSOLUTE
+	// coordinate (tens of millions), so an absolute-indexed slice would
+	// allocate one entry per base from 0 to the read end — tens of millions
+	// of empty leading slots per call, the dominant peak-RSS allocation
+	// (~730 MB per call, ~2.8 GB across the BAQ phases for a 0.5 Mbp block).
+	// Rebasing to minPos bounds it to the covered span (one block's worth)
+	// without changing any output: pos0 stays absolute everywhere the
+	// heuristic / region / baqAt logic reads it; only the backing array's
+	// offset changes.
+	if minPos < 0 {
+		minPos = 0
+	}
+	column := make([][]*mpileupReadBAQInfo, maxPos-minPos)
 	for _, info := range infos {
 		for p := info.beg; p < info.end; p++ {
-			if p >= 0 && p < maxPos {
-				column[p] = append(column[p], info)
+			if p >= minPos && p < maxPos {
+				column[p-minPos] = append(column[p-minPos], info)
 			}
 		}
 	}
@@ -1821,7 +1953,7 @@ func applyMpileupBAQ(perInputChromRecs [][]*sam.Record, refSlab []byte, opts Mpi
 	// skip heuristic and the per-read spanning check are both bypassed.
 	partial := !opts.FullBAQ
 
-	for pos0 := 0; pos0 < maxPos; pos0++ {
+	for pos0 := minPos; pos0 < maxPos; pos0++ {
 		// Upstream's mplp_realn is only invoked for piles emitted within
 		// the requested region (mpileup.c:573 sits inside mpileup_reg's
 		// post-region-filter block). Match that by skipping cols outside
@@ -1835,7 +1967,7 @@ func applyMpileupBAQ(perInputChromRecs [][]*sam.Record, refSlab []byte, opts Mpi
 		if colInRegion != nil && !colInRegion(pos0) {
 			continue
 		}
-		col := column[pos0]
+		col := column[pos0-minPos]
 		if len(col) == 0 {
 			continue
 		}
