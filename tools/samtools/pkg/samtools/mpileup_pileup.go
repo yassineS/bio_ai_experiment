@@ -7,10 +7,36 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
+
+// tmpEvent is the per-read CIGAR-walk scratch record built by
+// accumulateRecordEventsLazy: one (pos0, kind, ...) tuple per reference-consuming
+// op before first/last (^/$) markers are resolved. It is package scope (rather
+// than a function-local type) so its backing slice can be pooled across reads.
+type tmpEvent struct {
+	pos0            int
+	col             int // column index into evs (-1 when out of window)
+	kind            pileupEventKind
+	base            byte
+	qual            byte
+	qpos            int // query index whose quality this event borrows (lazy path)
+	readBP          int
+	insAfter        string
+	delAfter        int
+	delBases        string
+	refSkipBoundary bool
+}
+
+// tmpEventPool recycles the per-read tmpEvent scratch slice. accumulateRecord-
+// EventsLazy runs once per read (across the whole contig in the streaming
+// cursor), so allocating its scratch fresh each call was a leading mallocgc
+// source; the pool keeps that allocation off the hot path while staying safe for
+// the single in-flight call per goroutine.
+var tmpEventPool = sync.Pool{New: func() any { s := make([]tmpEvent, 0, 16); return &s }}
 
 // pileupEventKind tags what a pileup event represents at a given position.
 type pileupEventKind uint8
@@ -62,11 +88,25 @@ type pileupEvent struct {
 	// delAfter, when > 0, is the length of a deletion that begins at the
 	// position immediately AFTER this event's base.
 	delAfter int32
-	kind     pileupEventKind
+	// qrec, when non-nil, makes the event's effective quality a LAZY read of
+	// qrec.Qual[qpos] at emit time instead of the frozen qual field. The
+	// streaming overlap-active cursor (runMpileupStreamingCursor) sets this so a
+	// deletion/refskip placeholder borrows its post-gap base quality AS OF the
+	// moment its column is emitted — i.e. reflecting exactly the mate-overlap
+	// tweaks htslib's bam_plp had applied by that column (tweaks fire at the
+	// later mate's push, which for these placeholders happens after the column
+	// emits). The buffered walk and the consensus caller leave qrec nil, so they
+	// read the frozen qual and stay byte-identical. Only the cursor populates it.
+	qrec *sam.Record
+	// qpos is the query-sequence index whose quality this event borrows when
+	// qrec is non-nil (the base used by htslib's bam_get_qual(p->b)[p->qpos]).
+	qpos int32
+	kind pileupEventKind
 	// base is the read base (uppercase if forward, lowercase if reverse)
 	// at this reference position. '*' for pileupEventDel/RefSkip.
 	base byte
-	// qual is the Phred quality of the read base; 0 for non-base events.
+	// qual is the Phred quality of the read base; 0 for non-base events. When
+	// qrec is non-nil this is ignored in favour of the lazy read (see qrec).
 	qual byte
 	// mapq is the read's MAPQ.
 	mapq uint8
@@ -189,7 +229,7 @@ func emitMpileupWindow(bw *bufio.Writer, chrom string, beg0, end0, refLen int,
 	events := sc.events
 	for i := 0; i < nIn; i++ {
 		for ridx, rec := range perInputChromRecs[i] {
-			accumulateRecordEvents(rec, ridx, beg0, end0, events[i], opts, refFA, chrom)
+			accumulateRecordEvents(rec, ridx, beg0, end0, events[i], opts, refFA, chrom, contig)
 		}
 	}
 
@@ -321,6 +361,21 @@ func emitMpileupWindow(bw *bufio.Writer, chrom string, beg0, end0, refLen int,
 	return nil
 }
 
+// effectiveQual returns the Phred quality that drives this event's -Q filter
+// and quals-column rendering. When qrec is non-nil the value is read live from
+// qrec.Qual[qpos] (the streaming overlap cursor's lazy borrow, matching
+// htslib's emit-time bam_get_qual(p->b)[p->qpos]); otherwise the frozen qual is
+// used, so the buffered and consensus callers are byte-unchanged.
+func (e *pileupEvent) effectiveQual() byte {
+	if e.qrec != nil {
+		if int(e.qpos) >= 0 && int(e.qpos) < len(e.qrec.Qual) {
+			return e.qrec.Qual[e.qpos]
+		}
+		return 0
+	}
+	return e.qual
+}
+
 // hasSpanEvent reports whether any non-dropped pileup event covers this
 // position, i.e. at least one read physically overlaps it (an aligned base,
 // a deletion '*', or a reference-skip '<'/'>' placeholder). This is the
@@ -352,7 +407,7 @@ func liveDepth(evs []pileupEvent, minBQ uint8) int {
 		if evs[i].dropped {
 			continue
 		}
-		if minBQ > 0 && evs[i].qual < minBQ {
+		if minBQ > 0 && evs[i].effectiveQual() < minBQ {
 			continue
 		}
 		n++
@@ -378,7 +433,7 @@ func writeBasesColumn(bw *bufio.Writer, evs []pileupEvent, ref byte, opts Mpileu
 		// '*'/'>'/'<' flanking a low-quality deletion drops out just as it does
 		// upstream. Gating this on pileupEventBase over-retained those
 		// placeholders, inflating depth near indels.
-		if opts.MinBaseQ > 0 && e.qual < opts.MinBaseQ {
+		if opts.MinBaseQ > 0 && e.effectiveQual() < opts.MinBaseQ {
 			continue
 		}
 		if e.readStart {
@@ -471,10 +526,10 @@ func writeQualsColumn(bw *bufio.Writer, evs []pileupEvent, opts MpileupOptions) 
 		// '*'/'>'/'<' flanking a low-quality deletion drops out just as it does
 		// upstream. Gating this on pileupEventBase over-retained those
 		// placeholders, inflating depth near indels.
-		if opts.MinBaseQ > 0 && e.qual < opts.MinBaseQ {
+		if opts.MinBaseQ > 0 && e.effectiveQual() < opts.MinBaseQ {
 			continue
 		}
-		bw.WriteByte(e.qual + 33)
+		bw.WriteByte(e.effectiveQual() + 33)
 	}
 }
 
@@ -494,7 +549,7 @@ func writeMapqColumn(bw *bufio.Writer, evs []pileupEvent, opts MpileupOptions) {
 		// '*'/'>'/'<' flanking a low-quality deletion drops out just as it does
 		// upstream. Gating this on pileupEventBase over-retained those
 		// placeholders, inflating depth near indels.
-		if opts.MinBaseQ > 0 && e.qual < opts.MinBaseQ {
+		if opts.MinBaseQ > 0 && e.effectiveQual() < opts.MinBaseQ {
 			continue
 		}
 		c := int(e.mapq) + 33
@@ -506,7 +561,9 @@ func writeMapqColumn(bw *bufio.Writer, evs []pileupEvent, opts MpileupOptions) {
 }
 
 // writeReadBPColumn writes the optional per-read base-position column (-O):
-// comma-separated 1-based read positions. Deletion events get a "0".
+// comma-separated 1-based read positions. Deletion / ref-skip placeholders
+// report the post-gap base's 1-based read position (qpos+1), matching
+// upstream's bam_plcmd.c:716.
 func writeReadBPColumn(bw *bufio.Writer, evs []pileupEvent, opts MpileupOptions) {
 	sortEvents(evs)
 	first := true
@@ -522,7 +579,7 @@ func writeReadBPColumn(bw *bufio.Writer, evs []pileupEvent, opts MpileupOptions)
 		// '*'/'>'/'<' flanking a low-quality deletion drops out just as it does
 		// upstream. Gating this on pileupEventBase over-retained those
 		// placeholders, inflating depth near indels.
-		if opts.MinBaseQ > 0 && e.qual < opts.MinBaseQ {
+		if opts.MinBaseQ > 0 && e.effectiveQual() < opts.MinBaseQ {
 			continue
 		}
 		if !first {
@@ -536,10 +593,35 @@ func writeReadBPColumn(bw *bufio.Writer, evs []pileupEvent, opts MpileupOptions)
 // sortEvents stably orders events by their originating read index so that
 // the multi-read column is rendered in a deterministic order (matches
 // upstream's "iterate in pileup-walker order").
+//
+// A single O(n) ordered check guards the sort: the streaming cursor appends a
+// column's events in ascending readIdx already (reads are pushed in coordinate
+// == push order and each touches a column at most once), so its columns are
+// pre-sorted and skip the comparison-sort entirely. The buffered walk's columns
+// are likewise built in read order, so the fast-path applies there too — and
+// when they are NOT ordered (a future caller, or a non-monotone build) the
+// stable sort still runs, producing the identical ordering it always did. The
+// fast-path is therefore output-neutral: it only avoids redundant work on input
+// that is already in the exact order the stable sort would leave it.
 func sortEvents(evs []pileupEvent) {
+	if sortedByReadIdx(evs) {
+		return
+	}
 	sort.SliceStable(evs, func(i, j int) bool {
 		return evs[i].readIdx < evs[j].readIdx
 	})
+}
+
+// sortedByReadIdx reports whether evs is already in non-decreasing readIdx
+// order — exactly the order a stable sort by readIdx would leave it, so when it
+// holds the sort is a guaranteed no-op and can be skipped.
+func sortedByReadIdx(evs []pileupEvent) bool {
+	for i := 1; i < len(evs); i++ {
+		if evs[i].readIdx < evs[i-1].readIdx {
+			return false
+		}
+	}
+	return true
 }
 
 // accumulateRecordEvents walks rec's CIGAR and appends per-position events
@@ -547,7 +629,29 @@ func sortEvents(evs []pileupEvent) {
 // [beg0, end0). It also threads through readStart/readEnd markers and
 // attaches +/- indel annotations.
 func accumulateRecordEvents(rec *sam.Record, readIdx, beg0, end0 int, evs [][]pileupEvent,
-	opts MpileupOptions, refFA *fasta.RandomAccess, chrom string) {
+	opts MpileupOptions, refFA *fasta.RandomAccess, chrom string, contig []byte) {
+	accumulateRecordEventsLazy(rec, readIdx, beg0, end0, evs, opts, refFA, chrom, false, contig)
+}
+
+// accumulateRecordEventsLazy is accumulateRecordEvents with an explicit lazyQual
+// switch. When lazyQual is true every emitted event carries a live reference
+// (qrec/qpos) to the originating record's quality array instead of a frozen
+// byte, so the -Q filter and quals column reflect the record's quality AS OF
+// emit time — the streaming overlap cursor relies on this so a deletion/refskip
+// placeholder borrows its post-gap base quality before its later mate's overlap
+// tweak has run (matching htslib's emit-time bam_get_qual(p->b)[p->qpos]). The
+// geometry (^/$ markers, +/- indel annotations, ref-skip boundaries, which
+// base/qpos each event uses) is identical to the eager path; only whether the
+// quality is read live differs, so lazyQual=false reproduces the original bytes.
+//
+// contig, when non-nil, is the whole-chromosome reference (uppercased, the exact
+// bytes refFA.Fetch returns) and is sliced for a deletion's "-<len><seq>" ref
+// bases instead of issuing a fresh refFA.Fetch per D op — that per-deletion Fetch
+// re-decompresses the FASTA bgzf block and dominated the streaming walk. Slicing
+// the already-loaded contig is byte-identical (same uppercased source bytes); the
+// refFA.Fetch fallback is kept for callers without a loaded contig.
+func accumulateRecordEventsLazy(rec *sam.Record, readIdx, beg0, end0 int, evs [][]pileupEvent,
+	opts MpileupOptions, refFA *fasta.RandomAccess, chrom string, lazyQual bool, contig []byte) {
 	if rec.Pos <= 0 {
 		return
 	}
@@ -561,20 +665,13 @@ func accumulateRecordEvents(rec *sam.Record, readIdx, beg0, end0 int, evs [][]pi
 	// this record (M/=/X bases, D/N gap placeholders). We make a single
 	// CIGAR pass and collect (pos0, kind) tuples for the in-window events;
 	// then we know which one is first and which is last so we can attach
-	// ^/$ markers.
-	type tmpEvent struct {
-		pos0            int
-		col             int // column index into evs (-1 when out of window)
-		kind            pileupEventKind
-		base            byte
-		qual            byte
-		readBP          int
-		insAfter        string
-		delAfter        int
-		delBases        string
-		refSkipBoundary bool
-	}
-	tmp := make([]tmpEvent, 0, 8)
+	// ^/$ markers. The scratch slice is pooled (tmpEventPool) so this CIGAR
+	// pass — run once per read across the whole contig in the streaming cursor —
+	// no longer heap-allocates a fresh slice per read (it was a top mallocgc
+	// source on the streaming hot path).
+	tmpp := tmpEventPool.Get().(*[]tmpEvent)
+	tmp := (*tmpp)[:0]
+	defer func() { *tmpp = tmp[:0]; tmpEventPool.Put(tmpp) }()
 
 	pendingInsTarget := -1 // index in tmp to attach a pending insertion to
 	pendingDelTarget := -1 // index in tmp to attach a pending deletion to
@@ -609,6 +706,7 @@ func accumulateRecordEvents(rec *sam.Record, readIdx, beg0, end0 int, evs [][]pi
 					kind:   pileupEventBase,
 					base:   base,
 					qual:   qual,
+					qpos:   q,
 					readBP: q + 1,
 				})
 				// If we had a pending insertion or deletion attached to
@@ -641,7 +739,11 @@ func accumulateRecordEvents(rec *sam.Record, readIdx, beg0, end0 int, evs [][]pi
 			// after the deletion to each '*' placeholder; if no next
 			// base exists the placeholder gets Phred 0 ('!').
 			var delBases string
-			if refFA != nil {
+			if contig != nil && refPos >= 0 && refPos+l <= len(contig) {
+				// Slice the already-loaded, uppercased contig — identical bytes to
+				// refFA.Fetch but with no per-deletion FASTA re-decompression.
+				delBases = string(contig[refPos : refPos+l])
+			} else if refFA != nil {
 				if b, err := refFA.Fetch(chrom, int64(refPos), int64(refPos+l)); err == nil {
 					delBases = string(b)
 				}
@@ -667,6 +769,12 @@ func accumulateRecordEvents(rec *sam.Record, readIdx, beg0, end0 int, evs [][]pi
 					col:  col,
 					kind: pileupEventDel,
 					qual: gapQual,
+					qpos: queryPos,
+					// Upstream's per-read-position column (-O) prints p->qpos+1
+					// for a deletion placeholder (bam_plcmd.c:716), where qpos is
+					// the post-gap base index — the same base whose quality the
+					// '*' borrows. Match it rather than emitting 0.
+					readBP: queryPos + 1,
 				})
 			}
 			refPos += l
@@ -689,6 +797,10 @@ func accumulateRecordEvents(rec *sam.Record, readIdx, beg0, end0 int, evs [][]pi
 					col:  col,
 					kind: pileupEventRefSkip,
 					qual: gapQual,
+					qpos: queryPos,
+					// As for deletions, upstream's -O column prints p->qpos+1 for
+					// a ref-skip placeholder (bam_plcmd.c:716).
+					readBP: queryPos + 1,
 				})
 			}
 			refPos += l
@@ -766,6 +878,14 @@ func accumulateRecordEvents(rec *sam.Record, readIdx, beg0, end0 int, evs [][]pi
 			delAfter:        int32(t.delAfter),
 			delBases:        t.delBases,
 			refSkipBoundary: t.refSkipBoundary,
+		}
+		if lazyQual {
+			// Read this event's quality live from the record at emit time, so
+			// mate-overlap tweaks applied after the event was built (but before
+			// its column emits) are reflected — and, crucially, tweaks applied
+			// AFTER its column emits are not. See pileupEvent.qrec.
+			ev.qrec = rec
+			ev.qpos = int32(t.qpos)
 		}
 		evs[t.col] = append(evs[t.col], ev)
 	}

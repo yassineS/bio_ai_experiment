@@ -813,7 +813,7 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 				if int(rec.Pos)-1 >= tEnd {
 					break
 				}
-				accumulateRecordEvents(rec, ridx, tBeg, tEnd, events, accOpts, nil, chrom)
+				accumulateRecordEvents(rec, ridx, tBeg, tEnd, events, accOpts, nil, chrom, nil)
 			}
 
 			// Walk positions.

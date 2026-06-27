@@ -433,6 +433,17 @@ func mergeRegionByChrom(in map[string][][2]int) map[string][][2]int {
 }
 
 func runMpileupStreaming(rd sam.Reader, out io.Writer, opts MpileupOptions, refFA *fasta.RandomAccess, regionByChrom map[string][][2]int, posFilter *positionFilter) error {
+	// Overlap-active streaming runs through the true bam_plp push-then-emit
+	// cursor so that a deletion/refskip placeholder borrows its post-gap base
+	// quality AS OF the moment its column is emitted — reflecting only the
+	// mate-overlap tweaks htslib had applied by that point (the later mate's
+	// tweak typically fires after the placeholder's column has already emitted).
+	// The eager tile walk below applies every tweak up front, which over-zeroed
+	// those borrowed qualities and dropped/over-counted the '*'. The non-overlap
+	// (-x) path has no tweaks, so its byte-exact tile walk is kept unchanged.
+	if !opts.IgnoreOverlaps {
+		return runMpileupStreamingCursor(rd, out, opts, refFA, regionByChrom, posFilter)
+	}
 	hdr := rd.Header()
 	bw := bufio.NewWriter(out)
 	defer bw.Flush()

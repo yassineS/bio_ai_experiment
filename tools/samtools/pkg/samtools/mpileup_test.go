@@ -166,6 +166,93 @@ r1	0	chr1	5	60	2M3D2M	*	0	0	ACGT	IIII
 	}
 }
 
+// TestMpileup_OverlapDeletionBorrowEmitTime locks the streaming overlap cursor's
+// emit-time borrow for a deletion '*' whose post-gap base sits in a mate-overlap
+// region. htslib reads the placeholder's borrowed quality LIVE when the
+// placeholder's column is emitted (bam_get_qual(p->b)[p->qpos]), and a column is
+// finalised the instant a read starting past it is pushed
+// (bam_plp64_next's max_pos>pos). The later mate's overlap tweak fires at its own
+// push, so the '*' column ordinarily emits BEFORE that tweak and keeps the raw
+// quality — which the old eager whole-window tweak destroyed, dropping the '*'.
+//
+// QName "ovl1" is chosen so wangHash(x31Hash("ovl1"))&1 == 0, i.e. the LEFT mate
+// (the deletion read) is the one whose overlapping qualities get zeroed; that
+// makes the pre- vs post-tweak distinction observable (raw 40 kept vs 0 dropped).
+func TestMpileup_OverlapDeletionBorrowEmitTime(t *testing.T) {
+	// Pre-tweak column: the '*' is finalised before the right mate is pushed, so
+	// it keeps the raw borrowed quality (Phred 40 => 'I') and prints.
+	//
+	// Layout on chr1 (1-based):
+	//   ovl1 (left, flag 99)  @100  5M2D5M  -> M@100..104, *@105..106, M@107..111
+	//   filler (flag 0)       @107  3M      -> triggers emit of cols 105/106
+	//   ovl1 (right, flag 147)@107  5M      -> overlaps left's post-gap base @107
+	// The filler at 107 (start > 106) is pushed before the right mate, so cols
+	// 105/106 emit with the left mate's still-raw post-gap qual; the right mate's
+	// later push zeroes it but the '*' columns are already written.
+	preSAM := "@HD\tVN:1.6\tSO:coordinate\n" +
+		"@SQ\tSN:chr1\tLN:200\n" +
+		"ovl1\t99\tchr1\t100\t60\t5M2D5M\t=\t107\t12\tAAAAACCCCC\tIIIIIIIIII\n" +
+		"filler\t0\tchr1\t107\t60\t3M\t*\t0\t0\tCCC\tIII\n" +
+		"ovl1\t147\tchr1\t107\t60\t5M\t=\t100\t-12\tCCCCC\tIIIII\n"
+	out := runMpileupOnSAM(t, []string{preSAM}, MpileupOptions{MinBaseQ: DefaultMpileupMinBaseQ}, nil, nil)
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	got := map[string]string{}
+	for _, l := range lines {
+		f := strings.Split(l, "\t")
+		if len(f) >= 2 {
+			got[f[1]] = l
+		}
+	}
+	// Columns 105 and 106 must show the deletion '*' with the raw borrowed qual
+	// 'I' (Phred 40) — proving the borrow was read before the later mate's tweak.
+	for _, pos := range []string{"105", "106"} {
+		l, ok := got[pos]
+		if !ok {
+			t.Fatalf("pre-tweak: no row emitted at position %s; output:\n%s", pos, out)
+		}
+		f := strings.Split(l, "\t")
+		if f[3] != "1" || !strings.HasPrefix(f[4], "*") || f[5] != "I" {
+			t.Errorf("pre-tweak position %s: want depth 1, '*' base, qual 'I'; got depth=%s bases=%q qual=%q",
+				pos, f[3], f[4], f[5])
+		}
+	}
+
+	// Post-tweak column: with NO filler, the right mate (@107) is itself the first
+	// read starting past the deletion columns, so its push BOTH tweaks the left
+	// mate (zeroing its post-gap base @107) AND finalises cols 105/106 — and
+	// htslib runs the push/tweak before the emit. The '*' therefore borrows the
+	// now-zeroed qual (< min-BQ) and is filtered out, leaving a depth-0 row.
+	//
+	//   ovl1 (left, flag 99)  @100  5M2D5M  -> *@105..106, post-gap base @107
+	//   ovl1 (right, flag 147)@107  5M      -> overlaps the post-gap base @107 only
+	postSAM := "@HD\tVN:1.6\tSO:coordinate\n" +
+		"@SQ\tSN:chr1\tLN:200\n" +
+		"ovl1\t99\tchr1\t100\t60\t5M2D5M\t=\t107\t12\tAAAAACCCCC\tIIIIIIIIII\n" +
+		"ovl1\t147\tchr1\t107\t60\t5M\t=\t100\t-12\tCCCCC\tIIIII\n"
+	out2 := runMpileupOnSAM(t, []string{postSAM}, MpileupOptions{MinBaseQ: DefaultMpileupMinBaseQ}, nil, nil)
+	got2 := map[string]string{}
+	for _, l := range strings.Split(strings.TrimRight(out2, "\n"), "\n") {
+		f := strings.Split(l, "\t")
+		if len(f) >= 2 {
+			got2[f[1]] = l
+		}
+	}
+	for _, pos := range []string{"105", "106"} {
+		l, ok := got2[pos]
+		if !ok {
+			// A depth-0 spanned row is still printed (the '*' placeholder exists
+			// but is base-quality-filtered). Accept either no row or a depth-0 row,
+			// but a depth-1 '*' here would mean the tweak was missed.
+			continue
+		}
+		f := strings.Split(l, "\t")
+		if f[3] != "0" {
+			t.Errorf("post-tweak position %s: want depth 0 (borrowed qual zeroed by overlap tweak before emit); got %q",
+				pos, l)
+		}
+	}
+}
+
 func TestMpileup_StartEndMarkers(t *testing.T) {
 	// Two reads sharing the same position so we see both ^ and $ on
 	// the same column when one ends and one starts.
