@@ -376,58 +376,53 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   placeholders already carry the post-gap base's quality, matching upstream's
   `bam_get_qual[p->qpos]`): **−B 542 → 7 positions, BAQ-on 3200 → 2**, the
   `20:126156` case byte-exact, region 20:30–31 Mb + `-Q 0` 0-diff, no new test
-  failures, RSS unchanged. **REMAINING (the residual 7/2 positions):** a separate,
-  pre-existing **overlap-removal streaming-order** divergence. `applyOverlapRemoval`
-  (`mpileup_overlap.go`) de-weights mate-pair overlaps EAGERLY over the whole
+  failures, RSS unchanged. **The residual 7/2 positions** were a separate,
+  pre-existing **overlap-removal streaming-order** divergence: `applyOverlapRemoval`
+  (`mpileup_overlap.go`) de-weighted mate-pair overlaps EAGERLY over the whole
   contig before accumulation, whereas htslib's `bam_plp` applies each pair's
   `tweak_overlap_quality` incrementally as the later mate is pushed (at its ref
   start), and the tweak both sums and zeroes qualities — so a deletion `*`
   borrowing the post-gap base's quality needs an original-vs-tweaked value that
-  varies per column (a single `visibleFrom` threshold cannot express it; a naive
-  position-aware model was tried and regressed to baseline). Closing it requires
-  an incremental / position-aware overlap tweak — a restructure of the
-  accumulate-then-render pipeline (touches `mpileup_overlap.go` +
-  `mpileup_pileup.go`'s `gapQual` capture), carrying real regression risk, so it
-  is a deliberate follow-up, not folded into the `-Q` filter fix.
-  **Follow-up task #41 attempted the position-aware tweak and was reverted (no
-  regression) — the boundary is NON-UNIVERSAL.** A second model (capture each
-  tweaked base's original quality + `visibleFrom = (later mate).Pos−1`, use the
-  original quality for a placeholder column `C < visibleFrom`) again regressed in
-  the full-region scan (`−B` 7 → 54), and the full-md5 oracle caught it. It was
-  refuted at the algorithm level at `20:25426694`: there a `C < visibleFrom`
-  deletion placeholder borrows a *zeroed* post-gap base and upstream emits the
-  **tweaked** `0`, not the original — so "before the mate is pushed ⇒ original"
-  is simply false in general. htslib's borrowed-quality semantics
-  (`sam.c tweak_overlap_quality`, `p->qpos = s->y`) are an in-place mutate whose
-  per-column visibility is coupled to `bam_plp`'s streaming push/emit order; the
-  buffered accumulate-then-render model cannot reproduce it with a per-record (or
-  even per-base) `visibleFrom` rule. **The only faithful path is a true streaming
-  pileup engine** that pushes reads and applies the overlap tweak in `bam_plp`
-  order, emitting each column as it is reached — a major mpileup-engine
-  restructure (follow-up #44). The 7/2-position residual (99.99993 % of region 20
-  already byte-identical) stands until then.
-  **Task #44 attempt-1 (this run) CONFIRMED the streaming-engine diagnosis with
-  trace-level evidence and shipped no code (clean zero-regression revert).** The
-  diagnose proposed a SURGICAL fix — a one-step `a_iseq`/`b_iseq` off-by-one in
-  `tweakOverlapQuality`'s cross-deletion catch-up. Side-by-side htslib
-  (`sam.c`)/Go traces RIGOROUSLY DISPROVED it: our `tweakOverlapQuality` is a
-  faithful line-by-line port of `tweak_overlap_quality` (identical
-  `iref`/`iseq`/`qual` at every step), so the per-pair tweak is NOT the cause.
-  The true residual is a **push-vs-cursor INTERLEAVING artefact**: in
-  `bam_plp`, a deletion `*` placeholder's quality (`bam_get_qual[qpos]`, the
-  post-gap base) is read when the pileup CURSOR reaches the deletion, whereas
-  `tweak_overlap_quality` fires when the SECOND MATE IS PUSHED — so whether the
-  `*` borrows the pre- or post-tweak quality is DATA-DEPENDENT on read
-  interleaving (trace-proven: 20:17617199 resolves pre-tweak; 20:60709531 and
-  20:36570298 post-tweak). No per-pair / per-record rule can express it (stronger
-  evidence than #41's algebraic refutation). A trial heuristic closed 4 of 7
-  windows but REGRESSED 3, so it was REVERTED to the clean baseline. Measured
-  residual unchanged: full contig-20 `-B` = **7 positions / 9,711,557 lines
-  (99.99993 % byte-identical)**, BAQ-on = **2**; control window 0-diff; mpileup
-  RSS unchanged (~1.68–1.76×); consensus/BCF untouched. Byte-exact overlap
-  parity genuinely requires the full `bam_plp` push-then-emit STREAMING ENGINE —
-  correctly deferred (too large/risky for an automated refine; the #41
-  no-regression rule forbids shipping the regressing heuristic).
+  varies per column (a single `visibleFrom` threshold cannot express it).
+  Follow-ups #41 and #44 both confirmed (with trace-level evidence) that the
+  buffered accumulate-then-render model could not reproduce htslib's
+  borrowed-quality timing — htslib's semantics (`sam.c tweak_overlap_quality`,
+  `p->qpos = s->y`) are an in-place mutate whose per-column visibility is coupled
+  to `bam_plp`'s streaming push/emit order, so whether a `*` borrows the pre- or
+  post-tweak quality is DATA-DEPENDENT on read interleaving (trace-proven:
+  20:17617199 resolves pre-tweak; 20:60709531 and 20:36570298 post-tweak). No
+  per-pair / per-record rule expresses it; #44's trial heuristic closed 4 of 7
+  windows but regressed 3, so it was reverted. The only faithful path was a true
+  streaming `bam_plp` push-then-emit engine.
+  **CLOSED by task #46 (merged a04f952).** The streaming engine now exists
+  (`mpileup_cursor.go`): it pushes each read at its ref start, fires the read's
+  overlap tweak at the push point, advances a column ring buffer, emits each
+  column the instant a read past it is pushed, and reads the deletion `*`
+  borrowed quality LIVE via a lazy `{rec, qpos}` reference — exactly htslib's
+  push-vs-cursor timing. It is gated behind an overlaps-active flag, so the
+  buffered / `-x` / consensus paths are byte-unchanged. MEASURED on real GIAB
+  (bioval), ours vs upstream — **byte-exact GENOME-WIDE, not just contig 20**:
+  - contig 20 `-B` **7 → 0** (md5 == upstream over 9,711,557 lines), BAQ-on
+    **2 → 0**;
+  - contig 21 `-B` **4 → 0**; contig 22 `-B` **10 → 0**, BAQ-on **8 → 0**;
+    ours == upstream on every contig tested, and unchanged vs the old code where
+    there is no overlap residual (chr1/2/X) — zero output regression.
+  - Latent `-O` placeholder bug fixed along the way (del/refskip now print
+    `qpos+1`, not `0`, matching upstream).
+  - PERF: faster than the OLD buffered code — `mpileup -B -r 20` wall
+    **8.6 s → 6.33 s** (0.74× the buffered path, ~2.2× upstream), peak RSS flat
+    (122 vs 127 MB); consensus md5 unchanged; `go test` 0 new failures.
+  The streaming-`bam_plp`-engine follow-up (formerly the open #44/#41 item) is
+  **DONE**.
+- **`bcftools mpileup -r` (and `samtools mpileup -g`) BCF path OOM — discovered
+  during task #46, out of #46 scope.** The BCF/genotype-likelihood `-r` path does
+  NOT seek the index: on a 10 kb region it scans the whole file and OOMs (~11.4 GB,
+  exit -9), the SAME class of bug as the consensus `-r` OOM fixed in #45 and the
+  text-pileup `mpileup -r` index-seek landed in 295a98a / c3785be. The fix is the
+  same index-seek pattern (reuse `openBAMRegionReader` / `bam.UnionChunks` instead
+  of draining the whole BAM). Note `samtools mpileup -g` itself was removed
+  upstream ("use bcftools mpileup"), so the BCF path is reached via
+  `bcftools mpileup`. A real, separate, fixable parity/perf bug — tracked here.
 - **`samtools consensus` — discovered residuals (recorded during #44 baseline,
   out of #44 scope).** Three separate, independent gaps surfaced while
   establishing the mpileup baseline and are tracked here so they are not lost:
