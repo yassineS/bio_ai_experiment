@@ -29,6 +29,16 @@ type tmpEvent struct {
 	delAfter        int
 	delBases        string
 	refSkipBoundary bool
+	// delPileupQual, when non-zero, is (q+1) where q is the deletion-placeholder
+	// quality the `samtools consensus -f pileup` renderer must emit for this '*'
+	// event: upstream's RUNNING-min rule MIN(pre-gap base qual, post-gap base
+	// qual) (consensus_pileup.c:195-202). It is computed from the PRE-gap base
+	// (rec.Qual[queryPos-1]) at CIGAR-walk time and consumed ONLY by
+	// writeConsensusPileupRow; mpileup and the simple/bayesian callers continue
+	// to read the unchanged post-gap `qual`. 0 means "no pre-gap base" (e.g. a
+	// deletion at the very start of the read) — the renderer then falls back to
+	// the post-gap qual, matching upstream's edge handling.
+	delPileupQual byte
 }
 
 // tmpEventPool recycles the per-read tmpEvent scratch slice. accumulateRecord-
@@ -138,6 +148,18 @@ type pileupEvent struct {
 	// affected. This is read solely by the consensus bayesian path; mpileup
 	// does not consult it.
 	refSkipBoundary bool
+	// delPileupQual, when non-zero, is (q+1) where q is the deletion-placeholder
+	// quality that `samtools consensus -f pileup` must render for this '*' event:
+	// upstream's RUNNING minimum MIN(pre-gap base qual, post-gap base qual)
+	// (consensus_pileup.c:195-202), where seq_offset stays pinned at the pre-gap
+	// base for the whole contiguous D-run. It is populated from the PRE-gap base
+	// in accumulateRecordEventsLazy's CigarDeletion branch and read EXCLUSIVELY
+	// by writeConsensusPileupRow's pileupEventDel case. The frozen `qual` field
+	// (the single post-gap base quality, shared with mpileup via the bam_plp
+	// engine) is deliberately left untouched, so mpileup and the simple/bayesian
+	// callers stay byte-identical. 0 means "no pre-gap base" (a deletion at read
+	// start) — the renderer falls back to `qual`, matching upstream.
+	delPileupQual byte
 }
 
 // emitMpileupWindow walks every position in [beg0, end0) on chrom, gathers
@@ -758,6 +780,27 @@ func accumulateRecordEventsLazy(rec *sam.Record, readIdx, beg0, end0 int, evs []
 			if queryPos < len(rec.Qual) {
 				gapQual = rec.Qual[queryPos]
 			}
+			// delPileupQual carries upstream's RUNNING-min '*' quality for the
+			// `consensus -f pileup` renderer ONLY (consensus_pileup.c:195-202):
+			// MIN(pre-gap base qual, post-gap base qual). `gapQual` above is the
+			// post-gap base; the pre-gap base is rec.Qual[queryPos-1]. We encode
+			// the result as value+1 so 0 stays "no pre-gap base" (a deletion at
+			// the very start of the read, queryPos==0) — there the renderer keeps
+			// using `gapQual`, matching upstream's read-start edge. At the read
+			// END (no post-gap base) upstream falls back to MIN(p->qual,
+			// b_qual[seq_offset]) = the pre-gap qual, which we reproduce by
+			// MIN-ing against the pre-gap base alone. This field is read solely by
+			// writeConsensusPileupRow; mpileup and the simple/bayesian callers
+			// consult the unchanged `qual`, so they stay byte-identical.
+			var delPileupQual byte
+			if queryPos > 0 && queryPos-1 < len(rec.Qual) {
+				preGapQual := rec.Qual[queryPos-1]
+				runMin := preGapQual
+				if queryPos < len(rec.Qual) && gapQual < runMin {
+					runMin = gapQual
+				}
+				delPileupQual = runMin + 1
+			}
 			for k := 0; k < l; k++ {
 				p := refPos + k
 				col := -1
@@ -765,11 +808,12 @@ func accumulateRecordEventsLazy(rec *sam.Record, readIdx, beg0, end0 int, evs []
 					col = p - beg0
 				}
 				tmp = append(tmp, tmpEvent{
-					pos0: p,
-					col:  col,
-					kind: pileupEventDel,
-					qual: gapQual,
-					qpos: queryPos,
+					pos0:          p,
+					col:           col,
+					kind:          pileupEventDel,
+					qual:          gapQual,
+					qpos:          queryPos,
+					delPileupQual: delPileupQual,
 					// Upstream's per-read-position column (-O) prints p->qpos+1
 					// for a deletion placeholder (bam_plcmd.c:716), where qpos is
 					// the post-gap base index — the same base whose quality the
@@ -878,6 +922,7 @@ func accumulateRecordEventsLazy(rec *sam.Record, readIdx, beg0, end0 int, evs []
 			delAfter:        int32(t.delAfter),
 			delBases:        t.delBases,
 			refSkipBoundary: t.refSkipBoundary,
+			delPileupQual:   t.delPileupQual,
 		}
 		if lazyQual {
 			// Read this event's quality live from the record at emit time, so
