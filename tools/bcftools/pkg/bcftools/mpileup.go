@@ -101,6 +101,17 @@ const (
 	// mpileupTheta is upstream's CALL_DEFTHETA (bam2bcf.c:39); the errmod
 	// depth-correlation parameter is 1 - theta.
 	mpileupTheta = 0.83
+	// mpileupEventsWindow is the number of reference positions whose pileup
+	// columns are materialised at once in emitChromMpileup. The events array
+	// is built one window at a time so a whole-chromosome query bounds its
+	// peak memory to one window's worth of pileupBase structs rather than the
+	// whole contig's (which reached ~11 GB on human chr20). It is a pure
+	// memory/throughput knob — it does not affect output: pos0 stays the
+	// absolute coordinate and reads spanning a window edge are re-accumulated
+	// into each window they touch. One million positions keeps boundary
+	// re-accumulation negligible (a 100bp read straddles at most a single
+	// edge) while holding peak well inside upstream's RSS envelope.
+	mpileupEventsWindow = 1_000_000
 )
 
 // AmbigReadsMode selects how `--ambig-reads` compensates the per-allele
@@ -543,22 +554,53 @@ func MpileupFile(opts MpileupOptions, out io.Writer) error {
 	}
 	defer ref.Close()
 
-	// Open every BAM input and bind to a sam.Reader.
+	// Region specs for the indexed seek path. Only -r/--regions and
+	// -R/--regions-file drive a BAI/CSI seek (upstream's regidx); -t/-T
+	// targets stay streaming post-filters and never seek.
+	seekSpecs, err := mpileupSeekSpecs(opts)
+	if err != nil {
+		return err
+	}
+
+	// Open every BAM input and bind to a sam.Reader. When seekSpecs is
+	// non-empty and the input is a seekable, coordinate-sorted, indexed BAM
+	// (not CRAM/SAM/unsorted/stdin), we use a region-restricted reader so
+	// ONLY the region's reads are read and bucketed — bounded memory and
+	// wall — instead of draining the whole file. Each input seeks its own
+	// chunks or falls back to the linear scan independently.
 	type input struct {
 		path   string
 		file   *os.File
+		region *bamRegionReader
 		reader sam.Reader
 		sample string
 	}
 	in := make([]input, 0, len(inputs))
 	defer func() {
 		for _, x := range in {
+			if x.region != nil {
+				_ = x.region.Close()
+			}
 			if x.file != nil {
 				_ = x.file.Close()
 			}
 		}
 	}()
 	for _, p := range inputs {
+		if len(seekSpecs) > 0 {
+			rr, rerr := openBAMRegionReader(p, seekSpecs)
+			if rerr != nil {
+				return fmt.Errorf("bcftools mpileup: %s: %w", p, rerr)
+			}
+			if rr != nil {
+				// Indexed fast path: the region reader owns its own file
+				// handle, so no separate *os.File is opened for this input.
+				in = append(in, input{path: p, region: rr, reader: rr, sample: deriveSample(rr, p)})
+				continue
+			}
+			// rr == nil: not a seekable indexed coord-sorted BAM — fall
+			// through to the unchanged whole-file linear open below.
+		}
 		f, err := os.Open(p)
 		if err != nil {
 			return fmt.Errorf("bcftools mpileup: %w", err)
@@ -958,6 +1000,25 @@ func mpileupKeepRecord(rec *sam.Record, opts MpileupOptions) bool {
 	return true
 }
 
+// mpileupSeekSpecs collects the -r/--regions and -R/--regions-file specs
+// that drive the BAI/CSI index seek (upstream's regidx). It deliberately
+// excludes -t/-T targets: those remain streaming post-filters and must not
+// narrow the seek (upstream reads the whole region set for targets too).
+// The returned specs are `chr:beg-end`-style strings understood by
+// region.ParseRegion; an empty result disables the indexed fast path.
+func mpileupSeekSpecs(opts MpileupOptions) ([]string, error) {
+	var specs []string
+	specs = append(specs, opts.Regions...)
+	if opts.RegionsFile != "" {
+		extra, err := LoadRegionsFile(opts.RegionsFile)
+		if err != nil {
+			return nil, fmt.Errorf("bcftools mpileup: %w", err)
+		}
+		specs = append(specs, extra...)
+	}
+	return specs, nil
+}
+
 // parseMpileupRegions resolves -r/-R/-t/-T into a flat per-chrom list of
 // 1-based inclusive windows. Empty result means "no restriction".
 func parseMpileupRegions(opts MpileupOptions, chromLen map[string]int) (map[string][][2]int, error) {
@@ -1355,12 +1416,33 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 	// which equals the 0-based exclusive end matching upstream's
 	// bam_endpos.
 	effLen := refLen
+	// dataBeg / dataEnd bound the reference span actually covered by reads on
+	// this chromosome (0-based, half-open). The windowed emission loop iterates
+	// only over [dataBeg, dataEnd) instead of [0, effLen): with an indexed -r
+	// query the records sit in a narrow band, so this skips the millions of
+	// empty leading/trailing columns that would otherwise allocate (and churn)
+	// one empty events window after another. dataBeg starts at effLen so an
+	// empty chromosome yields dataBeg >= dataEnd and the loop runs zero times.
+	dataBeg, dataEnd := effLen, 0
 	for i := 0; i < nIn; i++ {
 		for _, rec := range perInputChromRecs[i] {
 			if e := int(rec.EndPosition()); e > effLen {
 				effLen = e
 			}
+			b := int(rec.Pos) - 1
+			if b < 0 {
+				b = 0
+			}
+			if b < dataBeg {
+				dataBeg = b
+			}
+			if e := int(rec.EndPosition()); e > dataEnd {
+				dataEnd = e
+			}
 		}
+	}
+	if dataEnd > effLen {
+		dataEnd = effLen
 	}
 
 	// events[input][pos0] is the pileup column for one input at one
@@ -1371,14 +1453,6 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 	// would read at the same column. Nil maps degrade to "always read
 	// rec.Qual" — the correct behaviour with -x/--ignore-overlaps and for
 	// non-first-mate reads.
-	events := make([][][]pileupBase, nIn)
-	for i := 0; i < nIn; i++ {
-		events[i] = make([][]pileupBase, effLen)
-		for _, rec := range perInputChromRecs[i] {
-			accumulateMpileupBases(rec, events[i], preMergeQual, preMergeDrain, rawQualSnap, postMergeQual, baqAt)
-		}
-	}
-
 	calls := make([]bcfCallret, nIn)
 	// Indel-pass state. bca is the per-call aux struct; leak threads the
 	// BQBZ / MQSBZ scalars from the last has_alt SNP combine into the
@@ -1388,75 +1462,149 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 	bca.Chr = chrom
 	indelCalls := make([]bcfCallret, nIn)
 	piles := make([][]pileupBase, nIn)
-	for pos0 := 0; pos0 < effLen; pos0++ {
-		pos1 := pos0 + 1
-		if !regionContains(regWindows, chrom, pos1) {
-			continue
-		}
-		refB := byte('N')
-		if pos0 < len(refSlab) {
-			refB = upperByte(refSlab[pos0])
-		}
-		ref4 := seqNt16Int[baseToNt16(refB)]
 
-		// Per-sample glfgen. Track total coverage so all-empty
-		// positions are skipped.
-		anyCov := false
+	// The per-position events array is materialised one coordinate window at
+	// a time rather than for the whole chromosome at once. A whole-genome
+	// `-r CHROM` (or whole chromosome) otherwise allocated one pileupBase per
+	// base of every read across the entire contig simultaneously — tens of
+	// millions of columns holding billions of pileupBase structs, ~11 GB on
+	// human chr20. Windowing bounds that to one window's worth at a time.
+	// Byte-exactness is preserved because every per-position computation
+	// (glfgen / combine / 2bcf, the SNP→indel leak, bca, and the indel-pass
+	// helpers which read whole reads through the pileupBase back-pointers) is
+	// untouched: only the events array's lifetime is windowed, and a record
+	// overlapping a window boundary is re-accumulated into each window it
+	// touches, with out-of-window columns dropped by accumulateMpileupBases's
+	// bounds check. pos0 stays the absolute reference coordinate throughout.
+	//
+	// recCursor[i] is the index of the first record in perInputChromRecs[i]
+	// that can still overlap the current (or a later) window. Records are
+	// coordinate-sorted by start, so once a record ends at or before the
+	// window start it can never reappear and the cursor advances past it. Only
+	// the records overlapping the window are accumulated, keeping per-window
+	// work proportional to the window's coverage rather than the whole contig.
+	events := make([][][]pileupBase, nIn)
+	recCursor := make([]int, nIn)
+	// Window boundaries stay on the fixed mpileupEventsWindow grid (a window
+	// always starts at a multiple of the window size) so a record straddling a
+	// boundary is split identically regardless of where iteration begins —
+	// keeping output byte-identical to a full [0, effLen) walk. The grid is
+	// merely entered at the first window covering dataBeg and left after the
+	// window covering dataEnd, skipping the empty flanks.
+	firstWin := (dataBeg / mpileupEventsWindow) * mpileupEventsWindow
+	for winStart := firstWin; winStart < dataEnd; winStart += mpileupEventsWindow {
+		winEnd := winStart + mpileupEventsWindow
+		if winEnd > effLen {
+			winEnd = effLen
+		}
+		winLen := winEnd - winStart
 		for i := 0; i < nIn; i++ {
-			piles[i] = filterMpileupPile(events[i][pos0])
-			if len(piles[i]) > 0 {
-				anyCov = true
+			// A fresh events backing slice per window (rather than reusing the
+			// previous one) keeps peak resident memory at one window's worth:
+			// reusing it would retain every column's high-water-mark
+			// pileupBase capacity for the whole chromosome, which on a
+			// deeply-covered contig is exactly the all-at-once blow-up this
+			// windowing exists to avoid.
+			events[i] = make([][]pileupBase, winLen)
+			recs := perInputChromRecs[i]
+			// Advance the cursor past records that end at or before this
+			// window's start: they cannot overlap this or any later window.
+			c := recCursor[i]
+			for c < len(recs) && int(recs[c].EndPosition()) <= winStart {
+				c++
 			}
-			bcfCallGlfgen(piles[i], ref4, opts, em, &calls[i])
+			recCursor[i] = c
+			// Accumulate every record that starts before the window ends and
+			// has not already fully passed; accumulateMpileupBases drops the
+			// out-of-window columns of records straddling the right edge.
+			for j := c; j < len(recs); j++ {
+				rec := recs[j]
+				if int(rec.Pos)-1 >= winEnd {
+					break // sorted by start — no later record overlaps either
+				}
+				if int(rec.EndPosition()) <= winStart {
+					continue
+				}
+				accumulateMpileupBases(rec, events[i], winStart, preMergeQual, preMergeDrain, rawQualSnap, postMergeQual, baqAt)
+			}
 		}
-		if !anyCov {
-			continue
-		}
-		call := bcfCallCombine(calls, ref4)
-		v := bcfCall2bcf(chrom, pos1, refB, &call, opts.FmtFlag)
-		if err := w.Write(v); err != nil {
-			return err
-		}
-		// Update the SNP→indel bias leak: only has_alt SNP combines
-		// overwrite BQBZ / MQSBZ on the shared bcf_call_t.
-		leak.update(&call)
 
-		// Indel pass (mpileup.c:589-613). Upstream gates this on
-		// `total_depth < max_indel_depth`, which our port treats as
-		// always-true (MaxIDepth is accepted but unused so far). Skip
-		// only when -I/--skip-indels is in force.
-		if opts.SkipIndels {
-			continue
+		for pos0 := winStart; pos0 < winEnd; pos0++ {
+			pos1 := pos0 + 1
+			if !regionContains(regWindows, chrom, pos1) {
+				continue
+			}
+			refB := byte('N')
+			if pos0 < len(refSlab) {
+				refB = upperByte(refSlab[pos0])
+			}
+			ref4 := seqNt16Int[baseToNt16(refB)]
+
+			// Per-sample glfgen. Track total coverage so all-empty
+			// positions are skipped.
+			anyCov := false
+			for i := 0; i < nIn; i++ {
+				piles[i] = filterMpileupPile(events[i][pos0-winStart])
+				if len(piles[i]) > 0 {
+					anyCov = true
+				}
+				bcfCallGlfgen(piles[i], ref4, opts, em, &calls[i])
+			}
+			if !anyCov {
+				continue
+			}
+			call := bcfCallCombine(calls, ref4)
+			v := bcfCall2bcf(chrom, pos1, refB, &call, opts.FmtFlag)
+			if err := w.Write(v); err != nil {
+				return err
+			}
+			// Update the SNP→indel bias leak: only has_alt SNP combines
+			// overwrite BQBZ / MQSBZ on the shared bcf_call_t.
+			leak.update(&call)
+
+			// Indel pass (mpileup.c:589-613). Upstream gates this on
+			// `total_depth < max_indel_depth`, which our port treats as
+			// always-true (MaxIDepth is accepted but unused so far). Skip
+			// only when -I/--skip-indels is in force.
+			if opts.SkipIndels {
+				continue
+			}
+			// Past the FASTA end there is no reference to anchor an indel
+			// call (upstream's indel pass reads ref_fai only within the
+			// FASTA), so the N-REF SNP column is emitted alone.
+			if pos0 >= refLen {
+				continue
+			}
+			var iret int
+			if opts.IndelsCNS {
+				// --indels-cns / --indels-2.0: consensus-based caller via
+				// the in-tree edlib engine (bam2bcf_indelcns.go, port of
+				// reference_code/bcftools/bam2bcf_edlib.c).
+				iret = bcfCallGapPrepCNS(piles, pos0, bca, refSlab)
+			} else {
+				iret = bcfCallGapPrep(piles, pos0, bca, refSlab)
+			}
+			if iret < 0 {
+				continue
+			}
+			// Per-sample indel-branch glfgen.
+			for i := 0; i < nIn; i++ {
+				bcfCallGlfgenIndel(piles[i], opts, em, &indelCalls[i])
+			}
+			icall, ok := bcfCallCombineIndel(indelCalls, calls, bca, *leak)
+			if !ok {
+				continue
+			}
+			iv := bcfCall2bcfIndel(chrom, pos0, refSlab, &icall, bca, opts.FmtFlag, opts.IndelsCNS)
+			if err := w.Write(iv); err != nil {
+				return err
+			}
 		}
-		// Past the FASTA end there is no reference to anchor an indel
-		// call (upstream's indel pass reads ref_fai only within the
-		// FASTA), so the N-REF SNP column is emitted alone.
-		if pos0 >= refLen {
-			continue
-		}
-		var iret int
-		if opts.IndelsCNS {
-			// --indels-cns / --indels-2.0: consensus-based caller via
-			// the in-tree edlib engine (bam2bcf_indelcns.go, port of
-			// reference_code/bcftools/bam2bcf_edlib.c).
-			iret = bcfCallGapPrepCNS(piles, pos0, bca, refSlab)
-		} else {
-			iret = bcfCallGapPrep(piles, pos0, bca, refSlab)
-		}
-		if iret < 0 {
-			continue
-		}
-		// Per-sample indel-branch glfgen.
+		// Drop the window's events so the next window's allocation reuses the
+		// freed heap rather than growing it: peak resident memory stays at one
+		// window's worth of pileupBase structs, not the whole contig's.
 		for i := 0; i < nIn; i++ {
-			bcfCallGlfgenIndel(piles[i], opts, em, &indelCalls[i])
-		}
-		icall, ok := bcfCallCombineIndel(indelCalls, calls, bca, *leak)
-		if !ok {
-			continue
-		}
-		iv := bcfCall2bcfIndel(chrom, pos0, refSlab, &icall, bca, opts.FmtFlag, opts.IndelsCNS)
-		if err := w.Write(iv); err != nil {
-			return err
+			events[i] = nil
 		}
 	}
 	return nil
@@ -1849,7 +1997,14 @@ func applyMpileupBAQ(perInputChromRecs [][]*sam.Record, refSlab []byte, opts Mpi
 // predicate is unreachable when no intermediate raises max_pos). Reads
 // without an entry in preMergeQual (second mates, standalones, or all
 // reads when -x is in force) always read rec.Qual.
-func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase, preMergeQual map[*sam.Record][]byte, preMergeDrain map[*sam.Record]int, rawQualSnap map[*sam.Record][]byte, postMergeQual map[*sam.Record][]byte, baqAt map[*sam.Record]int) {
+// winStart is the absolute 0-based reference offset of events[0]: a record's
+// column at absolute reference position p is stored at events[p-winStart], and
+// columns outside [winStart, winStart+len(events)) are skipped. Pass winStart=0
+// to fill an events array indexed by absolute position (the whole-chromosome
+// form); the windowed driver passes the window's start so the events array
+// holds only that coordinate window — bounding memory on whole-contig queries
+// without changing which bases land in any column.
+func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase, winStart int, preMergeQual map[*sam.Record][]byte, preMergeDrain map[*sam.Record]int, rawQualSnap map[*sam.Record][]byte, postMergeQual map[*sam.Record][]byte, baqAt map[*sam.Record]int) {
 	if rec.Pos <= 0 {
 		return
 	}
@@ -1980,9 +2135,14 @@ func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase, preMergeQual
 				// where p->indel = 0 is the default.
 			}
 			for k := 0; k < l; k++ {
+				// p is the ABSOLUTE 0-based reference column (used for the
+				// baqStart / drainAt timeline comparisons, which are in
+				// absolute coordinates); pp is the index into the windowed
+				// events array (events[0] == column winStart).
 				p := refPos + k
+				pp := p - winStart
 				q := queryPos + k
-				if p < 0 || p >= len(events) {
+				if pp < 0 || pp >= len(events) {
 					continue
 				}
 				if q >= len(rec.Seq) {
@@ -2052,7 +2212,7 @@ func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase, preMergeQual
 				// the indel-bearing ones), so the iref_*/ialt_*
 				// histograms can be populated.
 				recPtr := rec
-				events[p] = append(events[p], pileupBase{
+				events[pp] = append(events[pp], pileupBase{
 					base4:       b4,
 					rawQual:     rawQual,
 					prevQ:       prevQ,
@@ -2106,7 +2266,7 @@ func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase, preMergeQual
 			gp := getPosition(cigarOps, cigarLens, qref, qlen)
 			epos, scLen := biasPositionBins(gp)
 			for k := 0; k < l; k++ {
-				p := refPos + k
+				p := refPos + k - winStart
 				if p < 0 || p >= len(events) {
 					continue
 				}
