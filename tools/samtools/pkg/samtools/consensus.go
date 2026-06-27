@@ -1499,6 +1499,26 @@ func callConsensusSimpleInsertions(evs []pileupEvent, recs []*sam.Record,
 		return nil
 	}
 
+	// Per-read carried running-minimum quality and pinned sequence offset,
+	// mirroring upstream's stateful p->qual / p->seq_offset across nth columns
+	// (consensus_pileup.c:180-211). Keyed by the read's index in the per-base
+	// event list. carriedQual[i] holds the running value entering the next nth
+	// column; carriedOff[i] is the read's last-consumed base index (seq_offset).
+	// Both are seeded from the nth==0 base column: p->qual = b_qual[seq_offset]
+	// (== e.qual) and seq_offset = readBP-1.
+	carriedQual := make(map[int32]byte, len(evs))
+	carriedOff := make(map[int32]int, len(evs))
+	for _, e := range evs {
+		if e.dropped || e.kind == pileupEventRefSkip {
+			continue
+		}
+		if !spansInsertionColumn(e, recs, pos1) {
+			continue
+		}
+		carriedQual[e.readIdx] = e.qual
+		carriedOff[e.readIdx] = int(e.readBP) - 1
+	}
+
 	cols := make([]bayesInsertionColumn, maxIns)
 	for nth := 1; nth <= maxIns; nth++ {
 		colEvs := make([]pileupEvent, 0, len(evs))
@@ -1516,6 +1536,10 @@ func callConsensusSimpleInsertions(evs []pileupEvent, recs []*sam.Record,
 			ce.readIdx = e.readIdx
 			ce.mapq = e.mapq
 			ce.isReverse = e.isReverse
+			var rec *sam.Record
+			if e.readIdx >= 0 && int(e.readIdx) < len(recs) {
+				rec = recs[e.readIdx]
+			}
 			var b byte = '*'
 			var q byte
 			if e.kind == pileupEventBase && nth <= len(e.insAfter) {
@@ -1525,10 +1549,6 @@ func callConsensusSimpleInsertions(evs []pileupEvent, recs []*sam.Record,
 				// The nth inserted base sits at query offset
 				// (readBP-1)+nth in the read's SEQ.
 				seqOff := int(e.readBP) - 1 + nth
-				var rec *sam.Record
-				if e.readIdx >= 0 && int(e.readIdx) < len(recs) {
-					rec = recs[e.readIdx]
-				}
 				if rec != nil && seqOff >= 0 && seqOff < len(rec.Qual) {
 					q = rec.Qual[seqOff]
 				}
@@ -1537,11 +1557,38 @@ func callConsensusSimpleInsertions(evs []pileupEvent, recs []*sam.Record,
 				if e.isReverse {
 					b = lower(b)
 				}
+				// Upstream's CINS branch increments seq_offset and re-bases
+				// p->qual to the inserted base's quality (the default arm at
+				// consensus_pileup.c:224-228). Re-seed the carried state so a
+				// later pad column (nth where this read no longer inserts)
+				// runs its MIN against the inserted base, not the M-base.
+				carriedQual[e.readIdx] = q
+				carriedOff[e.readIdx] = seqOff
 			} else {
 				// Pad: '*' deletion placeholder. Upstream's pileup engine
-				// carries the read's current base quality into the column.
+				// (consensus_pileup.c:183-191, the p->nth < nth && op != CINS
+				// branch) carries a STATEFUL running minimum quality across the
+				// insertion columns: p->qual = MIN(p->qual, b_qual[seq_offset+1])
+				// while seq_offset < l_qseq, else 0, with seq_offset pinned at
+				// the read's last consumed base. e.qual alone is only the
+				// nth==0 base column seed, so without the running MIN the pad
+				// '*' qual is >= upstream. Reproduce the carried MIN here.
 				ce.kind = pileupEventDel
-				q = e.qual
+				carried := carriedQual[e.readIdx]
+				off := carriedOff[e.readIdx]
+				if rec != nil && off < len(rec.Qual) {
+					next := byte(0)
+					if off+1 >= 0 && off+1 < len(rec.Qual) {
+						next = rec.Qual[off+1]
+					}
+					if next < carried {
+						carried = next
+					}
+				} else {
+					carried = 0
+				}
+				carriedQual[e.readIdx] = carried
+				q = carried
 				ce.qual = q
 				if e.isReverse {
 					b = '#'
