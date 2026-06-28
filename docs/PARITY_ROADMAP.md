@@ -669,6 +669,21 @@ ref-skip columns, per-nth gap-fill duplication, INT_MIN quality, and
 deletion ref-skip boundaries — 120-subtest live oracle); bgzip's `--test`
 integrity check (long-only, since `-t` binds to `--threads`).
 
+**Task #61 — the ref-skip quality cast made platform-faithful (merged
+`97cc86d`, byte-exact).** The "INT_MIN quality" handling above was
+hard-coded to `-2147483648`, the x86-64 result of upstream's
+`(int)(100.0*used_score/tscore)` at an all-ref-skip intron column
+(`bam_consensus.c:2003`, where `used_score == tscore == 0` makes it
+`(int)NaN`). That cast is platform-dependent undefined behaviour — **0 on
+ARM64** (`FCVTZS`), **INT_MIN on x86-64** (`CVTTSD2SI`) — so the hard-code
+passed x86-64 CI but failed the ARM64 oracle on 8 subtests
+(`refskip`/`del-adj-refskip` `simple_pileup` `_a`/`_aa`, ± `show-del`). The
+fix replaces the sentinel with `int(int32(100.0*usedScore/tscore))`; Go
+lowers the `float64`→`int32` conversion to the same hardware instruction as
+C, so the column matches the upstream binary byte-for-byte on whichever
+platform runs the comparison. The 8 subtests pass; `mpileup` is unaffected
+(the value is used only by `calculateConsensusSimple`).
+
 Implemented (this wave): bcftools `convert` PLINK exporters. Upstream
 `vcfconvert.c` leaves the `--plink`/`--tped`/`--bin` option block
 **commented out** (lines ~1697–1699) with no implementation, so there is
