@@ -684,6 +684,20 @@ C, so the column matches the upstream binary byte-for-byte on whichever
 platform runs the comparison. The 8 subtests pass; `mpileup` is unaffected
 (the value is used only by `calculateConsensusSimple`).
 
+**Task #62 — the coverage empty-histogram bar made platform-faithful
+(merged `3f0d5c7`, byte-exact).** A sibling of #61's `(int)NaN` quirk:
+`samtools coverage -m/-A/-D` rendered the histogram bars for an all-zero
+reference (a contig with no position reaching `--min-depth`) as spaces,
+where the ARM64 oracle prints the smallest block glyph `▁`. Upstream's
+per-cell `round(blockchar_len*(hist-current)/row_bin_size) - 1`
+(`coverage.c:256`) is `(int)(round(NaN) - 1) == (int)NaN` when
+`row_bin_size == 0`: 0 on ARM64 (→ `blockChars[0]` `▁`), INT_MIN on x86-64
+(→ a space). Our port special-cased `row_bin_size == 0` to `-1` (always a
+space, x86-64 only); the fix replaces it with `int(int32(round(...) - 1))`
+so the bar matches the upstream binary on either platform. Together with
+#61 this clears the **entire samtools package failing-set** (it is now
+fully green).
+
 Implemented (this wave): bcftools `convert` PLINK exporters. Upstream
 `vcfconvert.c` leaves the `--plink`/`--tped`/`--bin` option block
 **commented out** (lines ~1697–1699) with no implementation, so there is
