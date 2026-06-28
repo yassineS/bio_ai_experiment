@@ -411,6 +411,91 @@ rPad	0	chr1	1	60	5M	*	0	0	ACGAA	II5II
 	}
 }
 
+// TestConsensus_Pileup_DeletionPadRunningMin pins task #57: a read whose '*'
+// deletion placeholder is padded into ANOTHER read's nth>0 insertion column must
+// carry upstream's running-minimum deletion quality (the MIN(pre-gap, post-gap)
+// computed at the nth==0 D column), with seq_offset PINNED at the pre-gap base —
+// NOT seeded from the post-gap base index.
+//
+// Geometry (mirrors the GIAB 20:18390227 / 20:22642911 residual in miniature):
+//
+//	rIns 3M2I3M inserts "TT" after ref pos 3, opening nth=1/nth=2 columns there.
+//	rDel 2M1D5M has its deletion '*' AT ref pos 3 (the same base column the
+//	     insertion follows), so in the nth>0 columns rDel pads with '*'.
+//
+// rDel's quals are I I I 5 I I I (Phred 40,40,40,20,40,40,40). The deletion is at
+// query offset 2: the PRE-gap base (query 1) and POST-gap base (query 2) are both
+// 40, so the running minimum is 40 ('I'). The base one past the post-gap (query 3)
+// is 20 ('5'). Upstream pins seq_offset at the pre-gap base and MINs only against
+// the post-gap base, so every '*' (the nth==0 D row AND the nth=1/2 pad rows)
+// renders 'I'. The pre-fix code seeded the carried seq_offset from the post-gap
+// base index, so the FIRST pad column wrongly MIN'd against query 3 (20), printing
+// '5' in the insertion rows. The nth==0 D row was already correct (task #48), so
+// this asserts specifically the insertion-pad propagation.
+func TestConsensus_Pileup_DeletionPadRunningMin(t *testing.T) {
+	const sam = `@HD	VN:1.6
+@SQ	SN:chr1	LN:20
+rIns	0	chr1	1	60	3M2I3M	*	0	0	ACGTTACG	IIIIIIII
+rDel	0	chr1	1	60	2M1D5M	*	0	0	ACTACGT	III5III
+`
+	out := runConsensusOnSAM(t, sam, ConsensusOptions{
+		Format:  ConsensusPileup,
+		Mode:    ConsensusModeSimple,
+		ShowDel: true,
+	})
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	// Stable event order is rIns then rDel, so at ref pos 3 the seq is the
+	// inserted/aligned base of rIns followed by rDel's '*'. The qual column's
+	// second byte is rDel's deletion placeholder: it must be 'I' (the running
+	// min 40), never '5' (the pre-fix base-one-past-post-gap value 20).
+	var nth0, padRows int
+	for _, ln := range lines {
+		f := strings.Split(ln, "\t")
+		if len(f) < 8 || f[1] != "3" {
+			continue
+		}
+		seq, qual := f[6], f[7]
+		if len(seq) < 2 || seq[1] != '*' {
+			t.Fatalf("pos 3 nth %s: expected rDel '*' as the 2nd seq byte, got seq %q (row %q)", f[2], seq, ln)
+		}
+		if len(qual) < 2 {
+			t.Fatalf("pos 3 nth %s: short qual %q (row %q)", f[2], qual, ln)
+		}
+		if qual[1] != 'I' {
+			t.Errorf("pos 3 nth %s: deletion-pad '*' qual = %q, want 'I' (running MIN(pre=40,post=40)); the '5' value means the pad read one base past the post-gap (row %q)",
+				f[2], string(qual[1]), ln)
+		}
+		if f[2] == "0" {
+			nth0++
+		} else {
+			padRows++
+		}
+	}
+	if nth0 != 1 {
+		t.Fatalf("expected 1 nth==0 D row at pos 3, got %d:\n%s", nth0, out)
+	}
+	if padRows != 2 {
+		t.Fatalf("expected 2 insertion-pad rows (pos 3, nth 1/2), got %d:\n%s", padRows, out)
+	}
+
+	// Render-scope guard: the SAME read through mpileup must keep its post-gap
+	// placeholder quality (the bam_plp engine renders the single post-gap base,
+	// no consensus running min), proving the task-#57 fix did not leak into the
+	// shared pileupEvent.qual the mpileup path consumes.
+	mp := runMpileupOnSAM(t, []string{sam}, MpileupOptions{}, nil, nil)
+	for _, ln := range strings.Split(strings.TrimRight(mp, "\n"), "\n") {
+		f := strings.Split(ln, "\t")
+		if len(f) < 6 || f[1] != "3" || !strings.Contains(f[4], "*") {
+			continue
+		}
+		// rDel's '*' at pos 3 borrows the post-gap base quality 'I' (40);
+		// the nth>0 insertion columns never appear in mpileup output.
+		if !strings.Contains(f[5], "I") {
+			t.Errorf("mpileup pos 3: '*' qual column = %q, want to contain post-gap 'I'; row %q", f[5], ln)
+		}
+	}
+}
+
 func TestConsensus_LineLen_Wrapping(t *testing.T) {
 	out := runConsensusOnSAM(t, allMatchSAM, ConsensusOptions{
 		Format:  ConsensusFASTA,
