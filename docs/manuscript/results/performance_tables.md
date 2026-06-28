@@ -77,7 +77,7 @@ inter-quartile range; the 95% CI is a bootstrap on the wall ratio (H1a).
 | large | samtools | `view (bam$\to$bam)` | 15674.9 ± 255.6 | 22085.0 ± 218.4 | 1.41× | [1.38, 1.45] | 1.44 | faster |
 | large | samtools | `sort` | 29540.3 ± 4901.1 | 35724.6 ± 1393.4 | 1.21× | [0.94, 1.38] | 1.23 | faster |
 | large | samtools | `view (bam$\to$cram)` | 5788.4 ± 63.0 | 6856.5 ± 11.9 | 1.18× | [1.17, 1.20] | 0.28 | faster |
-| large | samtools | `view (cram$\to$bam)` | 29442.7 ± 212.4 | 22710.3 ± 430.1 | 0.77× | [0.76, 0.80] | 0.68 | slower |
+| large | samtools | `view (cram$\to$bam)` | 27268.3 ± 297.5 | 21603.8 ± 12.2 | 0.79× | [0.78, 0.80] | 0.73 | slower |
 | large | samtools | `flagstat` | 3338.0 ± 16.4 | 2543.7 ± 18.4 | 0.76× | [0.75, 0.77] | 0.76 | slower |
 | large | samtools | `stats` | 9626.0 ± 119.3 | 7278.5 ± 26.9 | 0.76× | [0.75, 0.77] | 0.76 | slower |
 | large | samtools | `depth` | 8094.9 ± 45.5 | 5878.6 ± 122.8 | 0.73× | [0.71, 0.73] | 0.73 | slower |
