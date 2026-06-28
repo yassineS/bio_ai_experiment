@@ -1711,7 +1711,23 @@ func callConsensusBayesian(evs []pileupEvent, recs []*sam.Record,
 			}
 		case pileupEventDel:
 			bp.base4 = 16
-			bp.qual = e.qual
+			// Upstream's bayesian consensus caller (consensus_pileup.c:195-202)
+			// gives each deletion '*' placeholder the RUNNING-minimum quality
+			// MIN(pre-gap base qual, post-gap base qual): seq_offset stays pinned
+			// at the pre-gap base across a contiguous deletion run, so p->qual
+			// enters each D column holding the pre-gap base's quality and is MIN'd
+			// against the post-gap base. e.qual alone is only the post-gap base, so
+			// it overstates the '*' confidence and tips the deletion-vs-base
+			// posterior — dropping one base in a homopolymer run and frameshifting
+			// the FASTA (e.g. 10 vs 11 C in a 12-C run at 20:2797139). The CIGAR
+			// walk already computes the running min as e.delPileupQual (value+1, the
+			// same field the -f pileup renderer decodes); 0 means "no pre-gap base"
+			// (a deletion at read start), where upstream keeps the post-gap qual.
+			if e.delPileupQual != 0 {
+				bp.qual = e.delPileupQual - 1
+			} else {
+				bp.qual = e.qual
+			}
 			bp.seqOff = int(e.readBP) - 1
 			// A deletion ('*') position directly abutting a ref-skip run
 			// also carries upstream's p->ref_skip flag (consensus_pileup.c:
