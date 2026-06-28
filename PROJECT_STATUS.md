@@ -36,6 +36,29 @@ converted to hard `t.Fatalf`-with-init-hint per the parity-rig policy). The
 backend test (opt-in via `HFILE_NETTEST=1`; verified passing against live
 https/s3/gcs public objects) — test hygiene, not a parity gap.
 
+Failing-set elimination wave (2026-06-29): the `samtools`, `vcftools`, and
+`bcftools` package test suites were driven **fully green**, closing the last
+parity test failures. Most were a single class — a **platform-dependent
+`(int)NaN` / NaN sign bit** that the port had hard-coded to the x86-64 result
+and so failed the ARM64 oracle: `samtools consensus` ref-skip `cq`
+(`int32(NaN)` cast, 8 subtests) and the `coverage` empty-histogram bar; the
+`vcftools` `--site-mean-depth`/`--weir-fst-pop`/`--relatedness` `nan` vs `-nan`
+(sign-bit-aware formatting + upstream's unsigned `n-1` underflow); and the
+bcftools `+vrfs` empty-profile MEAN. **The "darwin/printf float artefacts" these
+were assumed to be turned out to be real, fixable parity bugs** (they failed on
+linux/arm64 too). `bcftools +color-chrs` was resolved fix-on-port: upstream has
+an out-of-bounds `hap_switch[state][-1]` read that inflates the first-segment
+switch count (documented in `docs/UPSTREAM_BUGS.md`); our port is correct, and
+the test now oracle-checks the deterministic columns while pinning our correct
+switch counts. A triage against the live oracle also found several **"standing"
+gaps already closed** — `mosdepth --by` region means, the three `bedtools`
+edges (`bedcluster`/`bedjaccard`/`bedsplit`), and `bcftools merge` INFO/DP — so
+the per-tool "~98/99%, small edge bugs" notes below understate reality. Two
+genuine residuals remain and are tracked as accepted, not gaps: the CRAM-decode
+RSS `≤2×` target (a structural GC-headroom floor, not a churn cut — see the
+roadmap) and the bayesian consensus `cq` libm last-ULP (`73/10.4M` positions,
+`cq` column only, proximity-parity class).
+
 Previous wave (2026-06-11, ~70 PRs): `call` modes, `convert` GEN/HAP/TSV,
 `annotate`, `consensus` chain, `mendelian2`, `csq` slices 1–4, mpileup
 `bam2bcf_indel` + `--indels-cns`, `phase`, `gtcheck`, threading, samtools
