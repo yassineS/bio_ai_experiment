@@ -544,11 +544,24 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
     it is byte-exact (confined to the bayesian caller; `--mode simple`, mpileup,
     the block engine unaffected; 2 regression tests). But the FULL-contig
     validation REFUTED the "one cause → 380k → 0" claim: the fix closes only ~5
-    positions. The **bulk** is a separate, larger pre-existing base-calling gap —
-    **homopolymer / insertion-coordinate accumulation** (first diff ~2.73 Mb,
-    ours calls one fewer `C` in a `C`-run) — distinct from the MD off-by-one,
-    tracked as a follow-up. Also separate: the bayesian `-f fastq` qual-byte
-    residual (bases identical, `cq` numeric diffs at high-depth columns).
+    positions. The bulk is two further classes, the first now FIXED:
+    - **homopolymer-deletion frameshift — FIXED (task #55, merged c47b5ef).** The
+      bayesian caller fed a deletion `*` event the post-gap base quality, where
+      upstream (`consensus_pileup.c:195-202`) uses the running `MIN(pre-gap,
+      post-gap)` — the higher quality tipped the deletion-vs-base posterior so ours
+      dropped one base in a deletion-flanked homopolymer run (10 C vs 11 in a 12-C
+      run at 20:2797139), frameshifting the FASTA. Our engine already computes the
+      running-min as `delPileupQual` (task #48); reading it in the bayesian del
+      path matches upstream (proxy 0-diff; `consensus -r 20 -f fasta`
+      380,434 → 354,136 lines), confined to the bayesian caller (simple, the #53
+      island, the block engine, mpileup unchanged; +1 regression test).
+    - **in-block N-island masking (OPEN, the dominant residual).** Ours masks
+      ~12,666 marginal-coverage / depth-1 / low-MAPQ columns to N that upstream
+      calls continuously (the ~354k lines + the ~12.6 kb N-count length delta) — a
+      call-vs-N threshold / depth-or-MAPQ-floor difference, the same family as the
+      #53 island-edge masking. Tracked.
+    Also separate: the bayesian `-f fastq` qual-byte residual (bases identical,
+    `cq` numeric diffs at high-depth columns).
 - **`samtools sort` wall — FIXED (task #39 then #42, now ≈ parity).** `sort -@4`
   was ~3x upstream at matched memory. Profiling showed `sort.SliceStable`/heap/
   comparator are negligible (<4%); the costs were excessive spilling (57 vs 4
