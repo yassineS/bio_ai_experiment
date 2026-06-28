@@ -366,11 +366,30 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   order-1 reverse-lookup tables (`sync.Pool`, thread-safe with the parallel
   decoder) — was implemented and measured (byte-exact, `-race` clean, ~4 MB RSS)
   but is **wall-neutral** (the zero-on-Get cost of clearing the ~1.5 MiB tables
-  cancels the churn saving), so it was reverted on the wall gate. **REMAINING (the
-  real path to ≤2×):** the resident decoded-record/aux working set — both the
-  packed record (#52, floors at ~2.4×) and the codec scratch (#54) are now
-  measured as insufficient; reaching ≤2× needs a fundamentally leaner decoded
-  record AND bounding GC headroom together, a larger structural change.
+  cancels the churn saving), so it was reverted on the wall gate.
+  **Task #59 — the RANS-pool win, landed by dropping the clear (merged `3acdc2f`,
+  byte-exact, real GIAB).** An IN-USE heap profile (forced-GC snapshot) REFUTES
+  #54's "`mergeAux` ~26.8 MB / 58.7 % resident" reading: the genuinely-live heap
+  collapses to **~2.4 MB** post-GC, so the ~67 MB peak is GC headroom held in
+  proportion to the allocation RATE, not a retained structure. The dominant churn
+  is codec scratch — the rANS order-1 reverse-lookup tables plus the name-token
+  codec, **~48 % of allocation** — with `mergeAux` a distant third (~17 %). #54's
+  RANS table pool was the right lever; it was reverted only because it ZEROED the
+  ~1.5 MiB tables on `Get`, and that clear cancelled the churn saving. #59 reuses
+  the tables **without zeroing** (the htscodecs-faithful behaviour: the table-build
+  loop fully repopulates every present context's `[0, 1<<shift)` span before any
+  decode reads it, so stale cells are never read — byte-exact), removing the alloc
+  with no compensating clear. The pooled `ransO1Tables` is shared by both the 4x16
+  and 32-way order-1 decoders and is `sync.Pool`-backed so the parallel decoder
+  stays race-clean. MEASURED `view -b -T up_chr20.cram` worst-of-five
+  **3.30× → 2.71×** (67.3 → 55.1 MB, upstream 20.3); up_small.cram
+  **3.06× → 2.91×**; the large `reads.cram` bench cell **4.00 → 3.52×**; byte-exact
+  (`fc1259fb` == upstream on both CRAMs), wall-neutral, `-race` clean.
+  **REMAINING (toward ≤2×):** the residual is now ~2.7–2.9×; the diagnosed next
+  churn cuts — reusing the `decodeName` last-token scratch (~21 % of churn) and
+  pre-sizing the `decodeTags` aux slice by one so `mergeAux`'s RG append never
+  reallocates (~17 %) — are the tracked path, each gated on the same byte-exact +
+  wall-neutral bar.
 - **`samtools view -C` CRAM encode wall — FIXED (task #33).** Serial per-contig
   `@SQ M5` (reference MD5) hashing dominated header-write (≈80 % of CPU; whole
   reference genome hashed). Now parallelised across a worker pool, each worker on
