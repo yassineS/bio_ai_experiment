@@ -524,9 +524,22 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
     `b057be94` unchanged, bayesian `73519a08` unchanged, `mpileup -B` 0-diff,
     0 new test failures. Together with #48 this closes the `-f pileup --mode
     simple` deletion + insertion running-min quality parity.
-  - **`consensus` default Bayesian `-f fasta` — ~1198 structural off-by-one
-    diffs**, a separate, larger gap (not the overlap tweak, not the pileup
-    running-minimum rules).
+  - **`consensus` default Bayesian `-f fasta` — MD-halo off-by-one FIXED (task
+    #53, merged a458e59); the larger base-calling gap REMAINS (re-characterised).**
+    Task #53 measured the whole-contig-20 gap at **~190k differing positions + a
+    ~12.6 kb length delta** (far larger than the earlier ~1198 estimate). It found
+    and fixed one genuine bug — `applyMDCosts` had a spurious `pos++` (upstream
+    `nm_init` advances only `md++`, never `pos`), which slid the MD
+    mismatch-halo centre, over-counted `nm_local` at a read's left edge, and
+    masked a coverage-island's first callable base to N (e.g. 20:160157). Deleting
+    it is byte-exact (confined to the bayesian caller; `--mode simple`, mpileup,
+    the block engine unaffected; 2 regression tests). But the FULL-contig
+    validation REFUTED the "one cause → 380k → 0" claim: the fix closes only ~5
+    positions. The **bulk** is a separate, larger pre-existing base-calling gap —
+    **homopolymer / insertion-coordinate accumulation** (first diff ~2.73 Mb,
+    ours calls one fewer `C` in a `C`-run) — distinct from the MD off-by-one,
+    tracked as a follow-up. Also separate: the bayesian `-f fastq` qual-byte
+    residual (bases identical, `cq` numeric diffs at high-depth columns).
 - **`samtools sort` wall — FIXED (task #39 then #42, now ≈ parity).** `sort -@4`
   was ~3x upstream at matched memory. Profiling showed `sort.SliceStable`/heap/
   comparator are negligible (<4%); the costs were excessive spilling (57 vs 4
