@@ -356,12 +356,21 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   (scoped to `view`+CRAM) was lowered 64 → 48 MiB (the wall-neutral knee) —
   MEASURED `view -b -T up_chr20.cram` **3.49× → 3.13×** (worst-of-7; ~2.8× typical,
   55–57 MB), wall **0.93×** (faster), byte-exact (`fc1259fb` == upstream), sort/
-  mpileup unaffected. **REMAINING (the real path to ≤2×):** the CRAM **codec-scratch
-  restructure** — stream read-names per-record instead of materialising the whole
-  RN block (15.4 MB / 50.8 % of the in-flight peak) and pool the RANS decode
-  buffers — a small (~5–8-site) change confined to `pkg/htsgo/cram/codec` +
-  `decode.go`/`block.go`, byte-exact (decode-internal). The packed record is NOT
-  the lever; the codec scratch is.
+  mpileup unaffected. **The codec-scratch direction was then TESTED and REFUTED
+  (task #54).** #52's "codec scratch ~21 MB" was an `-alloc_space` (cumulative
+  churn) figure; an IN-USE heap snapshot at the per-slice high-water (task #54)
+  shows the codec scratch is only **~1.7 MB resident** (name block ~0.42 MB, RANS
+  buffers ~1.3 MB, freed per slice) — the resident peak is dominated by `mergeAux`
+  **~26.8 MB / 58.7 %** (the decoded-record aux working set). So the codec is NOT
+  the ≤2× lever either. The one available byte-exact codec win — pooling the RANS
+  order-1 reverse-lookup tables (`sync.Pool`, thread-safe with the parallel
+  decoder) — was implemented and measured (byte-exact, `-race` clean, ~4 MB RSS)
+  but is **wall-neutral** (the zero-on-Get cost of clearing the ~1.5 MiB tables
+  cancels the churn saving), so it was reverted on the wall gate. **REMAINING (the
+  real path to ≤2×):** the resident decoded-record/aux working set — both the
+  packed record (#52, floors at ~2.4×) and the codec scratch (#54) are now
+  measured as insufficient; reaching ≤2× needs a fundamentally leaner decoded
+  record AND bounding GC headroom together, a larger structural change.
 - **`samtools view -C` CRAM encode wall — FIXED (task #33).** Serial per-contig
   `@SQ M5` (reference MD5) hashing dominated header-write (≈80 % of CPU; whole
   reference genome hashed). Now parallelised across a worker pool, each worker on
