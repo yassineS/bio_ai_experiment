@@ -297,25 +297,29 @@ func runView(args []string) int {
 	input := positional[0]
 
 	// CRAM→BAM/SAM decode keeps a per-slice working set (the decompressed
-	// data-series blocks plus the slice's reconstructed records) of ~65–70 MB
-	// on whole-chromosome inputs. Under the default GOGC the collector lets the
+	// data-series blocks plus the slice's reconstructed records) of ~50 MB on
+	// whole-chromosome inputs. Under the default GOGC the collector lets the
 	// heap grow to ~2× that working set before collecting and is slow to return
 	// freed pages to the OS, so the ru_maxrss high-water mark reaches ~110 MB —
 	// ~5.5× upstream's exceptionally lean ~20 MB C decoder. A soft memory limit
-	// pulls the resident set down to the working-set floor without trimming GOGC
-	// (which would tax CPU on every cycle): below the cap the GC stays lazy, so
-	// wall time is unaffected; near the cap it scavenges idle pages back to the
-	// OS. 64 MiB is the measured knee on real GIAB — it brings peak RSS to
-	// ~73 MB (≈3.6×) with no wall regression, whereas tighter caps (≤56 MiB)
-	// thrash the GC without lowering RSS further, because ~70 MB is the genuine
-	// per-slice working set. Reaching ≤2× would require streaming the slice's
-	// series blocks rather than decompressing them all up front (a deeper codec
-	// change tracked separately). The limit is applied ONLY for a real CRAM file
-	// input (BAM/SAM view is unaffected) and skipped for stdin; SetMemoryLimit
-	// returns the previous (no-limit) value, restored on return so this stays
-	// scoped to the view command.
+	// pulls the resident set down toward the working-set floor without trimming
+	// GOGC (which would tax CPU on every cycle): below the cap the GC stays lazy,
+	// so wall time is unaffected; near the cap it scavenges idle pages back to
+	// the OS. 48 MiB is the measured knee on real GIAB (chr20): it brings the
+	// worst-of-N peak RSS from ~70 MB (64 MiB cap, ≈3.5×) down to ~57–61 MB
+	// (≈2.9×) with no wall regression (worst-of-7 wall ~10.0 s vs ~9.8 s
+	// uncapped, within run-to-run jitter). Tighter caps stop lowering RSS — it
+	// plateaus at ~50–55 MB, the genuine per-slice working set — and start
+	// thrashing the GC: 36 MiB costs ~+4 % wall, 32 MiB ~+11 %, 28 MiB ~+26 %,
+	// 24 MiB ~+120 %, all for no further RSS gain. Reaching ≤2× would require
+	// streaming the slice's series blocks rather than decompressing them all up
+	// front (the codec-scratch restructure tracked separately as task #52). The
+	// limit is applied ONLY for a real CRAM file input (BAM/SAM view is
+	// unaffected) and skipped for stdin; SetMemoryLimit returns the previous
+	// (no-limit) value, restored on return so this stays scoped to the view
+	// command.
 	if input != "-" && inputIsCRAM(input) {
-		prevLimit := debug.SetMemoryLimit(64 << 20)
+		prevLimit := debug.SetMemoryLimit(48 << 20)
 		defer debug.SetMemoryLimit(prevLimit)
 	}
 
