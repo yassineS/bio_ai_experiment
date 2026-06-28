@@ -830,7 +830,11 @@ func (rd *recordDecoder) decodeTags(tl int32, rgValue int32, index int) (aux []s
 			index, tl, len(rd.tagDict))
 	}
 	keys := rd.tagDict[tl]
-	out := make([]sam.Aux, 0, len(keys))
+	// Over-allocate by one: mergeAux may append a synthesised RG aux to this
+	// slice, and sizing the capacity to len(keys)+1 lets that append reuse
+	// the backing array instead of reallocating and copying every tag once
+	// per record (a measurable slice of the CRAM-decode allocation churn).
+	out := make([]sam.Aux, 0, len(keys)+1)
 	// For CRAM v4 the presence of an MD*/NM* placeholder in this record's
 	// tag-line dictionary is what authorises regeneration; for v<4 the cF
 	// aux-tag bits authorise suppression. Both are folded into the final
