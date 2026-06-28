@@ -344,12 +344,24 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   wall **1.54× → 1.49×**. It did NOT reach ≤2×: an A/B proved the ~72 MB peak is
   the GC-immune transient per-record decode-allocation BURST (the #40 root cause),
   not the resident aux fat — packing aux trims only ~6 MB.
-  **REMAINING (the path to ≤2×, new follow-up):** the full `bam1_t`-style
-  single-allocation packed record (name + cigar + seq + qual + aux in one `data`
-  block) is needed to cut the per-slice decode-allocation burst. This is the
-  large cross-cutting change (the #40 diagnosis's rejected Option C; ~441
-  `.Seq`/`.Qual`/`.Aux` field sites across the tree), tracked as the named
-  follow-up.
+  **Task #52 — packed record REFUTED, GC-limit partial shipped (merged 307ed37).**
+  The packed-record hypothesis was tested and DISPROVEN by direct heap profiling:
+  the ~66 MB `view -b -T cram` peak is GC headroom (~30 MB) + whole-slice codec
+  scratch (the name-token codec materialises the entire slice's read-name block +
+  RANS decompress, ~21 MB) + the live ~10k-record slice (~6.5 MB) + ~8 MB other —
+  a single-allocation packed `sam.Record` touches only ~25–30 % of that and CANNOT
+  reach ≤2× (with GC maxed the peak floors at ~2.4×, the codec-decompress burst
+  being genuinely resident). So the ~441-site migration was NOT pursued. Instead a
+  cheap byte-exact lever shipped: the existing CRAM-decode `debug.SetMemoryLimit`
+  (scoped to `view`+CRAM) was lowered 64 → 48 MiB (the wall-neutral knee) —
+  MEASURED `view -b -T up_chr20.cram` **3.49× → 3.13×** (worst-of-7; ~2.8× typical,
+  55–57 MB), wall **0.93×** (faster), byte-exact (`fc1259fb` == upstream), sort/
+  mpileup unaffected. **REMAINING (the real path to ≤2×):** the CRAM **codec-scratch
+  restructure** — stream read-names per-record instead of materialising the whole
+  RN block (15.4 MB / 50.8 % of the in-flight peak) and pool the RANS decode
+  buffers — a small (~5–8-site) change confined to `pkg/htsgo/cram/codec` +
+  `decode.go`/`block.go`, byte-exact (decode-internal). The packed record is NOT
+  the lever; the codec scratch is.
 - **`samtools view -C` CRAM encode wall — FIXED (task #33).** Serial per-contig
   `@SQ M5` (reference MD5) hashing dominated header-write (≈80 % of CPU; whole
   reference genome hashed). Now parallelised across a worker pool, each worker on
