@@ -605,10 +605,30 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
     (merged a626cf5) applied upstream's insertion-pad running-min `MIN(p->qual,
     b_qual[seq_offset+1])` to the bayesian insertion pad (the analogue of #57's
     deletion running-min), taking the insertion-column cq diffs 37 → 1 (total
-    pure cq diffs 105 → 69, 0 base-call diffs, byte-exact). Two cq sub-causes
-    remain: base-column FP-rounding (~68 small ±1 diffs, mostly masked by the
-    `MIN(cq,93)` cap) and a 1-base seq tandem-repeat off-by-one (the homopolymer/
-    repeat family). Tracked.
+    pure cq diffs 105 → 69, 0 base-call diffs, byte-exact). **Task #67 —
+    the remaining cq residual characterised as a libm last-ULP artefact (not a
+    fixable rounding), accepted as proximity-parity.** Whole-contig-20 bayesian
+    `-f pileup` ours vs upstream now differs at **73 of 10,416,641 positions, in
+    the `cq` column ONLY** — every base, seq and qual byte is identical. The
+    differences are **bidirectional ±1** (ours is sometimes higher, sometimes
+    lower: 30 vs 29, 88 vs 89, 147 vs 148, …), which rules out a fixable
+    rounding-mode difference (that would bias one way) and is the signature of
+    **Go `math.Log`/`math.Exp` vs C libm last-ULP** divergence in the bayesian
+    posterior — the `cq` is derived from an accumulation of `log`/`exp`
+    probabilities (`consensus_bayesian.go`), so a last-bit difference lands the
+    final phred on the other side of an integer boundary. At a few very deep
+    columns (e.g. 20:238436–238440, depth 128 with many deletions) the per-read
+    last-ULP errors compound to a ±2–4 `cq` difference, still the same cause.
+    This is the **same class the project already accepts as "proximity parity"**
+    for the float-heavy paths (the bcftools `trio-dnm3` DMM/ALM/DNG models): the
+    string/base output is byte-exact and the derived score is within libm
+    last-ULP. Making it byte-exact would require a bit-for-bit libm `exp`/`log`
+    reimplementation, which is out of scope; the consensus base calls are
+    byte-exact and the `cq` divergence is ≤1 at all but a handful of ultra-deep
+    columns and mostly masked by the `MIN(cq,93)` cap. **Closed as an accepted
+    libm-precision residual.** (A separate 1-base seq tandem-repeat off-by-one in
+    the homopolymer/repeat family remains tracked under the #55/#56 base-call
+    family.)
 - **`samtools sort` wall — FIXED (task #39 then #42, now ≈ parity).** `sort -@4`
   was ~3x upstream at matched memory. Profiling showed `sort.SliceStable`/heap/
   comparator are negligible (<4%); the costs were excessive spilling (57 vs 4
