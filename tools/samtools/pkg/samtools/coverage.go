@@ -467,12 +467,16 @@ func printCoverageHist(w io.Writer, name string, start, end int32, st *coverageR
 			fmt.Fprint(w, "|")
 		}
 		for col := 0; col < nBins; col++ {
-			var curValDiff int
-			if rowBinSize != 0 {
-				curValDiff = int(math.Round(float64(blockLen)*(histData[col]-currentBin)/rowBinSize)) - 1
-			} else {
-				curValDiff = -1
-			}
+			// Upstream: int cur_val_diff = round(blockchar_len * (hist_data[col]
+			// - current_bin) / row_bin_size) - 1; (coverage.c:256). When the
+			// histogram is empty (max_val == 0, so row_bin_size == 0) this is
+			// (int)(round(NaN) - 1) == (int)NaN — platform-dependent undefined
+			// behaviour: 0 on ARM64 (FCVTZS), so the bar shows blockChars[0]
+			// (▁); INT_MIN on x86-64 (CVTTSD2SI), which is < 0, so it shows a
+			// space. Replicate upstream's cast with a float64->int32 conversion
+			// (same hardware instruction as C) so the bar matches the upstream
+			// binary byte-for-byte on either platform rather than pinning one.
+			curValDiff := int(int32(math.Round(float64(blockLen)*(histData[col]-currentBin)/rowBinSize) - 1))
 			if curValDiff < 0 {
 				fmt.Fprint(w, " ")
 			} else {
