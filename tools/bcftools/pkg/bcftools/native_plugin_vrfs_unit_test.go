@@ -197,15 +197,18 @@ func TestUnitVrfsComputeProfileHC(t *testing.T) {
 }
 
 // TestUnitVrfsComputeProfileEmpty checks that an all-empty profile yields the
-// -nan MEAN line (division by zero nval), matching glibc printf.
+// "nan" MEAN line: the mean is a positive 0.0/0.0 NaN (division by zero nval),
+// which glibc printf renders as "nan" (verified against the live upstream
+// +vrfs oracle). This previously asserted "-nan", encoding an earlier
+// hard-coded NaN sign rather than upstream's actual output.
 func TestUnitVrfsComputeProfileEmpty(t *testing.T) {
 	sites := []*vrfsSite{{dist: make([]uint32, 20)}} // nval==0, skipped
 	prof := computeVrfsProfile(sites, vrfsConfig{nbins: 20, recalc: "hc"})
 	if prof.nval != 0 {
 		t.Fatalf("nval=%d, want 0", prof.nval)
 	}
-	if got := vrfsFormatE(prof.mean[0]); got != "-nan" {
-		t.Errorf("empty mean format = %q, want %q", got, "-nan")
+	if got := vrfsFormatE(prof.mean[0]); got != "nan" {
+		t.Errorf("empty mean format = %q, want %q", got, "nan")
 	}
 }
 
