@@ -385,11 +385,27 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   **3.30× → 2.71×** (67.3 → 55.1 MB, upstream 20.3); up_small.cram
   **3.06× → 2.91×**; the large `reads.cram` bench cell **4.00 → 3.52×**; byte-exact
   (`fc1259fb` == upstream on both CRAMs), wall-neutral, `-race` clean.
-  **REMAINING (toward ≤2×):** the residual is now ~2.7–2.9×; the diagnosed next
-  churn cuts — reusing the `decodeName` last-token scratch (~21 % of churn) and
-  pre-sizing the `decodeTags` aux slice by one so `mergeAux`'s RG append never
-  reallocates (~17 %) — are the tracked path, each gated on the same byte-exact +
-  wall-neutral bar.
+  **REMAINING (toward ≤2×) — the next churn cuts were tried and do NOT reach it
+  (task #66).** Pre-sizing the `decodeTags` aux slice by one
+  (`make([]sam.Aux, 0, len(keys)+1)`) so `mergeAux`'s RG append never
+  reallocates landed byte-exact (`fc1259fb` preserved) — it removes a
+  per-record realloc+copy from the allocation churn, but the worst-of-five
+  `view -b -T up_chr20.cram` RSS is unchanged at **~55 MB (still ~2.7×)**: that
+  realloc was transient churn the GC already reclaimed, not resident. The other
+  diagnosed cut — reusing the `decodeName` last-token scratch — was NOT pursued:
+  `ctx.lc[cnum].last` is **retained per-context delta-decode state** with a
+  read/write aliasing hazard when `pnum == cnum` (the next name reads the slice
+  the current name overwrites), so a naive reuse is not byte-safe, and a
+  correct double-buffer would have to **zero the reused backing** each name —
+  the exact zero-on-reuse cost that made #54's RANS-table pool wall-neutral. So
+  the per-record churn cuts cannot reach ≤2×: the ~55 MB resident floor is
+  **structural** (Go GC headroom + the CRAM reference window + the live
+  ~10k-record decode slice), independent of these allocations. Reaching ≤2×
+  (~40 MB) genuinely needs a leaner decoded record AND bounded GC headroom
+  **together** — the larger structural change #52/#54 also identified — not
+  incremental churn trimming. The `decodeTags+1` micro-optimisation is kept
+  (byte-exact, fewer allocations, zero risk); ≤2× remains an open structural
+  item.
 - **`samtools view -C` CRAM encode wall — FIXED (task #33).** Serial per-contig
   `@SQ M5` (reference MD5) hashing dominated header-write (≈80 % of CPU; whole
   reference genome hashed). Now parallelised across a worker pool, each worker on
