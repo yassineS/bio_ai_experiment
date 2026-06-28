@@ -332,10 +332,14 @@ func uncompressO1RANS4x16X32(in []byte, rawSize uint32) ([]byte, error) {
 		return nil, fmt.Errorf("rans4x16: 32-way order-1 frequency table truncated after the alphabet")
 	}
 
-	// Per-context reverse-lookup tables.
-	symTab := new([256][1 << tfShiftO1]byte)
-	freqTab := new([256][256]uint32)
-	baseTab := new([256][256]uint32)
+	// Per-context reverse-lookup tables. Identically shaped to the 4x16
+	// order-1 decoder's, so they share ransO1TablePool — drawn and reused
+	// without zeroing (see ransO1Tables).
+	t := ransO1TablePool.Get().(*ransO1Tables)
+	defer ransO1TablePool.Put(t)
+	symTab := t.sym
+	freqTab := t.freq
+	baseTab := t.base
 	for i := 0; i < 256; i++ {
 		if F0[i] == 0 {
 			continue

@@ -3,6 +3,7 @@ package codec
 import (
 	"fmt"
 	"math"
+	"sync"
 )
 
 // rANS 4x16 order-1 (the C2.1 slice). Ported from htscodecs
@@ -315,6 +316,41 @@ func encodeFreqDRANS4x16(cp []byte, F0, F *[256]uint32) []byte {
 
 // --- order-1 decode ----------------------------------------------------------
 
+// ransO1Tables holds the per-context reverse-lookup tables an order-1
+// decode builds (the symbol map plus the per-symbol frequency and
+// cumulative-base rows). At the 12-bit table precision these are ~1.5 MiB
+// in total — allocating them fresh on every order-1 block dominated the
+// decoder's GC churn (issue #59).
+//
+// They are pooled and reused across decodes WITHOUT being zeroed on Get.
+// This mirrors htscodecs, which keeps the equivalent tables in a
+// per-thread scratch buffer and reuses them un-cleared: every present
+// context's entire [0, 1<<shift) span is fully repopulated by the
+// table-build loop before any decode reads it (the `x != 1<<sh`
+// validation proves the span is filled), and the decoder only ever
+// indexes a context whose symbols were emitted — i.e. cells written this
+// call. Stale data from a previous decode is therefore never read, so
+// the reuse is byte-exact. Do NOT add a clear/memset here: #54 showed the
+// clear cost cancels the allocation saving exactly, defeating the point.
+type ransO1Tables struct {
+	sym  *[256][1 << tfShiftO1]byte
+	freq *[256][256]uint32
+	base *[256][256]uint32
+}
+
+// ransO1TablePool reuses the order-1 decode scratch tables across calls.
+// sync.Pool is concurrency-safe, so the parallel (multi-thread) decode
+// path draws one independent table set per in-flight decode. Shared by
+// both the 4x16 and 32x16 order-1 decoders — their tables are identically
+// shaped.
+var ransO1TablePool = sync.Pool{New: func() any {
+	return &ransO1Tables{
+		sym:  new([256][1 << tfShiftO1]byte),
+		freq: new([256][256]uint32),
+		base: new([256][256]uint32),
+	}
+}}
+
 // uncompressO1RANS4x16 implements rans_uncompress_O1_4x16: in is the
 // payload after the framing format byte and raw-size varint, rawSize is
 // the declared decompressed length.
@@ -373,10 +409,13 @@ func uncompressO1RANS4x16(in []byte, rawSize uint32) ([]byte, error) {
 		return nil, fmt.Errorf("rans4x16: order-1 frequency table truncated after the alphabet")
 	}
 
-	// Per-context reverse-lookup tables.
-	symTab := new([256][1 << tfShiftO1]byte)
-	freqTab := new([256][256]uint32)
-	baseTab := new([256][256]uint32)
+	// Per-context reverse-lookup tables, drawn from a pool and reused
+	// without zeroing (see ransO1Tables).
+	t := ransO1TablePool.Get().(*ransO1Tables)
+	defer ransO1TablePool.Put(t)
+	symTab := t.sym
+	freqTab := t.freq
+	baseTab := t.base
 	for i := 0; i < 256; i++ {
 		if F0[i] == 0 {
 			continue
