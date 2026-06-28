@@ -1905,10 +1905,27 @@ func callConsensusBayesianInsertions(evs []pileupEvent, recs []*sam.Record,
 			} else {
 				// Pad: '*' base. Upstream's pileup engine carries the
 				// read's current base quality and position into the
-				// insertion column for non-inserting reads.
+				// insertion column for non-inserting reads, running a
+				// minimum against the base AFTER the insertion point —
+				// consensus_pileup.c:188-189 does
+				//   p->qual = MIN(p->qual, p->b_qual[p->seq_offset+1]).
+				// e.qual alone is only the raw post-column base quality, so
+				// without this running MIN the '*' pad quality sits above
+				// upstream's (the same running-min the #57 deletion pad
+				// path applies). Guarded by seqOff+1 being in range; when
+				// out of range we keep e.qual (upstream's edge case).
 				bp.base4 = 16
 				bp.seqOff = int(e.readBP) - 1
 				q = e.qual
+				var rec *sam.Record
+				if readIdx >= 0 && readIdx < len(recs) {
+					rec = recs[readIdx]
+				}
+				if rec != nil && bp.seqOff+1 >= 0 && bp.seqOff+1 < len(rec.Qual) {
+					if nq := rec.Qual[bp.seqOff+1]; nq < q {
+						q = nq
+					}
+				}
 				bp.qual = q
 				if e.isReverse {
 					b = '#'
