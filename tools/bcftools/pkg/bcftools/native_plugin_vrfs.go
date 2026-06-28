@@ -1157,13 +1157,20 @@ func writeVrfsBufferedSites(bw *bufio.Writer, buf []*vrfsSite, score map[*vrfsSi
 }
 
 // vrfsFormatE formats a float in C printf "%e" form (six fractional digits,
-// two-digit exponent), with NaN rendered as "-nan" and +/-Inf as
-// "inf"/"-inf", matching glibc printf on x86-64 (which vrfs.c relies on for the
-// empty-profile MEAN line).
+// two-digit exponent), with NaN rendered as "nan"/"-nan" according to its sign
+// bit and +/-Inf as "inf"/"-inf", matching glibc printf (which vrfs.c relies on
+// for the empty-profile MEAN line). The empty-profile mean is a positive
+// 0.0/0.0 NaN, which glibc prints as "nan".
 func vrfsFormatE(v float64) string {
 	switch {
 	case math.IsNaN(v):
-		return "-nan"
+		// glibc prints the NaN's sign bit: "-nan" when set, "nan" when
+		// clear. (This used to hard-code "-nan" to the x86-64 result;
+		// a positive 0.0/0.0 NaN such as the empty-profile mean is "nan".)
+		if math.Signbit(v) {
+			return "-nan"
+		}
+		return "nan"
 	case math.IsInf(v, 1):
 		return "inf"
 	case math.IsInf(v, -1):
