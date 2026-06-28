@@ -23,7 +23,14 @@ import (
 //     is all IEEE-754 +,-,*,/ (the matrix-power transition chain and the
 //     constant-product emissions), so the segmentation reproduces the C HMM
 //     exactly. Because it writes a file rather than stdout, this test drives the
-//     two binaries into separate prefixes and diffs the produced .dat files.
+//     two binaries into separate prefixes and diffs the produced .dat files. The
+//     SW lines' nSwitches/rate columns are the one exception: upstream inflates
+//     them via an out-of-bounds hap_switch[state][-1] read on each chromosome's
+//     first segment (undefined behaviour, build-dependent garbage), so we assert
+//     ours' correct deterministic counts against a per-fixture golden there
+//     rather than byte-matching the buggy upstream binary. Everything else on
+//     the SW line (SW/sample/chrom/nHets) and all SG/header lines stay byte-for-
+//     byte against upstream. See docs/UPSTREAM_BUGS.md#bcftools-color-chrs-oob-switch.
 //
 //   - trio-dnm3 NAIVE model: byte parity on the FORMAT/DNM and FORMAT/VA
 //     annotations. The NAIVE verdict is a pure integer Mendelian-consistency
@@ -110,14 +117,39 @@ func TestNativePluginColorChrs(t *testing.T) {
 	}
 	trio := parityFixture(t, "color_chrs_trio.vcf")
 	unrel := parityFixture(t, "color_chrs_unrel.vcf")
+	// swGolden maps "sample\tchrom" -> the correct, deterministic
+	// "nSwitches\trate" pair our port emits on the SW line. These columns are NOT
+	// byte-checked against upstream: upstream inflates them on each chromosome's
+	// first segment via an out-of-bounds hap_switch[state][-1] read (undefined
+	// behaviour; the garbage value is build/layout-dependent, here 3 = SW_MOTHER|
+	// SW_FATHER, so +1 mother and +1 father per chromosome). Ours counts only the
+	// real phase switches in the decoded segment path. See
+	// docs/UPSTREAM_BUGS.md#bcftools-color-chrs-oob-switch. An empty golden means
+	// "no SW lines carry UB-tainted columns" (unrelated mode never reads
+	// hap_switch), so every SW line stays fully byte-checked against upstream.
 	cases := []struct {
-		name    string
-		fixture string
-		args    []string // plugin options, WITHOUT the -p prefix (added per-run)
+		name     string
+		fixture  string
+		args     []string          // plugin options, WITHOUT the -p prefix (added per-run)
+		swGolden map[string]string // "sample\tchrom" -> "nSwitches\trate"
 	}{
-		{"trio", trio, []string{"-t", "MOTHER,FATHER,CHILD"}},
-		{"trio_grch38", trio, []string{"-t", "MOTHER,FATHER,CHILD"}},
-		{"unrelated", unrel, []string{"-u", "S1,S2"}},
+		// chr1: father :1->:2->:1 = 2 real switches; mother stays :1 = 0.
+		// chr2: a single segment = 0 switches for both. rate = nSwitches/(nHets-1).
+		{"trio", trio, []string{"-t", "MOTHER,FATHER,CHILD"}, map[string]string{
+			"MOTHER\tchr1": "0\t0.000000",
+			"FATHER\tchr1": "2\t0.666667",
+			"MOTHER\tchr2": "0\t0.000000",
+			"FATHER\tchr2": "0\t0.000000",
+		}},
+		{"trio_grch38", trio, []string{"-t", "MOTHER,FATHER,CHILD"}, map[string]string{
+			"MOTHER\tchr1": "0\t0.000000",
+			"FATHER\tchr1": "2\t0.666667",
+			"MOTHER\tchr2": "0\t0.000000",
+			"FATHER\tchr2": "0\t0.000000",
+		}},
+		// Unrelated mode never touches hap_switch, so its SW lines (all-zero here)
+		// are already byte-identical to upstream: no golden override needed.
+		{"unrelated", unrel, []string{"-u", "S1,S2"}, nil},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -144,11 +176,73 @@ func TestNativePluginColorChrs(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read ours .dat: %v", err)
 			}
-			if !bytes.Equal(upDat, ourDat) {
-				t.Fatalf("+color-chrs %v .dat diverges from upstream\n--- upstream (%d bytes) ---\n%s\n--- ours (%d bytes) ---\n%s",
-					tc.args, len(upDat), upDat, len(ourDat), ourDat)
-			}
+			compareColorChrsDat(t, tc.args, upDat, ourDat, tc.swGolden)
 		})
+	}
+}
+
+// compareColorChrsDat asserts ours' .dat output matches upstream's, with the SW
+// line's UB-tainted columns handled specially. For every line that is not an SW
+// data line (SG segments, "# ..." headers, and any blank trailing line) we
+// require byte-equality ours==upstream — those are fully deterministic and the
+// oracle must hold. For SW data lines ("SW\t<sample>\t<chrom>\t<nHets>\t
+// <nSwitches>\t<rate>") we require ours==upstream on the SW/sample/chrom/nHets
+// fields (also deterministic) but check the nSwitches and switch-rate fields
+// against the supplied per-fixture golden instead, because upstream inflates
+// them via an out-of-bounds hap_switch read on each chromosome's first segment
+// (see docs/UPSTREAM_BUGS.md#bcftools-color-chrs-oob-switch). If swGolden has no
+// entry for a given "sample\tchrom" key, that SW line is byte-checked against
+// upstream in full (used by unrelated mode, which never reads hap_switch).
+func compareColorChrsDat(t *testing.T, args []string, upDat, ourDat []byte, swGolden map[string]string) {
+	t.Helper()
+	upLines := strings.Split(string(upDat), "\n")
+	ourLines := strings.Split(string(ourDat), "\n")
+	if len(upLines) != len(ourLines) {
+		t.Fatalf("+color-chrs %v .dat line count diverges: upstream %d vs ours %d\n--- upstream ---\n%s\n--- ours ---\n%s",
+			args, len(upLines), len(ourLines), upDat, ourDat)
+	}
+	for i := range upLines {
+		up, our := upLines[i], ourLines[i]
+		if !strings.HasPrefix(up, "SW\t") {
+			// SG segments, "# ..." headers, trailing blank line: pure oracle.
+			if up != our {
+				t.Fatalf("+color-chrs %v .dat line %d diverges from upstream\n--- upstream ---\n%q\n--- ours ---\n%q",
+					args, i+1, up, our)
+			}
+			continue
+		}
+		// SW line layout: SW \t sample \t chrom \t nHets \t nSwitches \t rate
+		upF := strings.Split(up, "\t")
+		ourF := strings.Split(our, "\t")
+		if len(upF) != 6 || len(ourF) != 6 {
+			t.Fatalf("+color-chrs %v malformed SW line %d: upstream %q ours %q", args, i+1, up, our)
+		}
+		// Deterministic prefix (SW/sample/chrom/nHets) must byte-match upstream.
+		for f := 0; f < 4; f++ {
+			if upF[f] != ourF[f] {
+				t.Fatalf("+color-chrs %v SW line %d field %d (deterministic) diverges: upstream %q ours %q",
+					args, i+1, f, upF[f], ourF[f])
+			}
+		}
+		key := upF[1] + "\t" + upF[2] // "sample\tchrom"
+		want, ok := swGolden[key]
+		if !ok {
+			// No golden override: this SW line carries no UB-tainted columns, so
+			// the nSwitches/rate columns are byte-checked against upstream too.
+			if up != our {
+				t.Fatalf("+color-chrs %v SW line %d diverges from upstream\n--- upstream ---\n%q\n--- ours ---\n%q",
+					args, i+1, up, our)
+			}
+			continue
+		}
+		// UB-tainted columns: assert ours equals the recorded correct golden
+		// rather than the buggy upstream value.
+		got := ourF[4] + "\t" + ourF[5]
+		if got != want {
+			t.Fatalf("+color-chrs %v SW line %d (%s) nSwitches/rate = %q, want golden %q "+
+				"(upstream is %q/%q — UB-inflated, see docs/UPSTREAM_BUGS.md#bcftools-color-chrs-oob-switch)",
+				args, i+1, key, got, want, upF[4], upF[5])
+		}
 	}
 }
 
