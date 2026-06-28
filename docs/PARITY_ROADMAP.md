@@ -695,8 +695,8 @@ per-cell `round(blockchar_len*(hist-current)/row_bin_size) - 1`
 (→ a space). Our port special-cased `row_bin_size == 0` to `-1` (always a
 space, x86-64 only); the fix replaces it with `int(int32(round(...) - 1))`
 so the bar matches the upstream binary on either platform. Together with
-#61 this clears the **entire samtools package failing-set** (it is now
-fully green).
+task #61 this clears the **entire samtools package failing-set** (it is
+now fully green).
 
 Implemented (this wave): bcftools `convert` PLINK exporters. Upstream
 `vcfconvert.c` leaves the `--plink`/`--tped`/`--bin` option block
