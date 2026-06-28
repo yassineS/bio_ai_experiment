@@ -562,6 +562,59 @@ r4	0	chr1	1	60	1M	*	0	0	C	"
 	}
 }
 
+// delHomopolymerRunMinSAM exercises the task #55 regression: the bayesian
+// consensus caller must feed a deletion '*' placeholder the RUNNING-MINIMUM
+// quality MIN(pre-gap base qual, post-gap base qual) (consensus_pileup.c:
+// 195-202), NOT the post-gap base quality alone. The reference run is a 6-C
+// homopolymer at chr1:2-7 (ref ACCCCCCGT... at 1-12). Some reads carry a 1bp
+// deletion at the run's trailing edge (CIGAR 6M1D2M dropping the 7th ref base,
+// the last C at pos 7); for those reads the PRE-gap base (the read's 6th base,
+// quality '#'=2) is far lower than the POST-gap base (the G at pos 8, quality
+// 'I'=40). Upstream MIN(2,40)=2, so each '*' contributes only quality 2 to the
+// deletion-vs-base posterior at pos 7. With the (buggy) post-gap quality 40 the
+// deletions look highly confident and outvote the C-supporting reads, dropping
+// the run-edge base and frameshifting the consensus to a 5-C run. With the
+// running minimum the deletions are weak and the 6th C is correctly called.
+const delHomopolymerRunMinSAM = `@HD	VN:1.6
+@SQ	SN:chr1	LN:12
+c1	0	chr1	1	60	9M	*	0	0	ACCCCCCGT	IIIIIIIII
+c2	0	chr1	1	60	9M	*	0	0	ACCCCCCGT	IIIIIIIII
+d1	0	chr1	1	60	6M1D2M	*	0	0	ACCCCCGT	IIIII#II
+d2	0	chr1	1	60	6M1D2M	*	0	0	ACCCCCGT	IIIII#II
+d3	0	chr1	1	60	6M1D2M	*	0	0	ACCCCCGT	IIIII#II
+d4	0	chr1	1	60	6M1D2M	*	0	0	ACCCCCGT	IIIII#II
+d5	0	chr1	1	60	6M1D2M	*	0	0	ACCCCCGT	IIIII#II
+`
+
+// TestConsensus_FASTA_Bayesian_DeletionRunMinQual is the task #55 regression.
+// It asserts the bayesian -f fasta caller CALLS the homopolymer run-edge base
+// (a full 6-C run, "ACCCCCCGT...") rather than dropping it to a 5-C run. The
+// deletion reads carry a HIGH post-gap quality but a LOW pre-gap quality; the
+// call is correct only when the '*' placeholder uses the running minimum. This
+// test FAILS when the del path does `bp.qual = e.qual` (post-gap only) and
+// PASSES once it reads the running-min e.delPileupQual.
+func TestConsensus_FASTA_Bayesian_DeletionRunMinQual(t *testing.T) {
+	out := runConsensusOnSAM(t, delHomopolymerRunMinSAM, ConsensusOptions{
+		Format: ConsensusFASTA,
+		Mode:   ConsensusModeBayesian,
+	})
+	// Extract the unwrapped consensus sequence (skip the '>' header line).
+	var seq string
+	for _, ln := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if strings.HasPrefix(ln, ">") {
+			continue
+		}
+		seq += ln
+	}
+	cCount := strings.Count(seq, "C")
+	if cCount != 6 {
+		t.Errorf("bayesian -f fasta dropped a homopolymer run-edge base: got %q "+
+			"(C-count %d), want a full 6-C run (the running-min deletion quality "+
+			"MIN(pre=2,post=40) must keep the trailing C called); full output %q",
+			seq, cCount, out)
+	}
+}
+
 // TestConsensus_BayesianDefault_FromFile confirms the default
 // invocation (Mode=Bayesian) runs the real Gap5 bayesian caller with no
 // fallback warning on stderr.
