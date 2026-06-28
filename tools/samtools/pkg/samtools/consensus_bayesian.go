@@ -450,7 +450,14 @@ func applyMDCosts(localNM []int32, md string, halo, qlen int) {
 		for ; k < pos+halo*2 && k < qlen; k++ {
 			localNM[k] += 5
 		}
-		pos++
+		// Upstream's MD loop advances only the md-string cursor after a
+		// substitution (md++); it does NOT advance pos. Consecutive
+		// substitutions therefore share the same query offset, so the
+		// halo bands stack at one centre rather than sliding one base per
+		// substitution. Incrementing pos here over-counted the +5 outer
+		// band by one base per extra substitution, inflating localNM at a
+		// read's mismatch-dense left edge and depressing the adjusted MAPQ
+		// just enough to mask a coverage-island's first callable base.
 		i++
 	}
 }
