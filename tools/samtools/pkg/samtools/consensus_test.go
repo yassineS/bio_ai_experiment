@@ -1059,3 +1059,68 @@ func TestConsensus_AllPositionsPileup_BEDFilterScopesPlaceholders(t *testing.T) 
 		t.Fatalf("BED-filtered all-positions pileup mismatch:\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
 }
+
+// nIslandGapSAM reproduces the whole-contig N-island gap that task #56 closes.
+// Two reads cover chr1:1-5 ("ACGTA"); then positions 6-14 have ZERO coverage
+// (an internal gap that the FASTA/FASTQ accumulator N-fills inline); then two
+// reads at chr1:15-19 open with an 'N' base ("NCGTA"), so the default
+// (bayesian) caller renders column 15 a deletion '*'. Upstream's basic_fasta
+// returns early for that suppressed '*' BEFORE its gap-fill loop runs
+// (bam_consensus.c:2403-2407), so the immediately-preceding zero-coverage gap
+// is NEVER written — the byte-exact upstream output (verified against the
+// samtools binary) is:
+//
+//	show-del off (default): >chr1\nACGTACGTA      (gap + '*' swallowed)
+//	show-del yes:           >chr1\nACGTANNNNNNNNN*CGTA  ('*' emitted, gap kept)
+const nIslandGapSAM = `@HD	VN:1.6
+@SQ	SN:chr1	LN:30
+r1	0	chr1	1	60	5M	*	0	0	ACGTA	IIIII
+r2	0	chr1	1	60	5M	*	0	0	ACGTA	IIIII
+r3	0	chr1	15	60	5M	*	0	0	NCGTA	IIIII
+r4	0	chr1	15	60	5M	*	0	0	NCGTA	IIIII
+`
+
+// TestConsensus_FASTA_NIslandGap_SwallowedWhenShowDelOff is the task #56
+// regression: with --show-del off (the default) the zero-coverage gap that
+// immediately precedes a suppressed '*' deletion column must be SWALLOWED, not
+// left as an N-run. It FAILS before the gapRunStart rollback (the pre-fix
+// output is "ACGTANNNNNNNNNCGTA", the nine gap N's leaking through) and PASSES
+// after.
+func TestConsensus_FASTA_NIslandGap_SwallowedWhenShowDelOff(t *testing.T) {
+	// Bayesian mode is the upstream `samtools consensus` default and is what
+	// renders the post-gap 'N' base as a deletion '*' (simple mode would call
+	// it 'N', not exercising the suppressed-'*' rollback path under test).
+	out := runConsensusOnSAM(t, nIslandGapSAM, ConsensusOptions{
+		Mode: ConsensusModeBayesian, Format: ConsensusFASTA})
+	want := ">chr1\nACGTACGTA\n"
+	if out != want {
+		t.Errorf("N-island gap not swallowed: got %q want %q", out, want)
+	}
+	if strings.Contains(out, "N") {
+		t.Errorf("gap N-run leaked into show-del-off output: %q", out)
+	}
+}
+
+// TestConsensus_FASTQ_NIslandGap_QualLockstep verifies the rollback truncates
+// qualBuf in lockstep with seqBuf for -f fastq: the swallowed gap must leave no
+// orphaned quality bytes (seq and qual must be equal length and match upstream).
+func TestConsensus_FASTQ_NIslandGap_QualLockstep(t *testing.T) {
+	out := runConsensusOnSAM(t, nIslandGapSAM, ConsensusOptions{
+		Mode: ConsensusModeBayesian, Format: ConsensusFASTQ})
+	want := "@chr1\nACGTACGTA\n+\nGGGGGGGGG\n"
+	if out != want {
+		t.Errorf("fastq gap lockstep mismatch: got %q want %q", out, want)
+	}
+}
+
+// TestConsensus_FASTA_NIslandGap_EmittedWhenShowDelYes is the negative control:
+// with --show-del yes the '*' IS emitted and the rollback must NOT fire, so the
+// gap N-run is kept exactly as upstream emits it.
+func TestConsensus_FASTA_NIslandGap_EmittedWhenShowDelYes(t *testing.T) {
+	out := runConsensusOnSAM(t, nIslandGapSAM, ConsensusOptions{
+		Mode: ConsensusModeBayesian, Format: ConsensusFASTA, ShowDel: true})
+	want := ">chr1\nACGTANNNNNNNNN*CGTA\n"
+	if out != want {
+		t.Errorf("show-del-yes must keep gap + '*': got %q want %q", out, want)
+	}
+}
