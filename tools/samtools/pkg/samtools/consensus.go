@@ -1039,6 +1039,18 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 	var seqBuf, qualBuf []byte
 	firstCovIdx, lastCovIdx := -1, -1
 
+	// gapRunStart marks the seqBuf index at which the current contiguous run of
+	// zero-coverage gap-fill bytes ('N'/ref) began; -1 means "no gap run in
+	// progress". Upstream's basic_fasta returns early (c->last_pos = pos;
+	// return 0) for a deletion-only column suppressed by --show-del off, which
+	// happens BEFORE its gap-fill loop runs — so the internal zero-coverage gap
+	// immediately preceding such a column is never written. We fill gaps inline
+	// instead, so we reproduce that by rolling seqBuf/qualBuf back to
+	// gapRunStart when we are about to suppress a '*' column. Any real coverage
+	// or insertion byte appended resets gapRunStart to -1 so a gap upstream
+	// keeps (one bounded by covered columns on both sides) is never collapsed.
+	gapRunStart := -1
+
 	// pileupLastPos tracks upstream's c->last_pos for the -a/--all-positions
 	// pileup placeholder mechanism (basic_pileup, bam_consensus.c:2202). It
 	// is the 1-based reference position of the last row actually emitted; 0
@@ -1323,6 +1335,12 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 						// (bam_consensus.c:2423-2436) copies c->ref[pos] for the gap
 						// bytes and sets their qual to ref_qual+'!' (else 'N'/'!').
 						if call.base == 0 {
+							// Start (or continue) a zero-coverage gap run: record
+							// where it began in seqBuf so a following suppressed '*'
+							// column can roll it back (upstream never writes it).
+							if gapRunStart < 0 {
+								gapRunStart = len(seqBuf)
+							}
 							if ref != nil {
 								seqBuf = append(seqBuf, ref.base(chrom, pos0))
 								qualBuf = append(qualBuf, byte(opts.RefQual)+'!')
@@ -1342,6 +1360,10 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 						// parses --het-only but never acts on it (a dead option —
 						// see docs/UPSTREAM_BUGS.md).
 						if opts.HetOnly && !call.isHet {
+							// A het-mask 'N' is a deliberate covered-column
+							// placeholder, not a zero-coverage gap upstream would
+							// swallow, so it ends any gap run rather than extending it.
+							gapRunStart = -1
 							seqBuf = append(seqBuf, 'N')
 							qualBuf = append(qualBuf, '!')
 							continue
@@ -1352,7 +1374,27 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 						// invokes basic_fasta independently per nth, so a
 						// deletion-called reference column still has its nth>0
 						// insertion columns emitted below.
-						if !(call.base == '*' && !opts.ShowDel) {
+						if call.base == '*' && !opts.ShowDel {
+							// Suppressed deletion-only column. Upstream's basic_fasta
+							// returns early (c->last_pos = pos; return 0) BEFORE its
+							// gap-fill loop for this column, so the internal
+							// zero-coverage gap that immediately precedes it is never
+							// written. We fill gaps inline, so reproduce the early
+							// return by rolling seqBuf/qualBuf back to the start of
+							// the current gap run (qualBuf in lockstep for -f fastq).
+							// Only the suppressed-'*' path triggers this; with
+							// --show-del yes (ShowDel true) we fall through and emit
+							// the '*' exactly as upstream does, with no rollback.
+							if gapRunStart >= 0 {
+								seqBuf = seqBuf[:gapRunStart]
+								qualBuf = qualBuf[:gapRunStart]
+								gapRunStart = -1
+							}
+						} else {
+							// Real covered column: extend the covered span and end any
+							// gap run so a gap bounded by coverage on both sides (which
+							// upstream keeps) is never collapsed by a later '*'.
+							gapRunStart = -1
 							if firstCovIdx < 0 {
 								firstCovIdx = len(seqBuf)
 							}
@@ -1378,6 +1420,9 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 								if cb == '*' {
 									continue
 								}
+								// An emitted insertion column is real coverage: end any
+								// gap run so it survives a later suppressed '*'.
+								gapRunStart = -1
 								if firstCovIdx < 0 {
 									firstCovIdx = len(seqBuf)
 								}
