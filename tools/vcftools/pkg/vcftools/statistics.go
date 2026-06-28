@@ -1246,14 +1246,21 @@ func formatFreq(v float64) string {
 // formatCppDefault renders a float the way a default-configured C++ ostream
 // (defaultfloat, precision 6) would: up to 6 significant digits, trailing
 // zeros stripped, switching to scientific notation only outside the
-// [1e-4, 1e6) magnitude band. NaN prints as "-nan" and infinities as
-// "inf"/"-inf", matching glibc's printf used by libstdc++. This is the
-// formatting upstream relies on for nearly every floating-point statistic
-// it writes straight to an ostream.
+// [1e-4, 1e6) magnitude band. NaN prints as "nan"/"-nan" according to its
+// sign bit and infinities as "inf"/"-inf", matching glibc's printf used by
+// libstdc++. This is the formatting upstream relies on for nearly every
+// floating-point statistic it writes straight to an ostream.
 func formatCppDefault(v float64) string {
 	switch {
 	case math.IsNaN(v):
-		return "-nan"
+		// glibc/libstdc++ print the NaN's sign bit: "-nan" when set,
+		// "nan" when clear. (This used to hard-code "-nan", which only
+		// matched values whose sign bit happened to be set — e.g. it was
+		// wrong for a positive 0.0/0.0 NaN such as an empty-site mean.)
+		if math.Signbit(v) {
+			return "-nan"
+		}
+		return "nan"
 	case math.IsInf(v, 1):
 		return "inf"
 	case math.IsInf(v, -1):
@@ -1357,11 +1364,16 @@ func (s *statistics) outputSiteMeanDepth(prefix string) error {
 
 	for _, stat := range s.siteDepths {
 		// Upstream: mean = sum/n, var = ((sumsq/n) - mean^2)*n/(n-1),
-		// both written to a default ostream. For n==0 the division
-		// yields NaN ("-nan"); for n==1 the variance denominator is 0
-		// (also "-nan"). formatCppDefault renders those like upstream.
+		// both written to a default ostream (variant_file_output.cpp:3456).
+		// Upstream's `n` is an `unsigned int`, so for n==0 `n-1` wraps to
+		// UINT_MAX (a large positive double), not -1. That makes the
+		// empty-site variance `NaN / +UINT_MAX` == a *positive* NaN, which
+		// libstdc++ prints as "nan" (the mean is likewise a positive
+		// 0.0/0.0). Replicate the unsigned underflow with uint32 so the
+		// sign bit matches; for n==1 the denominator is 0 (variance ±inf),
+		// for n>=2 it is the ordinary n-1.
 		mean := float64(stat.sum) / float64(stat.n)
-		variance := ((float64(stat.sumsq) / float64(stat.n)) - mean*mean) * float64(stat.n) / float64(stat.n-1)
+		variance := ((float64(stat.sumsq) / float64(stat.n)) - mean*mean) * float64(stat.n) / float64(uint32(stat.n)-1)
 		fmt.Fprintf(f, "%s\t%d\t%s\t%s\n", stat.chrom, stat.pos,
 			formatCppDefault(mean), formatCppDefault(variance))
 	}

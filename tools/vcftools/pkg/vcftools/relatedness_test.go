@@ -94,9 +94,12 @@ func TestRelatedness_HandComputed(t *testing.T) {
 
 // TestRelatedness_SkipsMonomorphic ensures a SNP that is monomorphic across
 // the kept individuals (p=0 or p=1) does NOT contribute to the average. With
-// no informative SNPs, every pair has N_sites == 0, so upstream emits "-nan"
-// (0.0/0.0 for the off-diagonal, 1.0 + nan for the diagonal). We assert that
-// the output is all "-nan" rather than numeric values, matching upstream.
+// no informative SNPs, every pair has N_sites == 0, so the relatedness is a
+// positive 0.0/0.0 NaN, which libstdc++ (and so the upstream binary) prints
+// as "nan" — verified against the live `vcftools --relatedness` oracle. We
+// assert the output is all "nan" rather than numeric values, matching
+// upstream. (This previously asserted "-nan", which encoded an earlier
+// hard-coded NaN sign rather than upstream's actual output.)
 func TestRelatedness_SkipsMonomorphic(t *testing.T) {
 	vcfText := buildMinimalVCFRel(t, []string{"s1", "s2"},
 		[]relRow{
@@ -115,8 +118,8 @@ func TestRelatedness_SkipsMonomorphic(t *testing.T) {
 		if len(fields) != 3 {
 			continue
 		}
-		if fields[2] != "-nan" {
-			t.Errorf("expected -nan for monomorphic-only data, got %q in line %q", fields[2], ln)
+		if fields[2] != "nan" {
+			t.Errorf("expected nan for monomorphic-only data, got %q in line %q", fields[2], ln)
 		}
 	}
 }
