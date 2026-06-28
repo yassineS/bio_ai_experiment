@@ -555,11 +555,17 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
       path matches upstream (proxy 0-diff; `consensus -r 20 -f fasta`
       380,434 → 354,136 lines), confined to the bayesian caller (simple, the #53
       island, the block engine, mpileup unchanged; +1 regression test).
-    - **in-block N-island masking (OPEN, the dominant residual).** Ours masks
-      ~12,666 marginal-coverage / depth-1 / low-MAPQ columns to N that upstream
-      calls continuously (the ~354k lines + the ~12.6 kb N-count length delta) — a
-      call-vs-N threshold / depth-or-MAPQ-floor difference, the same family as the
-      #53 island-edge masking. Tracked.
+    - **in-block N-island masking — FIXED (task #56, merged d1d1a98).** Not a
+      call/threshold issue (the `-f pileup` call is byte-identical to upstream): a
+      FASTA gap-fill divergence. Upstream (`bam_consensus.c:2403-2407`) early-returns
+      on a suppressed deletion `*` (`show_del=0`), swallowing the immediately-preceding
+      internal zero-coverage gap; ours N-filled it. Fixed (FASTA/FASTQ-emit-only) via
+      a `gapRunStart` cursor that rolls `seqBuf`/`qualBuf` back when suppressing a `*`.
+      MEASURED whole-contig: excess N **12,664 → 1**, length delta +12,666 → −1
+      (byte-identical for 26.1M chars + a 33.3M suffix); `-f fastq` 0-diff,
+      `--show-del yes` still emits `*`, simple/#53/#55/block-engine/mpileup unchanged,
+      3 regression tests. The lone remaining `-f fasta` diff is a single `(AGAAAAG)n`
+      tandem-repeat base off-by-one (the homopolymer/repeat call family), tracked.
     Also separate: the bayesian `-f fastq` qual-byte residual (bases identical,
     `cq` numeric diffs at high-depth columns).
 - **`samtools sort` wall — FIXED (task #39 then #42, now ≈ parity).** `sort -@4`
