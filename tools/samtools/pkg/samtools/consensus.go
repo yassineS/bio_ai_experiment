@@ -1968,8 +1968,26 @@ func callConsensusSimpleInsertions(evs []pileupEvent, recs []*sam.Record,
 	// (consensus_pileup.c:180-211). Keyed by the read's index in the per-base
 	// event list. carriedQual[i] holds the running value entering the next nth
 	// column; carriedOff[i] is the read's last-consumed base index (seq_offset).
-	// Both are seeded from the nth==0 base column: p->qual = b_qual[seq_offset]
-	// (== e.qual) and seq_offset = readBP-1.
+	//
+	// For an aligned base column (pileupEventBase) the seed is upstream's
+	// nth==0 default arm: p->qual = b_qual[seq_offset] (== e.qual) and
+	// seq_offset = readBP-1 (the query index of the displayed base).
+	//
+	// For a deletion column (pileupEventDel) the read enters the insertion
+	// pad already inside a D run, so its upstream state is NOT the post-gap
+	// base: p->qual already holds the running minimum MIN(pre-gap, post-gap)
+	// computed in the BAM_CDEL arm (consensus_pileup.c:195-202), and
+	// seq_offset stays PINNED at the pre-gap base for the whole D run — it is
+	// never advanced by a deletion op (consensus_pileup.c:118-122). Seeding
+	// carriedQual from the raw e.qual (post-gap base only) and carriedOff from
+	// readBP-1 (the POST-gap query index) made the first pad column read
+	// b_qual[seq_offset+1] one base too far past the post-gap base, dragging
+	// the '*' pad quality below upstream's. The deletion event's delPileupQual
+	// (value+1) is exactly upstream's running min, and its readBP is
+	// (post-gap query index)+1, so the pre-gap seq_offset is readBP-2. When
+	// delPileupQual is 0 (a deletion at read start, no pre-gap base) we fall
+	// back to e.qual and readBP-2 == -1, matching upstream's read-start edge
+	// where the first pad still MINs against the post-gap base b_qual[0].
 	carriedQual := make(map[int32]byte, len(evs))
 	carriedOff := make(map[int32]int, len(evs))
 	for _, e := range evs {
@@ -1977,6 +1995,15 @@ func callConsensusSimpleInsertions(evs []pileupEvent, recs []*sam.Record,
 			continue
 		}
 		if !spansInsertionColumn(e, recs, pos1) {
+			continue
+		}
+		if e.kind == pileupEventDel {
+			q := e.qual
+			if e.delPileupQual != 0 {
+				q = e.delPileupQual - 1
+			}
+			carriedQual[e.readIdx] = q
+			carriedOff[e.readIdx] = int(e.readBP) - 2
 			continue
 		}
 		carriedQual[e.readIdx] = e.qual
