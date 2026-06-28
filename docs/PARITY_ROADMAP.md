@@ -566,8 +566,14 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
       `--show-del yes` still emits `*`, simple/#53/#55/block-engine/mpileup unchanged,
       3 regression tests. The lone remaining `-f fasta` diff is a single `(AGAAAAG)n`
       tandem-repeat base off-by-one (the homopolymer/repeat call family), tracked.
-    Also separate: the bayesian `-f fastq` qual-byte residual (bases identical,
-    `cq` numeric diffs at high-depth columns).
+    The bayesian `-f fastq` qual-byte residual is now PARTLY closed: task #58
+    (merged a626cf5) applied upstream's insertion-pad running-min `MIN(p->qual,
+    b_qual[seq_offset+1])` to the bayesian insertion pad (the analogue of #57's
+    deletion running-min), taking the insertion-column cq diffs 37 → 1 (total
+    pure cq diffs 105 → 69, 0 base-call diffs, byte-exact). Two cq sub-causes
+    remain: base-column FP-rounding (~68 small ±1 diffs, mostly masked by the
+    `MIN(cq,93)` cap) and a 1-base seq tandem-repeat off-by-one (the homopolymer/
+    repeat family). Tracked.
 - **`samtools sort` wall — FIXED (task #39 then #42, now ≈ parity).** `sort -@4`
   was ~3x upstream at matched memory. Profiling showed `sort.SliceStable`/heap/
   comparator are negligible (<4%); the costs were excessive spilling (57 vs 4
