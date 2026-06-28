@@ -1704,3 +1704,58 @@ place our output is deliberately _more_ correct than upstream's.
 A ready-to-file report for the upstream samtools/bcftools project (root-cause
 walk-through and a suggested fix) is staged at
 `docs/upstream-reports/bcftools-csq-prnup-recycled-pos.md`.
+
+## bcftools +color-chrs: out-of-bounds `hap_switch` read inflates the first-segment switch count <a id="bcftools-color-chrs-oob-switch"></a>
+
+In trio mode (`-t`), `flush_viterbi` walks the Viterbi-decoded haplotype path
+and, at every shared-segment boundary, classifies the transition by reading
+`hap_switch[state][prev_state]` (`reference_code/bcftools/plugins/color-chrs.c`,
+lines 524-525):
+
+```c
+if ( hap_switch[state][prev_state] & SW_MOTHER ) nswitch_mother++;
+if ( hap_switch[state][prev_state] & SW_FATHER ) nswitch_father++;
+```
+
+`prev_state` is initialised to `-1` (line 476) and is only assigned a real
+state at the bottom of the loop (`prev_state = state;`, line 529). On the
+**first** segment of each chromosome the boundary test
+`state!=prev_state || i+1==args->nsites` fires while `prev_state` is still
+`-1`, so the classifier reads `hap_switch[state][-1]`.
+
+`hap_switch` is a `static int hap_switch[8][8]` (line 114) living in BSS. With
+`prev_state == -1` the flat index is `state*8 - 1`, i.e. the int immediately
+_before_ `hap_switch[state][0]`. For `state > 0` that aliases
+`hap_switch[state-1][7]` (in-array, and column 7 / `TRIO_DB` is 0 for every
+row), but for `state == 0` it is `hap_switch[-1][7]` — genuinely **out of
+bounds**, reading whatever int precedes the array in memory. That read is
+**undefined behaviour**: its value depends entirely on the build's memory
+layout (here it overlaps an adjacent heap `FILE*` pointer). In the bioval build
+the garbage reliably has both the `SW_MOTHER` (bit 1) and `SW_FATHER` (bit 2)
+bits set (value 3), so upstream spuriously counts **one extra mother and one
+extra father switch on each chromosome's first segment**. A different platform
+or build (e.g. x86-64 CI) can yield a different garbage value — the `SW_FATHER`
+bit happens to be stable here, the `SW_MOTHER` bit much less so — so the
+inflated counts are **not portable**.
+
+On the `color_chrs_trio.vcf` fixture the real (deterministic) phase switches in
+the decoded segment path are: chr1 — father switches `:1→:2→:1` = **2**, mother
+stays `:1` = **0**; chr2 — a single segment, **0** switches for both. Upstream
+prints inflated `SW FATHER chr1 4 3` / `SW MOTHER chr1 4 1` and
+`SW FATHER chr2 3 1` / `SW MOTHER chr2 3 1` (each +1 from the UB read), with the
+`switch rate` column (`nSwitches/(nHets-1)`) inflated to match.
+
+**Our behaviour:** fixed on port. Our `flushViterbi`
+(`tools/bcftools/pkg/bcftools/native_plugin_color_chrs_hmm.go`) counts only the
+real phase switches and does **not** count a switch on the first segment (there
+is no preceding state, so there is no real transition). All the deterministic
+columns — the `SG` segment lines, the headers, and the per-sample `nHets`
+column — remain byte-identical to upstream; the only intentional difference is
+the `nSwitches` and `switch rate` columns of the `SW` lines, which carry
+upstream's UB-tainted, build-dependent inflation. Because our port cannot
+faithfully (or portably) reproduce another process's out-of-bounds garbage, the
+parity test (`TestNativePluginColorChrs` in
+`tools/bcftools/pkg/bcftools/native_plugin_libm_oracle_test.go`) keeps the
+oracle byte-equality check on every deterministic field and asserts our
+correct, deterministic `nSwitches`/`rate` values against a per-fixture golden
+instead of byte-matching upstream on those two columns.
