@@ -708,15 +708,6 @@ func bayesOptionsFrom(opts ConsensusOptions) bayesOptions {
 	}
 }
 
-// consensusNaNQual is the quality value upstream prints for a simple-mode
-// pileup column that has reads but no scoring base (tscore == 0) yet whose
-// call escaped the "downgrade to N" branch — typically an intron position
-// covered only by ref-skip (CIGAR N) reads. Upstream computes the quality as
-// `100.0 * used_score / tscore` == 100.0*0/0 == NaN and casts it to a 32-bit
-// C int, which yields INT_MIN on every platform samtools targets. We hold the
-// exact sentinel so the pileup quality column matches byte-for-byte.
-const consensusNaNQual = -2147483648
-
 // consensusCall is a single per-position call.
 type consensusCall struct {
 	base byte // 'A','C','G','T','*','N' or IUPAC ambig code when AmbigCodes set
@@ -1699,17 +1690,17 @@ func callConsensus(evs []pileupEvent, opts ConsensusOptions) (consensusCall, int
 	// Confidence, mirroring upstream's `*qual = used_base ? 100.0 *
 	// used_score / tscore : 0` (bam_consensus.c:2003). When used_base is
 	// non-zero but tscore is 0 (the intron / ref-skip-only column whose
-	// call1 stayed 15), upstream computes 100.0*0/0 == NaN and casts it to
-	// a C int, which on every platform samtools targets yields INT_MIN
-	// (-2147483648). We reproduce that sentinel exactly so the pileup row's
-	// quality column is byte-for-byte identical.
+	// call1 stayed 15), upstream evaluates 100.0*0/0 == NaN and casts it to
+	// a 32-bit C int. That cast is platform-dependent undefined behaviour:
+	// it yields 0 on ARM64 (FCVTZS) and INT_MIN (-2147483648) on x86-64
+	// (CVTTSD2SI). We replicate upstream's cast with a float64->int32
+	// conversion, which Go lowers to the same hardware instruction, so the
+	// quality column matches the upstream binary byte-for-byte on whichever
+	// platform runs the comparison (rather than hard-coding one platform's
+	// result).
 	qual := 0
 	if used != 0 {
-		if tscore == 0 {
-			qual = consensusNaNQual
-		} else {
-			qual = int(100 * float64(usedScore) / float64(tscore))
-		}
+		qual = int(int32(100.0 * float64(usedScore) / float64(tscore)))
 	}
 	return consensusCall{base: base, qual: qual, depth: totDepth, isHet: isHet}, totDepth
 }
