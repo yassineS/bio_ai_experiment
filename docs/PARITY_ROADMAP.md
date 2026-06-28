@@ -532,7 +532,7 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
     CDEL control stays 0-diff. NO-REGRESS: `-f fasta --mode simple` md5
     `b057be94` unchanged, bayesian `73519a08` unchanged, `mpileup -B` 0-diff,
     0 new test failures. Together with #48 this closes the `-f pileup --mode
-    simple` deletion + insertion running-min quality parity.
+    simple` deletion + insertion running-min quality parity (and #57 propagates the deletion running-min into the multi-base-deletion insertion-pad rows — `consensus -r 20 -f pileup --mode simple --show-del yes` 14→0, render-scoped, byte-exact).
   - **`consensus` default Bayesian `-f fasta` — MD-halo off-by-one FIXED (task
     #53, merged a458e59); the larger base-calling gap REMAINS (re-characterised).**
     Task #53 measured the whole-contig-20 gap at **~190k differing positions + a
