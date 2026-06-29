@@ -21,14 +21,25 @@ func (rd *recordDecoder) reconstructMapped(feats []readFeature, readLen, recPos 
 	if readLen < 0 {
 		return nil, nil, nil, errFormat("record declares a negative read length %d", readLen)
 	}
-	seq = make([]byte, readLen)
-	qual = make([]byte, readLen)
-	for i := range qual {
-		qual[i] = 0xff // 0xff is the SAM "no quality" sentinel.
-	}
-	covered := make([]bool, readLen)
-
+	var covered []bool
 	var ops cigarBuilder
+	if rd.arena != nil {
+		// Gated view path: reconstruct into the reused per-record scratch (SEQ +
+		// coverage, both overwritten next record), the per-slice QUAL arena and
+		// the per-slice CIGAR arena, instead of fresh per-record make()s. The
+		// bytes produced are identical to the eager path below.
+		seq, covered = rd.arena.reconScratch(int(readLen))
+		qual = rd.arena.qualFor(int(readLen))
+		ops.arena = rd.arena
+		ops.arenaStart = len(rd.arena.cigar)
+	} else {
+		seq = make([]byte, readLen)
+		qual = make([]byte, readLen)
+		for i := range qual {
+			qual[i] = 0xff // 0xff is the SAM "no quality" sentinel.
+		}
+		covered = make([]bool, readLen)
+	}
 	readPos := int32(0) // 0-based cursor within the read.
 	// refOffset is the count of reference bases consumed since recPos.
 	// A read-and-reference operation (a match run or a substitution)
@@ -309,8 +320,16 @@ func featConsumesRead(code byte) bool {
 
 // cigarBuilder accumulates CIGAR operations, coalescing a run of the
 // same operation into one CigarOp so the emitted CIGAR is canonical.
+//
+// When arena is non-nil (the gated view path) the ops are appended into the
+// per-slice CIGAR arena rather than a fresh per-record slice: arenaStart marks
+// this record's run within arena.cigar, and cigar() returns a capped sub-slice
+// of it so a later append cannot corrupt a neighbouring record. The merge logic
+// is identical either way, so the emitted CIGAR is byte-for-byte the same.
 type cigarBuilder struct {
-	ops sam.Cigar
+	ops        sam.Cigar
+	arena      *recordArena
+	arenaStart int
 }
 
 // add appends one CIGAR operation of the given op code and length,
@@ -318,6 +337,16 @@ type cigarBuilder struct {
 // zero-length operation is dropped.
 func (b *cigarBuilder) add(op uint32, length int32) {
 	if length <= 0 {
+		return
+	}
+	if b.arena != nil {
+		n := len(b.arena.cigar)
+		if n > b.arenaStart && b.arena.cigar[n-1].Op() == op {
+			merged := b.arena.cigar[n-1].Length() + uint32(length)
+			b.arena.cigar[n-1] = sam.CigarOp(merged<<4 | op)
+			return
+		}
+		b.arena.cigar = append(b.arena.cigar, sam.CigarOp(uint32(length)<<4|op))
 		return
 	}
 	if n := len(b.ops); n > 0 && b.ops[n-1].Op() == op {
@@ -328,5 +357,12 @@ func (b *cigarBuilder) add(op uint32, length int32) {
 	b.ops = append(b.ops, sam.CigarOp(uint32(length)<<4|op))
 }
 
-// cigar returns the accumulated CIGAR.
-func (b *cigarBuilder) cigar() sam.Cigar { return b.ops }
+// cigar returns the accumulated CIGAR. On the arena path it is a capped
+// sub-slice of the per-slice CIGAR run; otherwise the freshly built slice.
+func (b *cigarBuilder) cigar() sam.Cigar {
+	if b.arena != nil {
+		end := len(b.arena.cigar)
+		return b.arena.cigar[b.arenaStart:end:end]
+	}
+	return b.ops
+}

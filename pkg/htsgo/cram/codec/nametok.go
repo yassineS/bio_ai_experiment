@@ -16,6 +16,7 @@ package codec
 import (
 	"errors"
 	"fmt"
+	"sync"
 )
 
 // Name-token types, mirroring enum name_type in tokenise_name3.c. They
@@ -94,6 +95,66 @@ type nameContext struct {
 	nreads   int // declared record count; sizes synthesised type blocks.
 }
 
+// nametokBufPool recycles the per-name decoded-output backing arrays.
+// One []byte is drawn per name (decodeName's working buffer, which is
+// also retained as that name's lastName for later names to diff
+// against), so a block of N names would otherwise allocate N short
+// slices — historically the dominant decode-allocation source here.
+//
+// sync.Pool is goroutine-safe, so the parallel container decoder can run
+// many NameTokDecode calls concurrently: each call owns a private
+// nametokArena (a stack-local cursor over buffers it personally drew)
+// and never shares a buffer across goroutines. Buffers are released only
+// at end-of-call (see nametokArena.release), after every later name that
+// might diff against them has been decoded — so a recycled buffer is
+// never read after it goes back to the pool. Reuse follows the
+// repopulate-before-read rule: a drawn buffer is reset to length 0 and
+// only its freshly-appended bytes are ever read, so no stale content
+// leaks across calls and no zeroing is needed.
+var nametokBufPool = sync.Pool{New: func() any {
+	b := make([]byte, 0, 64)
+	return &b
+}}
+
+// nametokArena tracks the pooled output buffers handed out during one
+// NameTokDecode call. It is created on the stack of that call and never
+// escapes to another goroutine, so its bookkeeping needs no locking; the
+// underlying buffers are shared only through nametokBufPool, which is
+// itself goroutine-safe.
+type nametokArena struct {
+	bufs []*[]byte // every buffer-handle drawn this call, released together.
+}
+
+// get draws a recycled output buffer, reset to length 0, and returns it
+// along with the *[]byte handle that owns its backing. The caller grows
+// the slice with append (which may reallocate) and must, once the name
+// is fully decoded, write the final slice back through the handle with
+// done so the pool recycles the right-sized backing. Only freshly
+// appended bytes are ever read back, so any stale content the recycled
+// backing carries is unobservable.
+func (a *nametokArena) get() (buf []byte, h *[]byte) {
+	bp := nametokBufPool.Get().(*[]byte)
+	a.bufs = append(a.bufs, bp)
+	return (*bp)[:0], bp
+}
+
+// done records a buffer's final (possibly append-grown, hence
+// reallocated) backing through its handle, so release returns the
+// up-to-date slice to the pool.
+func (a *nametokArena) done(h *[]byte, final []byte) {
+	*h = final
+}
+
+// release returns every buffer drawn this call to the pool. It must run
+// only after the last name that could diff against any of them has been
+// decoded — i.e. once per NameTokDecode call, via defer — so no buffer
+// is recycled while still reachable through ctx.lc[*].lastName.
+func (a *nametokArena) release() {
+	for _, bp := range a.bufs {
+		nametokBufPool.Put(bp)
+	}
+}
+
 // NameTokDecode decompresses a complete htscodecs name-tokeniser block
 // (CRAM compression method 8) and returns the decoded read names joined
 // by NUL bytes, with a trailing NUL after the final name. It is the
@@ -139,6 +200,13 @@ func NameTokDecode(in []byte) ([]byte, error) {
 		return nil, err
 	}
 
+	// Per-name output buffers are drawn from a recycled pool through this
+	// arena and returned in one batch once the whole block is decoded —
+	// not per name, because every name's bytes stay reachable (as its
+	// lastName) for later names to diff against until this call returns.
+	arena := &nametokArena{}
+	defer arena.release()
+
 	// Decode names until decode_name signals the end of the stream. The
 	// initial capacity is hinted by the declared size but capped so a
 	// corrupt ulen cannot drive a huge up-front allocation — the slice
@@ -149,7 +217,7 @@ func NameTokDecode(in []byte) ([]byte, error) {
 	}
 	out := make([]byte, 0, hint)
 	for {
-		name, done, err := ctx.decodeName()
+		name, done, err := ctx.decodeName(arena)
 		if err != nil {
 			return nil, err
 		}
@@ -432,7 +500,14 @@ func appendUintVar(dst []byte, v uint32) []byte {
 
 // decodeName decodes one read name. It returns the name with its trailing
 // NUL, or done=true once the stream is exhausted, mirroring decode_name.
-func (ctx *nameContext) decodeName() (name []byte, done bool, err error) {
+//
+// The returned name aliases a buffer drawn from arena; that buffer is
+// also retained as this name's lastName so later names can diff against
+// it, and is recycled by arena.release only once the whole block is
+// decoded. The caller must copy the bytes (NameTokDecode appends them
+// into its joined output, which copies) and must not retain the slice
+// past the enclosing NameTokDecode call.
+func (ctx *nameContext) decodeName(arena *nametokArena) (name []byte, done bool, err error) {
 	cnum := ctx.counter
 	ctx.counter++
 	if cnum >= ctx.maxNames {
@@ -462,15 +537,16 @@ func (ctx *nameContext) decodeName() (name []byte, done bool, err error) {
 			return nil, false, fmt.Errorf("%w: name duplicates itself", errNameTok)
 		}
 		src := ctx.lc[pnum].lastName
-		buf := make([]byte, len(src))
-		copy(buf, src)
+		buf, h := arena.get()
+		buf = append(buf, src...)
+		arena.done(h, buf)
 		ctx.lc[cnum].lastName = buf
 		ctx.lc[cnum].lastNtok = ctx.lc[pnum].lastNtok
 		ctx.lc[cnum].last = append([]lastTok(nil), ctx.lc[pnum].last...)
 		return buf, false, nil
 	}
 
-	out := make([]byte, 0, 64)
+	out, outH := arena.get()
 	ctx.lc[cnum].last = make([]lastTok, nameMaxTokens)
 
 	for ntok := 1; ntok < nameMaxTokens && ntok < ctx.maxTok; ntok++ {
@@ -573,6 +649,7 @@ func (ctx *nameContext) decodeName() (name []byte, done bool, err error) {
 
 		default: // an elided N_END or an explicit N_END.
 			out = append(out, 0)
+			arena.done(outH, out)
 			ctx.lc[cnum].last[ntok] = lastTok{typ: ntEnd}
 			ctx.lc[cnum].lastName = out
 			ctx.lc[cnum].lastNtok = ntok

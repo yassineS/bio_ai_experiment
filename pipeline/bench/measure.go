@@ -76,7 +76,11 @@ func runMeasured(bin string, args []string, stdinPath, stdoutPath string) (Measu
 		if ru, ok := ps.SysUsage().(*syscall.Rusage); ok {
 			m.CPUUser = timevalDuration(ru.Utime)
 			m.CPUSys = timevalDuration(ru.Stime)
-			m.MaxRSSKB = int64(ru.Maxrss)
+			// ru_maxrss has different units per OS: KiB on Linux, BYTES on
+			// darwin/BSD. maxRSSToKiB normalises to KiB (build-tagged per OS)
+			// so every downstream consumer — and the manuscript figures — sees
+			// the peak RSS in the same unit regardless of measurement host.
+			m.MaxRSSKB = maxRSSToKiB(ru.Maxrss)
 		}
 	}
 	return m, err

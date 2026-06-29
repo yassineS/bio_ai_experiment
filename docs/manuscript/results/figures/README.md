@@ -32,9 +32,54 @@ Each figure is emitted as both `.pdf` (vector, for the manuscript) and `.png`
 (preview). Companion tables: [`../performance_tables.md`](../performance_tables.md)
 (C3 per-subcommand speedups + C2 parity rates with Wilson / Clopper-Pearson CIs).
 
-> The numbers are from the laptop-class `linux/arm64` container
-> ([`../hardware.md`](../hardware.md)), read with the platform caveats there;
-> the large samtools/bcftools cells were captured at reps=5 (the rest reps=10).
+> The numbers are **mixed by tier** (see [`../hardware.md`](../hardware.md) →
+> "Figure data provenance"): **smoke/small/medium were re-measured on the
+> darwin/arm64 host (Apple M2, 16 GiB) on 2026-06-29 at reps=5**; the **large**
+> tier is the prior `linux/arm64` container data (reps=5 for the heavy
+> samtools/bcftools cells, reps=10 for the rest). Each tier is internally one
+> machine. The wall/CPU figures are robust to the host change (both arm64); the
+> RSS figures carry the host caveat in `hardware.md`.
+
+## DONE (partial): `fig_memory` CRAM-view cells refreshed (2026-06-29)
+
+The `sam_view_cram2bam` / `sam_view_bam2cram` cells now reflect the 2026-06-29
+CRAM `view -b -T` decode-RSS work (see
+[`../../../METRICS.md`](../../../METRICS.md) "CRAM `view -b -T` decode peak RSS"
+and the task #68 chain in [`../../../PARITY_ROADMAP.md`](../../../PARITY_ROADMAP.md)).
+
+What was regenerated:
+
+- **smoke/small/medium tiers — re-measured on the darwin/arm64 host** (all 26
+  bench cells, reps=5), after the `ru_maxrss` cross-platform unit bug was fixed
+  in `pipeline/bench/measure.go` (build-tagged `measure_linux.go` /
+  `measure_notlinux.go`). With the unit fixed, darwin RSS is directly comparable
+  to Linux, so regenerating from this host no longer corrupts the numbers — the
+  blocker that pinned the old PENDING note is gone. seqtk, sickle, and bedtools
+  upstream binaries were built **natively** (Mach-O arm64) for this run.
+- **large tier — NOT re-measured** (left as the prior pinned-Linux data): the
+  large fixtures are too memory/disk-heavy for the laptop. To avoid mixing hosts
+  *within* a tier, the large cells were untouched.
+
+The synthetic bench CRAM fixtures are not the `up_chr20.cram` / `up_small.cram`
+corpus quoted in `METRICS.md`, so the absolute bench ratios (~3× at small/medium
+on this host) differ from the realdata 1.85×/2.07× — the fixtures are smaller,
+so the Go runtime's fixed RSS floor weighs more heavily. The point stands: the
+bars reflect the **current** (post-improvement) decode path.
+
+Regenerate (smoke/small/medium on this host):
+
+```bash
+# 1. re-measure all cells (reps=5) on this darwin host (CRAM default mem-limit)
+go run ./pipeline/bench/cmd/parity-bench -scales smoke,small,medium -reps 5 -out /tmp/bench_darwin
+# 2. splice the fresh cells into the figure source data
+python analysis/splice_membench.py /tmp/bench_darwin/bench.json
+# 3. regenerate the figures
+python analysis/plot_perf_parity.py
+```
+
+To refresh the **large** tier too (on the pinned linux/arm64 bench node, to keep
+that tier single-machine): `parity-bench -group CRAM -reps 5` there, then splice
++ plot as above.
 
 ## The "OOM at large" cells were disk, not RAM
 

@@ -406,6 +406,40 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   incremental churn trimming. The `decodeTags+1` micro-optimisation is kept
   (byte-exact, fewer allocations, zero risk); ≤2× remains an open structural
   item.
+  **Task #68 — bounded decode-allocation cuts land chr20 AT ≤2×; the
+  "fat-record / leaner-`sam.Record` migration" root cause is SUPERSEDED by direct
+  evidence (merged `ad5f470` + `6e71734`, byte-exact, real GIAB).** A small,
+  byte-exact set of decode-allocation cuts on the `view -b -T <ref> <cram>` path
+  (each gated like the existing `RawAux` fast path): (1) a packed-SEQ passthrough
+  — `sam.Record.RawSeq` carries the 4-bit nibbles with lazy materialise, the CRAM
+  decoder packs SEQ directly, the BAM writer emits it verbatim, and `mdnm` reads
+  the packed nibbles; (2) the name-token codec's per-name output buffers pooled
+  via a `sync.Pool` arena (−33 % allocs on name-heavy blocks, byte-safe); (3) the
+  decisive lever — a per-SLICE record-field **arena reused ACROSS slices**: each
+  slice's `Qual`/`RawSeq`/`Cigar`/aux/record structs decode into reusable backing
+  rewound per slice, cutting steady-state per-record allocation to ~zero; and (4)
+  the scoped CRAM-view soft memory limit is now tunable via
+  `BIOAI_CRAM_MEMLIMIT_MIB` (default lowered 48 → 36 MiB). MEASURED
+  (median/worst-of-five, darwin/arm64, default cap 36): `view -b -T up_chr20.cram`
+  **2.20× → 1.85×** (57.7 MB; upstream ~31 MB) — **at the ≤2× target, wall-neutral**
+  (chr20 ~6.86 s vs upstream ~7.31 s, i.e. *faster*); `up_small.cram`
+  **2.65× → 2.07×** (50.4 MB; upstream ~24 MB). Byte-exact: decoded-BAM md5 ==
+  upstream (chr20 `fc1259fb7dbf1931cc41deed88122e63`, small
+  `860d3f61bf85b030b8254b27fc296d51`).
+  **CORRECTED ROOT CAUSE (supersedes the #40/#43 "fat record resident size →
+  needs a repo-wide packed `sam.Record` migration" characterisation above — that
+  reading is now retired by direct evidence):** a `gctrace` shows the *live* Go
+  heap during decode is only **~20 MB — LEANER than upstream's entire 24–31 MB
+  RSS**. The peak is Go-runtime pages held in proportion to the decode allocation
+  RATE, plus a fixed Go-runtime floor (~30 MB: heap arenas, stacks, the faidx
+  random-access + BGZF I/O buffers). chr20 therefore REACHES ≤2× wall-neutral
+  (1.85×); `up_small` floors at **2.07×** only because its tight `2×-of-24 MB`
+  budget is below that fixed Go-vs-C runtime floor — a floor the previously-planned
+  packed-`sam.Record` migration CANNOT move (it shrinks the live heap, which is
+  already lean). The full migration was re-evaluated against this fresh evidence
+  and correctly NOT pursued (provably futile for *this* floor; #52/#54 already
+  refuted it on other grounds). **chr20 ≤2× is achieved; `up_small`'s residual
+  2.07× is the accepted Go-runtime floor, not an open structural item.**
 - **`samtools view -C` CRAM encode wall — FIXED (task #33).** Serial per-contig
   `@SQ M5` (reference MD5) hashing dominated header-write (≈80 % of CPU; whole
   reference genome hashed). Now parallelised across a worker pool, each worker on
@@ -608,7 +642,7 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
     pure cq diffs 105 → 69, 0 base-call diffs, byte-exact). **Task #67 —
     the remaining cq residual characterised as a libm last-ULP artefact (not a
     fixable rounding), accepted as proximity-parity.** Whole-contig-20 bayesian
-    `-f pileup` ours vs upstream now differs at **73 of 10,416,641 positions, in
+    `-f pileup` ours vs upstream now differs at **68 of 10,416,641 positions, in
     the `cq` column ONLY** — every base, seq and qual byte is identical. The
     differences are **bidirectional ±1** (ours is sometimes higher, sometimes
     lower: 30 vs 29, 88 vs 89, 147 vs 148, …), which rules out a fixable
@@ -629,6 +663,33 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
     libm-precision residual.** (A separate 1-base seq tandem-repeat off-by-one in
     the homopolymer/repeat family remains tracked under the #55/#56 base-call
     family.)
+  - **Task #69 — float-order audit of the bayesian `cq` (merged `81f87cc`):
+    structurally faithful, provably INERT on the cq diffs; one latent mixed-mode
+    bug fixed in passing.** Applying the phase-style float-order audit, the `qual2`
+    MAX-then-truncate ordering was matched to htslib `bam_consensus.c:1423` (a dead
+    `>100` clamp removed), the spurious `q2pTab` / post-`MQUAL` clamps were
+    removed, a real MIXED-mode het-logodd **integer-vs-double division** bug was
+    fixed (`bam_consensus.c:1847`), and lock-in comments were added to prevent
+    re-parenthesisation. MEASURED: the cq-only diffs are **UNCHANGED at 68 of
+    10,416,641** (was 73; the 68 is the same set as the `#67` "69" — re-counted on
+    this branch) — confirming by direct measurement that the residual is the
+    IRREDUCIBLE Go-math vs glibc-libm last-ULP core in the `consensus_init` `cp[]`
+    `log`/`pow` seeding (bidirectional ±1, ±2–4 at ultra-deep columns); base+seq
+    bytes identical. The order fix is the correct, faithful structure and fixes a
+    latent mixed-mode bug, but is **provably inert on the cq diffs** (Illumina
+    Q ≤ 40). The libm-last-ULP `cq` residual stays ACCEPTED as proximity-parity
+    (same class as bcftools `trio-dnm3` and task #67).
+  - **Pre-existing `-f fasta`/`-f fastq` base-call-family residual — LOCALIZED
+    under #55/#56 (NOT fixed; surfaced during the #69 verification, present on
+    `main`).** Separate from the `cq` libm residual above, the linear FASTA/FASTQ
+    streams differ from upstream by **1–2 bytes** in the homopolymer/deletion call
+    family the docs already track under #55/#56: ours omits upstream's
+    deletion-spanning `cq=0` rows at `contig20:26173891` (`A***AA`) and
+    `26173892` (`G***GG`), and emits an extra low-depth `N` row at `20:29612498`.
+    This is the same homopolymer/deletion class as the lone `(AGAAAAG)n`
+    tandem-repeat off-by-one tracked under #56 — now precisely localized to these
+    coordinates. It is **not claimed as fixed**; tracked here for a future
+    deletion-row / low-depth-`N` pass.
 - **`samtools sort` wall — FIXED (task #39 then #42, now ≈ parity).** `sort -@4`
   was ~3x upstream at matched memory. Profiling showed `sort.SliceStable`/heap/
   comparator are negligible (<4%); the costs were excessive spilling (57 vs 4

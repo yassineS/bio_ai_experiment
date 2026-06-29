@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"runtime/debug"
+	"strconv"
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
@@ -201,6 +202,26 @@ func inputIsCRAM(path string) bool {
 	return magic[0] == 'C' && magic[1] == 'R' && magic[2] == 'A' && magic[3] == 'M'
 }
 
+// cramViewMemLimitDefaultMiB is the scoped soft memory limit applied during a
+// CRAM→BAM/SAM `view` (see the rationale at the call site). It is the measured
+// wall-neutral knee; it can be overridden at runtime via the
+// BIOAI_CRAM_MEMLIMIT_MIB environment variable (0 disables the limit), which is
+// used to re-tune the knee after allocation-rate changes on the decode path.
+const cramViewMemLimitDefaultMiB = 36
+
+// cramViewMemLimitBytes returns the soft memory limit (in bytes) to apply during
+// a CRAM `view`, honouring the BIOAI_CRAM_MEMLIMIT_MIB override when set. A
+// non-numeric or negative override falls back to the default; an override of 0
+// disables the limit entirely.
+func cramViewMemLimitBytes() int64 {
+	if v := os.Getenv("BIOAI_CRAM_MEMLIMIT_MIB"); v != "" {
+		if mib, err := strconv.Atoi(v); err == nil && mib >= 0 {
+			return int64(mib) << 20
+		}
+	}
+	return cramViewMemLimitDefaultMiB << 20
+}
+
 func runView(args []string) int {
 	fs := flag.NewFlagSet("samtools view", flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // we print usage ourselves
@@ -319,8 +340,10 @@ func runView(args []string) int {
 	// (no-limit) value, restored on return so this stays scoped to the view
 	// command.
 	if input != "-" && inputIsCRAM(input) {
-		prevLimit := debug.SetMemoryLimit(48 << 20)
-		defer debug.SetMemoryLimit(prevLimit)
+		if limit := cramViewMemLimitBytes(); limit > 0 {
+			prevLimit := debug.SetMemoryLimit(limit)
+			defer debug.SetMemoryLimit(prevLimit)
+		}
 	}
 
 	var indexPath string

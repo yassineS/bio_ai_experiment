@@ -218,6 +218,33 @@ floor: closing them further would require cgo into libdeflate, which the
 project deliberately
 forgoes to keep a single static, memory-safe binary (see `CLAUDE.md`).
 
+### CRAM `view -b -T` decode peak RSS (measured 2026-06-29, darwin/arm64)
+
+The `samtools view CRAM→BAM` cell above tracks wall time (≈parity); its **peak
+RSS** is reported separately here because it is the one CRAM cost that stayed
+above upstream the longest. A bounded, byte-exact set of decode-allocation cuts
+(packed-SEQ passthrough, name-token pooling, a per-slice record-field arena
+reused across slices, and the scoped soft memory limit tunable via
+`BIOAI_CRAM_MEMLIMIT_MIB`, default lowered 48 → 36 MiB) brought it to:
+
+| CRAM | peak RSS× (before → after) | ours MB | upstream MB |
+|---|---|---:|---:|
+| `up_chr20.cram` | 2.20× → **1.85×** | 57.7 | ~31 |
+| `up_small.cram` | 2.65× → **2.07×** | 50.4 | ~24 |
+
+Both are **wall-neutral** (chr20 ~6.86 s vs upstream ~7.31 s — faster) and
+byte-exact (decoded-BAM md5 == upstream). **Honesty note — the floor is the Go
+runtime, not a fat decoded record:** a `gctrace` shows the *live* Go heap during
+decode is only ~20 MB, **leaner than upstream's whole 24–31 MB RSS**. The peak is
+Go-runtime page retention proportional to the decode allocation **rate** plus a
+fixed Go-runtime floor (~30 MB: heap arenas, stacks, the faidx random-access +
+BGZF I/O buffers). chr20 therefore reaches the ≤2× target (1.85×); `up_small`
+floors at 2.07× because its tight `2×-of-24 MB` budget sits below that fixed
+Go-vs-C runtime floor — which the once-planned repo-wide packed-`sam.Record`
+migration could not move (it shrinks the already-lean live heap), so it was
+correctly not pursued. Detail and task history: `docs/PARITY_ROADMAP.md` (the
+CRAM `view` RSS task chain, task #68).
+
 ### I/O & decode optimization cycle (Tiers 1–3, measured 2026-06-20)
 
 A follow-up cycle targeting the tools still `>1×` on the I/O and decode fronts.

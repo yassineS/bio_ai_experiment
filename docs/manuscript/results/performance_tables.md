@@ -10,58 +10,58 @@ inter-quartile range; the 95% CI is a bootstrap on the wall ratio (H1a).
 
 | tier | tool | subcommand | ours ms (med±IQR) | upstream ms (med±IQR) | speedup | 95% CI | CPU× | note |
 |---|---|---|---|---|---|---|---|---|
-| small | bcftools | `isec` | 48.0 ± 3.9 | 37.2 ± 4.8 | 0.78× | [0.66, 0.99] | 0.45 | slower |
-| small | bcftools | `view` | 12.2 ± 0.9 | 8.8 ± 2.0 | 0.73× | [0.63, 1.11] | 0.93 | slower |
-| small | bcftools | `stats` | 10.8 ± 5.4 | 7.6 ± 0.2 | 0.70× | [0.35, 0.76] | 0.96 | slower |
-| small | bcftools | `norm` | 19.4 ± 1.1 | 12.9 ± 0.4 | 0.66× | [0.60, 0.71] | 0.70 | slower |
-| small | bcftools | `call` | 2091.7 ± 6.5 | 1269.9 ± 69.2 | 0.61× | [0.59, 0.66] | 0.60 | slower |
-| small | bcftools | `query` | 10.2 ± 0.8 | 5.6 ± 0.7 | 0.55× | [0.52, 0.76] | 0.75 | slower |
-| small | bedtools | `intersect` | 17.1 ± 0.8 | 25.8 ± 0.4 | 1.51× | [1.40, 1.58] | 1.60 | faster |
-| small | bedtools | `intersect (self)` | 16.3 ± 1.7 | 23.9 ± 1.9 | 1.46× | [1.22, 1.71] | 1.52 | faster |
-| small | bedtools | `coverage` | 32.0 ± 1.6 | 39.3 ± 0.6 | 1.23× | [1.15, 1.30] | 1.20 | faster |
-| small | bedtools | `genomecov` | 19.6 ± 1.3 | 17.9 ± 0.5 | 0.92× | [0.79, 0.95] | 0.98 | par |
-| small | bedtools | `sort` | 8.5 ± 0.7 | 6.7 ± 0.1 | 0.79× | [0.74, 0.90] | 0.91 | slower |
-| small | bedtools | `merge` | 5.2 ± 0.3 | 3.4 ± 0.2 | 0.65× | [0.62, 0.78] | 0.71 | slower |
-| small | samtools | `sort` | 182.1 ± 4.6 | 284.8 ± 7.8 | 1.56× | [1.49, 1.65] | 1.52 | faster |
-| small | samtools | `view (bam$\to$bam)` | 218.2 ± 5.9 | 296.5 ± 4.2 | 1.36× | [1.32, 1.44] | 1.34 | faster |
-| small | samtools | `view (bam$\to$cram)` | 149.3 ± 1.9 | 181.5 ± 4.5 | 1.22× | [1.21, 1.30] | 0.49 | faster |
-| small | samtools | `flagstat` | 54.0 ± 0.5 | 40.7 ± 0.5 | 0.75× | [0.73, 0.76] | 0.77 | slower |
-| small | samtools | `stats` | 143.3 ± 1.7 | 105.5 ± 0.4 | 0.74× | [0.73, 0.75] | 0.74 | slower |
-| small | samtools | `depth` | 82.6 ± 0.5 | 59.8 ± 0.9 | 0.72× | [0.71, 0.74] | 0.73 | slower |
-| small | samtools | `view (cram$\to$bam)` | 422.8 ± 6.2 | 296.8 ± 7.8 | 0.70× | [0.70, 0.76] | 0.65 | slower |
-| small | samtools | `mpileup` | 3045.5 ± 145.5 | 997.4 ± 0.7 | 0.33× | [0.31, 0.34] | 0.32 | **slow** |
-| small | seqtk | `seq` | 12.5 ± 3.3 | 8.4 ± 0.2 | 0.67× | [0.47, 0.79] | 0.72 | slower |
-| small | seqtk | `comp` | 10.4 ± 0.7 | 6.2 ± 0.2 | 0.60× | [0.54, 0.65] | 0.67 | slower |
-| small | seqtk | `fqchk` | 20.8 ± 0.2 | 12.2 ± 0.5 | 0.59× | [0.56, 0.62] | 0.57 | slower |
-| small | seqtk | `trimfq` | 30.7 ± 0.0 | 15.9 ± 2.7 | 0.52× | [0.48, 0.66] | 0.50 | slower |
-| small | sickle | `se` | 38.9 ± 4.3 | 78.2 ± 3.7 | 2.01× | [1.57, 2.14] | 2.23 | faster |
-| small | sickle | `pe` | 80.7 ± 8.3 | 138.1 ± 1.6 | 1.71× | [1.60, 2.04] | 1.94 | faster |
-| medium | bcftools | `view` | 39.4 ± 4.1 | 35.3 ± 0.7 | 0.90× | [0.74, 0.94] | 0.93 | slower |
-| medium | bcftools | `stats` | 28.5 ± 0.3 | 25.6 ± 0.8 | 0.90× | [0.87, 0.94] | 0.96 | slower |
-| medium | bcftools | `query` | 28.9 ± 0.3 | 19.1 ± 0.9 | 0.66× | [0.64, 0.71] | 0.69 | slower |
-| medium | bcftools | `norm` | 96.4 ± 1.1 | 62.7 ± 1.9 | 0.65× | [0.62, 0.68] | 0.64 | slower |
-| medium | bcftools | `call` | 30997.5 ± 78.6 | 17510.3 ± 191.5 | 0.56× | [0.56, 0.58] | 0.56 | slower |
-| medium | bcftools | `isec` | 327.8 ± 5.4 | 177.5 ± 27.4 | 0.54× | [0.50, 0.69] | 0.41 | slower |
-| medium | bedtools | `intersect` | 66.6 ± 5.7 | 95.5 ± 6.5 | 1.43× | [1.34, 1.82] | 1.12 | faster |
-| medium | bedtools | `intersect (self)` | 62.6 ± 13.1 | 87.1 ± 5.4 | 1.39× | [1.04, 1.69] | 1.19 | faster |
-| medium | bedtools | `coverage` | 131.8 ± 14.9 | 171.5 ± 8.4 | 1.30× | [1.12, 1.54] | 1.19 | faster |
-| medium | bedtools | `genomecov` | 246.9 ± 12.2 | 251.2 ± 9.3 | 1.02× | [0.96, 1.14] | 1.06 | par |
-| medium | bedtools | `sort` | 38.8 ± 7.0 | 30.6 ± 2.0 | 0.79× | [0.61, 0.96] | 0.77 | slower |
-| medium | bedtools | `merge` | 16.6 ± 9.2 | 11.5 ± 0.2 | 0.69× | [0.33, 0.75] | 0.69 | slower |
-| medium | samtools | `sort` | 1406.1 ± 22.0 | 2443.6 ± 15.0 | 1.74× | [1.68, 1.75] | 1.69 | faster |
-| medium | samtools | `view (bam$\to$bam)` | 1710.9 ± 59.1 | 2479.7 ± 60.4 | 1.45× | [1.37, 1.53] | 1.43 | faster |
-| medium | samtools | `view (bam$\to$cram)` | 762.0 ± 15.1 | 823.7 ± 20.2 | 1.08× | [1.04, 1.13] | 0.28 | par |
-| medium | samtools | `stats` | 1123.1 ± 73.1 | 859.0 ± 25.5 | 0.76× | [0.67, 0.80] | 0.76 | slower |
-| medium | samtools | `view (cram$\to$bam)` | 3239.4 ± 33.0 | 2465.6 ± 6.4 | 0.76× | [0.75, 0.77] | 0.69 | slower |
-| medium | samtools | `flagstat` | 392.7 ± 0.1 | 295.0 ± 2.7 | 0.75× | [0.75, 0.76] | 0.75 | slower |
-| medium | samtools | `depth` | 851.8 ± 28.5 | 612.0 ± 11.1 | 0.72× | [0.70, 0.78] | 0.72 | slower |
-| medium | samtools | `mpileup` | 20479.7 ± 176.4 | 8357.2 ± 175.1 | 0.41× | [0.41, 0.43] | 0.39 | **slow** |
-| medium | seqtk | `comp` | 108.9 ± 9.9 | 84.4 ± 4.3 | 0.78× | [0.63, 0.83] | 0.77 | slower |
-| medium | seqtk | `seq` | 68.1 ± 5.9 | 50.8 ± 1.2 | 0.75× | [0.64, 0.80] | 0.76 | slower |
-| medium | seqtk | `fqchk` | 140.0 ± 2.3 | 82.5 ± 2.7 | 0.59× | [0.58, 0.63] | 0.57 | slower |
-| medium | seqtk | `trimfq` | 201.3 ± 0.9 | 102.9 ± 0.8 | 0.51× | [0.51, 0.52] | 0.50 | slower |
-| medium | sickle | `se` | 239.2 ± 8.2 | 493.4 ± 24.1 | 2.06× | [1.94, 2.30] | 2.18 | faster |
-| medium | sickle | `pe` | 558.2 ± 11.8 | 956.4 ± 246.0 | 1.71× | [1.69, 2.68] | 2.14 | faster |
+| small | bcftools | `stats` | 7.3 ± 0.4 | 6.6 ± 0.1 | 0.90× | [0.87, 0.94] | 0.89 | par |
+| small | bcftools | `view` | 10.1 ± 1.7 | 8.5 ± 0.3 | 0.83× | [0.05, 0.93] | 0.83 | slower |
+| small | bcftools | `norm` | 15.3 ± 0.8 | 12.5 ± 0.1 | 0.82× | [0.77, 0.86] | 0.74 | slower |
+| small | bcftools | `call` | 1754.5 ± 6.4 | 1301.3 ± 4.5 | 0.74× | [0.73, 0.75] | 0.73 | slower |
+| small | bcftools | `query` | 7.2 ± 0.2 | 5.2 ± 0.0 | 0.72× | [0.66, 0.75] | 0.68 | slower |
+| small | bcftools | `isec` | 43.3 ± 1.1 | 24.7 ± 0.7 | 0.57× | [0.55, 0.60] | 0.45 | slower |
+| small | bedtools | `intersect` | 16.3 ± 1.0 | 30.8 ± 0.3 | 1.88× | [1.64, 2.69] | 1.81 | faster |
+| small | bedtools | `intersect (self)` | 17.0 ± 4.2 | 29.1 ± 1.3 | 1.71× | [0.16, 1.90] | 1.64 | faster |
+| small | bedtools | `genomecov` | 20.8 ± 4.2 | 19.8 ± 0.5 | 0.95× | [0.11, 1.01] | 0.94 | par |
+| small | bedtools | `coverage` | 30.8 ± 2.3 | 24.7 ± 0.3 | 0.80× | [0.13, 0.83] | 0.72 | slower |
+| small | bedtools | `sort` | 9.4 ± 2.6 | 6.4 ± 0.4 | 0.68× | [0.04, 0.85] | 0.64 | slower |
+| small | bedtools | `merge` | 7.2 ± 1.8 | 4.7 ± 0.4 | 0.65× | [0.03, 0.76] | 0.65 | slower |
+| small | samtools | `sort` | 173.9 ± 0.4 | 260.5 ± 5.6 | 1.50× | [1.49, 1.53] | 1.46 | faster |
+| small | samtools | `view (bam$\to$bam)` | 199.3 ± 0.6 | 259.0 ± 0.6 | 1.30× | [0.72, 1.31] | 1.26 | faster |
+| small | samtools | `view (bam$\to$cram)` | 127.2 ± 1.5 | 161.4 ± 1.7 | 1.27× | [1.22, 1.30] | 0.48 | faster |
+| small | samtools | `view (cram$\to$bam)` | 342.4 ± 2.2 | 284.6 ± 1.1 | 0.83× | [0.82, 0.88] | 0.73 | slower |
+| small | samtools | `depth` | 83.9 ± 1.0 | 61.6 ± 2.6 | 0.73× | [0.69, 0.79] | 0.73 | slower |
+| small | samtools | `stats` | 136.2 ± 0.4 | 80.2 ± 0.6 | 0.59× | [0.58, 0.59] | 0.58 | slower |
+| small | samtools | `mpileup` | 2156.2 ± 13.3 | 1104.7 ± 3.0 | 0.51× | [0.51, 0.52] | 0.36 | slower |
+| small | samtools | `flagstat` | 52.7 ± 0.2 | 24.0 ± 0.6 | 0.46× | [0.44, 0.46] | 0.45 | **slow** |
+| small | seqtk | `seq` | 10.0 ± 1.6 | 10.0 ± 0.1 | 0.99× | [0.08, 1.10] | 0.98 | par |
+| small | seqtk | `trimfq` | 28.1 ± 0.4 | 25.6 ± 0.8 | 0.91× | [0.90, 0.95] | 0.88 | par |
+| small | seqtk | `fqchk` | 17.9 ± 0.2 | 11.1 ± 0.3 | 0.62× | [0.60, 0.63] | 0.58 | slower |
+| small | seqtk | `comp` | 9.7 ± 0.3 | 4.7 ± 0.4 | 0.49× | [0.47, 0.54] | 0.44 | **slow** |
+| small | sickle | `pe` | 70.3 ± 3.2 | 133.4 ± 0.5 | 1.90× | [1.80, 1.94] | 1.89 | faster |
+| small | sickle | `se` | 37.3 ± 1.7 | 66.7 ± 0.8 | 1.79× | [0.34, 1.86] | 1.76 | faster |
+| medium | bcftools | `view` | 33.4 ± 0.9 | 40.0 ± 3.7 | 1.20× | [1.12, 1.60] | 1.16 | faster |
+| medium | bcftools | `stats` | 24.0 ± 0.6 | 25.6 ± 0.3 | 1.06× | [1.03, 1.08] | 1.07 | par |
+| medium | bcftools | `norm` | 81.4 ± 1.1 | 72.4 ± 1.9 | 0.89× | [0.86, 0.91] | 0.82 | slower |
+| medium | bcftools | `query` | 23.5 ± 0.7 | 18.7 ± 0.2 | 0.80× | [0.77, 0.80] | 0.78 | slower |
+| medium | bcftools | `call` | 26144.2 ± 37.0 | 19169.2 ± 60.8 | 0.73× | [0.73, 0.74] | 0.72 | slower |
+| medium | bcftools | `isec` | 279.0 ± 0.9 | 163.0 ± 2.7 | 0.58× | [0.58, 0.59] | 0.48 | slower |
+| medium | bedtools | `intersect` | 54.7 ± 0.8 | 114.1 ± 1.4 | 2.09× | [2.06, 2.12] | 1.61 | faster |
+| medium | bedtools | `intersect (self)` | 51.0 ± 0.2 | 105.2 ± 0.1 | 2.06× | [2.05, 2.10] | 1.60 | faster |
+| medium | bedtools | `genomecov` | 227.0 ± 8.3 | 316.4 ± 1.8 | 1.39× | [1.34, 1.41] | 1.39 | faster |
+| medium | bedtools | `sort` | 23.0 ± 0.8 | 26.5 ± 0.3 | 1.16× | [1.11, 1.19] | 0.92 | faster |
+| medium | bedtools | `merge` | 13.0 ± 0.4 | 14.4 ± 0.3 | 1.11× | [1.00, 1.18] | 1.03 | faster |
+| medium | bedtools | `coverage` | 117.1 ± 1.6 | 113.4 ± 0.3 | 0.97× | [0.96, 0.98] | 0.82 | par |
+| medium | samtools | `sort` | 1385.2 ± 66.8 | 2191.9 ± 4.9 | 1.58× | [1.53, 1.62] | 1.57 | faster |
+| medium | samtools | `view (bam$\to$bam)` | 1565.9 ± 20.0 | 2197.2 ± 19.7 | 1.40× | [1.38, 1.41] | 1.37 | faster |
+| medium | samtools | `view (bam$\to$cram)` | 641.7 ± 1.9 | 705.9 ± 1.6 | 1.10× | [1.09, 1.11] | 0.29 | faster |
+| medium | samtools | `view (cram$\to$bam)` | 2620.9 ± 100.8 | 2386.5 ± 7.6 | 0.91× | [0.88, 0.92] | 0.79 | par |
+| medium | samtools | `depth` | 822.0 ± 1.7 | 653.5 ± 3.6 | 0.80× | [0.78, 0.80] | 0.79 | slower |
+| medium | samtools | `mpileup` | 15436.5 ± 21.2 | 10194.3 ± 42.7 | 0.66× | [0.66, 0.66] | 0.52 | slower |
+| medium | samtools | `stats` | 1073.8 ± 4.5 | 631.6 ± 3.1 | 0.59× | [0.58, 0.59] | 0.58 | slower |
+| medium | samtools | `flagstat` | 381.8 ± 0.9 | 164.9 ± 4.9 | 0.43× | [0.42, 0.44] | 0.43 | **slow** |
+| medium | seqtk | `seq` | 48.3 ± 0.4 | 61.2 ± 0.7 | 1.27× | [1.25, 1.28] | 1.26 | faster |
+| medium | seqtk | `trimfq` | 195.0 ± 1.7 | 182.3 ± 1.8 | 0.93× | [0.86, 0.99] | 0.91 | par |
+| medium | seqtk | `fqchk` | 112.0 ± 1.2 | 68.8 ± 0.8 | 0.61× | [0.61, 0.62] | 0.58 | slower |
+| medium | seqtk | `comp` | 103.8 ± 1.2 | 44.6 ± 0.5 | 0.43× | [0.42, 0.44] | 0.42 | **slow** |
+| medium | sickle | `pe` | 391.6 ± 121.7 | 893.4 ± 11.7 | 2.28× | [1.73, 2.36] | 2.24 | faster |
+| medium | sickle | `se` | 240.3 ± 13.3 | 441.7 ± 3.0 | 1.84× | [1.56, 2.35] | 1.80 | faster |
 | large | bcftools | `stats` | 153.4 ± 1.9 | 145.8 ± 2.4 | 0.95× | [0.91, 1.03] | 0.96 | par |
 | large | bcftools | `view` | 246.4 ± 22.4 | 214.4 ± 3.1 | 0.87× | [0.54, 0.92] | 0.88 | slower |
 | large | bcftools | `isec` | 2067.8 ± 16.6 | 1475.0 ± 19.0 | 0.71× | [0.70, 0.72] | 0.50 | slower |
@@ -89,7 +89,7 @@ inter-quartile range; the 95% CI is a bootstrap on the wall ratio (H1a).
 | large | sickle | `se` | 1885.0 ± 430.9 | 3156.0 ± 146.3 | 1.67× | [1.45, 1.98] | 2.09 | faster |
 | large | sickle | `pe` | 4602.6 ± 418.0 | 7564.2 ± 1198.5 | 1.64× | [1.47, 1.83] | 2.02 | faster |
 
-**Medium-tier summary (26 cells):** 7 faster (≥1.1×), 2 at par, 17 slower. The I/O-bound conversions and `bedtools` intersect/coverage/genomecov + `sickle` are faster; the compute-heavy variant cells (`mpileup`, `call`, `isec`) are a steady ~2–2.5× slower across tiers, reported plainly.
+**Medium-tier summary (26 cells):** 12 faster (≥1.1×), 4 at par, 10 slower. The I/O-bound conversions and `bedtools` intersect/coverage/genomecov + `sickle` are faster; the compute-heavy variant cells (`mpileup`, `call`, `isec`) are a steady ~2–2.5× slower across tiers, reported plainly.
 
 ## C2 — Parity rates (byte-exact vs upstream) with 95% CIs
 

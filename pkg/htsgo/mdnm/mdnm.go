@@ -48,7 +48,11 @@ func Compute(rec *sam.Record, ref []byte, refOffset int) (md string, nm int) {
 		qpos    int
 		rpos    = int(rec.Pos) - 1 - refOffset // index into ref of the alignment start.
 	)
-	seq := []byte(rec.Seq)
+	// SeqLength/SeqBaseAt read the SEQ whether the record holds it as an eager
+	// Seq string or as the packed RawSeq nibble block (the memory-lean view
+	// passthrough), so MD/NM regeneration does not force the fat Seq string to be
+	// materialised. The bases observed are identical to []byte(rec.Seq).
+	seqLen := rec.SeqLength()
 
 	flushRun := func() {
 		mdBuf = strconv.AppendInt(mdBuf, int64(matched), 10)
@@ -61,14 +65,14 @@ func Compute(rec *sam.Record, ref []byte, refOffset int) (md string, nm int) {
 		case sam.CigarMatch, sam.CigarEqual, sam.CigarMismatch:
 			truncated := false
 			for j := 0; j < oplen; j++ {
-				if rpos+j < 0 || rpos+j >= len(ref) || qpos+j >= len(seq) {
+				if rpos+j < 0 || rpos+j >= len(ref) || qpos+j >= seqLen {
 					// Out of bounds — upstream "break" semantics: leave the
 					// rest of the read alone. The MD up to here is still
 					// emitted in the final flush.
 					truncated = true
 					break
 				}
-				if baseMatches(seq[qpos+j], ref[rpos+j]) {
+				if baseMatches(rec.SeqBaseAt(qpos+j), ref[rpos+j]) {
 					matched++
 				} else {
 					flushRun()

@@ -375,6 +375,22 @@ type Record struct {
 	// passthrough gate being perfect.
 	RawAux []byte
 
+	// RawSeq is the record's SEQ as the on-disk BAM 4-bit-packed nibble block
+	// ((SeqLen+1)/2 bytes, high nibble first). When it is non-nil the BAM writer
+	// emits it verbatim — skipping the ASCII→nibble pack — and Seq is left "".
+	// It is the SEQ analogue of RawAux: a memory-lean passthrough used on the
+	// CRAM→BAM view path, where SEQ is the dominant fat per-record field. It is
+	// mutually exclusive with a populated Seq; SeqLen carries the base count so
+	// the writer's l_seq and the QUAL length are known without unpacking. Any
+	// consumer that reads Seq (the SAM/CRAM writers, mdnm) self-heals via
+	// MaterialiseSeq or reads the nibbles directly through SeqBaseAt/SeqBytes, so
+	// correctness never depends on the passthrough gate being perfect.
+	RawSeq []byte
+
+	// SeqLen is the number of SEQ bases when RawSeq carries the packed sequence.
+	// It is meaningful only while RawSeq != nil; otherwise len(Seq) is the count.
+	SeqLen int
+
 	// AuxIndex maps a 2-char tag to its position in Aux for quick lookups.
 	// Populated lazily by GetAux.
 	auxIndex map[string]int
@@ -402,6 +418,58 @@ func (r *Record) materialiseAux() {
 // record handed to them with RawAux set self-heals into the decoded Aux form.
 // It is a no-op when Aux is already populated or no aux is present.
 func (r *Record) MaterialiseAux() { r.materialiseAux() }
+
+// materialiseSeq unpacks a pending RawSeq nibble block into the Seq string when
+// Seq has not yet been populated, then clears RawSeq so the two never disagree.
+// It is the SEQ analogue of materialiseAux: the defensive lazy guard that lets
+// any Seq-reading code path stay correct even if a record reached it with
+// RawSeq still set (the gated view passthrough should ensure that never happens,
+// but this makes correctness independent of the gate). A record with neither
+// RawSeq nor an eager Seq is left untouched. The unpacked Seq is byte-for-byte
+// what the BAM reader would produce for the same nibbles.
+func (r *Record) materialiseSeq() {
+	if r.Seq == "" && r.RawSeq != nil {
+		r.Seq = string(UnpackSeq(r.RawSeq, r.SeqLen))
+		r.RawSeq = nil
+		r.SeqLen = 0
+	}
+}
+
+// MaterialiseSeq unpacks a pending RawSeq nibble block into the Seq string, then
+// clears RawSeq. It is the exported form of the defensive lazy guard for
+// consumers in other packages (e.g. the CRAM writer) that read Seq directly: a
+// record handed to them with RawSeq set self-heals into the unpacked Seq form.
+// It is a no-op when Seq is already populated or no SEQ is present.
+func (r *Record) MaterialiseSeq() { r.materialiseSeq() }
+
+// SeqLength returns the number of SEQ bases regardless of which representation
+// the record currently holds: SeqLen when SEQ is carried packed in RawSeq, else
+// len(Seq).
+func (r *Record) SeqLength() int {
+	if r.RawSeq != nil {
+		return r.SeqLen
+	}
+	return len(r.Seq)
+}
+
+// SeqBaseAt returns the ASCII nucleotide of the SEQ base at index i, reading
+// directly from the packed RawSeq nibbles when SEQ is carried packed, or from
+// the Seq string otherwise. It lets a consumer (e.g. mdnm) walk the sequence
+// without forcing RawSeq to be materialised into a string. i must be in
+// [0, SeqLength()).
+func (r *Record) SeqBaseAt(i int) byte {
+	if r.RawSeq != nil {
+		b := r.RawSeq[i/2]
+		var nibble byte
+		if i%2 == 0 {
+			nibble = b >> 4
+		} else {
+			nibble = b & 0x0f
+		}
+		return seqLookup[nibble]
+	}
+	return r.Seq[i]
+}
 
 // GetAux returns the aux field with the given tag, or false if absent.
 func (r *Record) GetAux(tag string) (Aux, bool) {
@@ -477,7 +545,12 @@ func (r *Record) EndPosition() int64 {
 // (len(Seq)+1)/2 bytes with the high nibble holding the first base. It is
 // byte-identical to the buffer pointed at by htslib's bam_get_seq, which makes
 // it suitable for checksumming. A SEQ of "*" (empty Seq) yields an empty slice.
+// When SEQ is carried packed in RawSeq the bytes are already in this layout, so
+// they are returned directly without an unpack/repack round-trip.
 func (r *Record) PackedSeq() []byte {
+	if r.RawSeq != nil {
+		return r.RawSeq
+	}
 	return encodeSeq(r.Seq)
 }
 
