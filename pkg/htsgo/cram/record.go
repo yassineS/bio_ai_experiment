@@ -115,6 +115,179 @@ type recordDecoder struct {
 	// bytes (rec.RawAux) and leaves rec.Aux nil, the memory-lean CRAM→BAM view
 	// passthrough. Default false keeps the eager []sam.Aux path unchanged.
 	rawAuxBAMSink bool
+
+	// arena is the per-slice record-field allocation arena, used only on the
+	// rawAuxBAMSink (view -b -T) path. It collapses the per-record make() of a
+	// record's packed SEQ, QUAL, CIGAR and raw aux into a handful of growable
+	// backing buffers shared by every record of the slice: each record's fields
+	// are 3-index sub-slices of those buffers, so the ~N per-record allocations
+	// of a slice become ~O(log N) amortised arena growths. It is nil on the eager
+	// path, where the per-record make() is kept verbatim.
+	//
+	// SAFETY: on the single-threaded path the arena is the RecordReader's
+	// persistent one, reused across slices (reset, not reallocated, per slice);
+	// on the parallel path each worker uses its own per-slice arena. Either way
+	// the arena is reset at the start of a slice's decode, and a slice's records
+	// are fully served+written before the next reset (single-threaded) or the
+	// worker's slice is collected before its arena is reused — so no record's
+	// reused field backing is read after a reset. The 3-index sub-slices cap each
+	// field at its exact length, so a later append on any field (the MD/NM raw
+	// splice, or a downstream consumer) reallocates rather than writing into a
+	// neighbouring record's arena region.
+	arena *recordArena
+}
+
+// recordArena holds the growable backing buffers the rawAuxBAMSink decode path
+// sub-slices for each record's fields, replacing the per-record make(). Its
+// buffers are rewound to empty (reset) at the start of each slice and the SAME
+// backing is reused for the next slice, so steady-state decode allocates almost
+// nothing — the lever that lowers the Go runtime's retained pages. On the
+// single-threaded path one arena (on the RecordReader) serves the whole decode;
+// on the parallel path each worker has its own (a per-worker arena, reset per
+// slice the worker decodes).
+type recordArena struct {
+	qual  []byte        // packed run of every record's QUAL scores.
+	seq   []byte        // packed run of every record's 4-bit SEQ nibble block.
+	cigar []sam.CigarOp // run of every record's CIGAR ops.
+	aux   []byte        // run of every record's raw on-disk BAM aux block.
+	// recSlab and drSlab are per-slice slabs the decoder hands records out of,
+	// so a slice's nRecords sam.Record / decodedRecord structs are one slab
+	// allocation each instead of one make() per record. recIdx is the next free
+	// slot. They are pre-sized to nRecords in decodeSliceRecords; nextRecord
+	// grows them (rare — the count is known) if a decode overruns the estimate.
+	recSlab []sam.Record
+	drSlab  []decodedRecord
+	recIdx  int
+	// seqScratch and coveredScratch are reused (per record, not per slice)
+	// reconstruction temporaries that never escape into a record: seqScratch is
+	// the ASCII SEQ a mapped record is reconstructed into before being packed
+	// into the seq arena, and coveredScratch tracks which read positions a
+	// feature has filled. Reusing them removes the two remaining per-record
+	// temporaries of the mapped reconstruction.
+	seqScratch     []byte
+	coveredScratch []bool
+	// auxScratch is the reused []sam.Aux header slice decodeTags assembles a
+	// record's tags into on the gated path. It never escapes: buildRawAux copies
+	// every field's bytes into the aux byte arena before the next record's decode
+	// reuses it, so a single reused header slice per decoder suffices in place of
+	// the per-record make([]sam.Aux). It is the header backing only; the tag
+	// value bytes are serialised out by buildRawAux.
+	auxScratch []sam.Aux
+}
+
+// reset rewinds every per-slice run to empty so the SAME backing buffers are
+// reused for the next slice instead of reallocating fresh ones. It is the
+// cross-slice reuse the steady-state allocation rate (and thus the runtime's
+// retained pages) depends on. It is called at the start of each slice's decode
+// on the single-threaded path, where a slice's records are fully served and
+// written before the next slice's decode begins — so no record's reused backing
+// is read after this rewind (see fillNextSlice's safety note).
+func (a *recordArena) reset() {
+	a.qual = a.qual[:0]
+	a.seq = a.seq[:0]
+	a.cigar = a.cigar[:0]
+	a.aux = a.aux[:0]
+	a.recIdx = 0
+}
+
+// reserve sizes the per-slice record slabs to at least n (the slice's
+// authoritative record count) and clears the slots that will be handed out, so
+// nextRecord returns zero-valued structs from a reused backing array. The slab
+// is grown (and re-pointed) only when n exceeds its capacity; within a slice it
+// never reallocates, so the &slab[i] pointers handed out stay valid for that
+// slice. Records of a PRIOR slice that aliased the same slab must already be
+// dead (served+written) — guaranteed on the single-threaded view path.
+func (a *recordArena) reserve(n int) {
+	if cap(a.recSlab) < n {
+		a.recSlab = make([]sam.Record, n)
+		a.drSlab = make([]decodedRecord, n)
+	} else {
+		a.recSlab = a.recSlab[:n]
+		a.drSlab = a.drSlab[:n]
+		for i := range a.recSlab {
+			a.recSlab[i] = sam.Record{}
+			a.drSlab[i] = decodedRecord{}
+		}
+	}
+	a.recIdx = 0
+}
+
+// nextRecord hands out the next zero-valued (sam.Record, decodedRecord) pair
+// from the per-slice slabs. The slabs are pre-sized to the slice's record count
+// by reserve, so this never reallocates them and the returned pointers stay
+// valid for the slab's lifetime — which equals the records' (a slice's records
+// reference the same slab), so retaining records past the slice boundary stays
+// correct. A decode that somehow runs past the reserved count (it cannot: the
+// loop runs exactly nRecords times) falls back to a standalone allocation rather
+// than growing the slab, keeping the already-handed-out pointers valid.
+func (a *recordArena) nextRecord() (*sam.Record, *decodedRecord) {
+	if a.recIdx >= len(a.recSlab) {
+		return &sam.Record{}, &decodedRecord{}
+	}
+	i := a.recIdx
+	a.recIdx++
+	return &a.recSlab[i], &a.drSlab[i]
+}
+
+// qualFor returns a length-n QUAL sub-slice backed by the arena, prefilled with
+// the 0xff "no quality" sentinel. The returned slice is capped at exactly n
+// (a 3-index slice) so a later in-place edit (reverseQual) stays within the
+// record's own region and any append reallocates instead of corrupting a
+// neighbouring record's QUAL.
+func (a *recordArena) qualFor(n int) []byte {
+	start := len(a.qual)
+	a.qual = growBytes(a.qual, n)
+	q := a.qual[start : start+n : start+n]
+	for i := range q {
+		q[i] = 0xff
+	}
+	return q
+}
+
+// packSeq packs n ASCII bases from src into the arena's SEQ run and returns the
+// packed nibble block (capped at its exact length so a later append reallocates).
+func (a *recordArena) packSeq(src []byte, n int) []byte {
+	packed := (n + 1) / 2
+	start := len(a.seq)
+	a.seq = growBytes(a.seq, packed)
+	dst := a.seq[start : start+packed : start+packed]
+	return sam.PackSeqBytesInto(dst[:0], src, n)
+}
+
+// growBytes extends b by n bytes and returns it, reusing b's spare capacity when
+// present and otherwise growing the backing (the standard append doubling). It
+// avoids the temporary make() that `append(b, make([]byte, n)...)` allocates per
+// call, which would defeat the arena's purpose of near-zero steady-state
+// allocation. The n new bytes are not zeroed; callers overwrite them.
+func growBytes(b []byte, n int) []byte {
+	need := len(b) + n
+	if cap(b) >= need {
+		return b[:need]
+	}
+	nb := make([]byte, need, need*2)
+	copy(nb, b)
+	return nb
+}
+
+// reconScratch returns reusable length-n ASCII-SEQ and coverage scratch buffers
+// for one record's reconstruction. They are overwritten by the next record and
+// never escape into a sam.Record (storeSeq packs SEQ into the SEQ arena), so a
+// single backing array per decoder suffices. The coverage buffer is zeroed
+// before return so each record starts from a clean "nothing covered" state, as a
+// fresh make([]bool) would.
+func (a *recordArena) reconScratch(n int) (seq []byte, covered []bool) {
+	if cap(a.seqScratch) < n {
+		a.seqScratch = make([]byte, n)
+	}
+	seq = a.seqScratch[:n]
+	if cap(a.coveredScratch) < n {
+		a.coveredScratch = make([]bool, n)
+	}
+	covered = a.coveredScratch[:n]
+	for i := range covered {
+		covered[i] = false
+	}
+	return seq, covered
 }
 
 // newRecordDecoder builds a recordDecoder for one slice. It parses the
@@ -307,8 +480,18 @@ type decodedRecord struct {
 // values, and finally either the read-feature list (mapped) or the raw
 // bases (unmapped).
 func (rd *recordDecoder) decodeRecord(index int) (*decodedRecord, error) {
-	rec := &sam.Record{}
-	dr := &decodedRecord{rec: rec, mateIndex: -1}
+	var rec *sam.Record
+	var dr *decodedRecord
+	if rd.arena != nil {
+		// Hand the record/decodedRecord pair out of the per-slice slabs instead
+		// of a per-record make(); both come back zero-valued.
+		rec, dr = rd.arena.nextRecord()
+		dr.rec = rec
+		dr.mateIndex = -1
+	} else {
+		rec = &sam.Record{}
+		dr = &decodedRecord{rec: rec, mateIndex: -1}
+	}
 
 	bf, err := rd.intSeries("BF")
 	if err != nil {
@@ -454,7 +637,7 @@ func (rd *recordDecoder) decodeRecord(index int) (*decodedRecord, error) {
 		// a record decoded here is identical to one decoded eagerly and
 		// re-encoded. A trailing data-series RG is located later by a raw-byte
 		// walk in regenerateMDNM so MD/NM splice in just before it.
-		raw, rerr := buildRawAux(finalAux)
+		raw, rerr := rd.arena.buildRawAux(finalAux)
 		if rerr != nil {
 			return nil, wrapf(rerr, "record %d aux", index)
 		}
@@ -477,7 +660,9 @@ func (rd *recordDecoder) decodeRecord(index int) (*decodedRecord, error) {
 // during decodeRecord is safe; mdnm reads the packed bases through sam.SeqBaseAt.
 func (rd *recordDecoder) storeSeq(rec *sam.Record, seq []byte) {
 	if rd.rawAuxBAMSink {
-		rec.RawSeq = sam.PackSeqBytesInto(nil, seq, len(seq))
+		// Pack into the per-slice SEQ arena (capped sub-slice) instead of a fresh
+		// per-record make(); byte-identical to the standalone pack.
+		rec.RawSeq = rd.arena.packSeq(seq, len(seq))
 		rec.SeqLen = len(seq)
 		rec.Seq = ""
 		return
@@ -486,23 +671,31 @@ func (rd *recordDecoder) storeSeq(rec *sam.Record, seq []byte) {
 }
 
 // buildRawAux serialises an assembled aux list into a raw on-disk BAM aux byte
-// block. The bytes are byte-for-byte what the BAM writer's encodeRecord emits
-// for the same aux list — both use the shared per-field serialiser
-// (sam.AppendBAMAux / encodeBAMAux) — so a record carrying this RawAux writes
-// identically to one carrying the equivalent rec.Aux.
-func buildRawAux(aux []sam.Aux) ([]byte, error) {
+// block carved from the per-slice aux arena. The bytes are byte-for-byte what
+// the BAM writer's encodeRecord emits for the same aux list — both use the
+// shared per-field serialiser (sam.AppendBAMAux / encodeBAMAux) — so a record
+// carrying this RawAux writes identically to one carrying the equivalent
+// rec.Aux. The returned slice is capped at its exact length (a 3-index slice)
+// so the later MD/NM raw splice, which appends, reallocates rather than writing
+// into a neighbouring record's arena region.
+func (a *recordArena) buildRawAux(aux []sam.Aux) ([]byte, error) {
 	if len(aux) == 0 {
 		return nil, nil
 	}
-	var raw []byte
+	start := len(a.aux)
 	for i := range aux {
 		var err error
-		raw, err = sam.AppendBAMAux(raw, aux[i])
+		// Append directly onto a.aux so its length keeps growing across records;
+		// the record's block is the [start:end] window. (Appending into a
+		// reslice that starts at `start` and reassigning would drop the prefix —
+		// the window indices must stay relative to the full arena buffer.)
+		a.aux, err = sam.AppendBAMAux(a.aux, aux[i])
 		if err != nil {
 			return nil, err
 		}
 	}
-	return raw, nil
+	end := len(a.aux)
+	return a.aux[start:end:end], nil
 }
 
 // mergeAux appends the read-group aux tag, reconstructed from the RG
@@ -551,7 +744,14 @@ func (rd *recordDecoder) decodeSliceRecords(nRecords int32) ([]*sam.Record, []md
 		return nil, nil, errFormat("slice declares %d records but holds only %d bytes of series data",
 			nRecords, total)
 	}
-	decoded := make([]*decodedRecord, 0)
+	if rd.arena != nil {
+		// Rewind the reused byte runs to empty, then (re)size the record slabs to
+		// the authoritative count. Cross-slice reuse: the same backing buffers
+		// serve every slice, so steady-state decode allocates almost nothing.
+		rd.arena.reset()
+		rd.arena.reserve(int(nRecords))
+	}
+	decoded := make([]*decodedRecord, 0, nRecords)
 	prev := rd.src.s.consumed()
 	for i := int32(0); i < nRecords; i++ {
 		dr, err := rd.decodeRecord(int(i))
@@ -859,7 +1059,19 @@ func (rd *recordDecoder) decodeTags(tl int32, rgValue int32, index int) (aux []s
 	// slice, and sizing the capacity to len(keys)+1 lets that append reuse
 	// the backing array instead of reallocating and copying every tag once
 	// per record (a measurable slice of the CRAM-decode allocation churn).
-	out := make([]sam.Aux, 0, len(keys)+1)
+	var out []sam.Aux
+	if rd.arena != nil {
+		// Reuse the per-arena header scratch: the tags are serialised into the aux
+		// byte arena (buildRawAux) before the next record's decode reuses it, so a
+		// fresh make() per record is not needed. Keep the larger backing across
+		// records (and slices).
+		if cap(rd.arena.auxScratch) < len(keys)+1 {
+			rd.arena.auxScratch = make([]sam.Aux, 0, len(keys)+1)
+		}
+		out = rd.arena.auxScratch[:0]
+	} else {
+		out = make([]sam.Aux, 0, len(keys)+1)
+	}
 	// For CRAM v4 the presence of an MD*/NM* placeholder in this record's
 	// tag-line dictionary is what authorises regeneration; for v<4 the cF
 	// aux-tag bits authorise suppression. Both are folded into the final
@@ -922,6 +1134,9 @@ func (rd *recordDecoder) decodeTags(tl int32, rgValue int32, index int) (aux []s
 			return nil, false, suppress, wrapf(perr, "record %d tag %q", index, key.String())
 		}
 		out = append(out, val)
+	}
+	if rd.arena != nil {
+		rd.arena.auxScratch = out // keep any growth for the next record.
 	}
 	return out, rgEmitted, rd.mdnmSuppressFor(cf, seenMDStar, seenNMStar), nil
 }
@@ -1020,7 +1235,12 @@ func (rd *recordDecoder) decodeMapped(rec *sam.Record, cf int32, readLen int32, 
 	// only when the CRAM flags say quality was preserved separately;
 	// otherwise the per-base Q features (already gathered above) carry it.
 	if cf&cfQualityPreserved != 0 {
-		q, qerr := rd.readQualityBlock(readLen)
+		// On the arena path reconstructMapped already carved a readLen QUAL
+		// buffer from the per-slice arena; the preserved block overwrites it in
+		// place so no second arena buffer is consumed. Off the arena path qual is
+		// a fresh make() reused the same way. Either way the bytes equal a fresh
+		// readQualityBlock(readLen).
+		q, qerr := rd.readQualityBlockInto(qual, readLen)
 		if qerr != nil {
 			return wrapf(qerr, "record %d quality", index)
 		}
@@ -1035,7 +1255,14 @@ func (rd *recordDecoder) decodeMapped(rec *sam.Record, cf int32, readLen int32, 
 // verbatim from the BA data series and its qualities from QS. An
 // unmapped record has no CIGAR and a position of zero.
 func (rd *recordDecoder) decodeUnmapped(rec *sam.Record, cf int32, readLen int32, index int) error {
-	seq := make([]byte, readLen)
+	// On the gated path the bases are read into the reused per-record scratch and
+	// packed into the SEQ arena by storeSeq; off it they go into a fresh make().
+	var seq []byte
+	if rd.arena != nil {
+		seq, _ = rd.arena.reconScratch(int(readLen))
+	} else {
+		seq = make([]byte, readLen)
+	}
 	for i := int32(0); i < readLen; i++ {
 		b, err := rd.byteSeries("BA")
 		if err != nil {
@@ -1054,9 +1281,25 @@ func (rd *recordDecoder) decodeUnmapped(rec *sam.Record, cf int32, readLen int32
 	return nil
 }
 
-// readQualityBlock reads readLen quality scores from the QS data series.
+// readQualityBlock reads readLen quality scores from the QS data series into a
+// QUAL buffer: a fresh per-record make() off the gated path, or a per-slice
+// arena buffer (capped at readLen) on it. The bytes are identical either way.
 func (rd *recordDecoder) readQualityBlock(readLen int32) ([]byte, error) {
-	q := make([]byte, readLen)
+	var q []byte
+	if rd.arena != nil {
+		q = rd.arena.qualFor(int(readLen))
+	} else {
+		q = make([]byte, readLen)
+	}
+	return rd.readQualityBlockInto(q, readLen)
+}
+
+// readQualityBlockInto fills dst (which must be at least readLen long) with
+// readLen quality scores from the QS data series and returns dst[:readLen]. It
+// lets a caller reuse an already-carved QUAL buffer (e.g. the mapped
+// reconstruction's arena qual) for the preserved-quality block read.
+func (rd *recordDecoder) readQualityBlockInto(dst []byte, readLen int32) ([]byte, error) {
+	q := dst[:readLen]
 	for i := int32(0); i < readLen; i++ {
 		b, err := rd.byteSeries("QS")
 		if err != nil {

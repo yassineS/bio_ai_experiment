@@ -314,6 +314,12 @@ func (rr *RecordReader) decodeSliceParallel(h *CompressionHeader, sl *Slice, con
 	}
 	dec.namePrefix = rr.namePrefix
 	dec.rawAuxBAMSink = rr.rawAuxBAMSink
+	if dec.rawAuxBAMSink {
+		// Each worker decodes a whole slice single-threaded, so a fresh per-slice
+		// record-field arena is safe here exactly as on the sequential path: it is
+		// scoped to this slice and never shared across slices or workers.
+		dec.arena = &recordArena{}
+	}
 	recs, suppress, err := dec.decodeSliceRecords(sl.Header.NumRecords)
 	if err != nil {
 		return nil, false, wrapf(err, "container %d slice %d", containerIdx, sliceIdx)

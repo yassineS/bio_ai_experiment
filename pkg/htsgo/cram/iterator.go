@@ -69,6 +69,26 @@ type RecordReader struct {
 	par     *parallelDriver
 	refMu   sync.Mutex
 
+	// arena is the cross-slice-reused record-field allocation arena for the
+	// rawAuxBAMSink (view -b -T) single-threaded path. It is created lazily on the
+	// first gated slice decode and reset (its backing buffers rewound to empty,
+	// not reallocated) at the start of every subsequent slice, so steady-state
+	// decode allocates almost nothing — the lever that lowers the runtime's
+	// retained pages. It is nil on the eager path and on the parallel path (whose
+	// concurrent workers cannot share one arena and use per-slice arenas instead).
+	//
+	// SAFETY of cross-slice reuse: on the single-threaded path a slice's records
+	// are served one-at-a-time by Read and each is fully written by the BAM sink
+	// (which copies its bytes into the writer's own buffer per Write) before the
+	// pending buffer empties and the next fillNextSlice resets the arena — so no
+	// record's reused field backing is read after the reset. resolveMates and
+	// reconstructDroppedNames run within a single slice's decode (before any
+	// record is served) and touch only coordinate/name fields, never another
+	// slice's bytes. ReadAll, which would retain records across slices, is not a
+	// gated production consumer (only streaming view enables the sink) and its
+	// tests use single-slice fixtures.
+	arena *recordArena
+
 	// rawAuxBAMSink, when true, switches every per-record decode to build the
 	// record's aux fields as a raw on-disk BAM aux byte block (sam.Record.RawAux)
 	// instead of the eager []sam.Aux slice, leaving rec.Aux nil. It is an opt-in
@@ -413,6 +433,20 @@ func (rr *RecordReader) decodeSlice(h *CompressionHeader, sl *Slice, containerId
 	}
 	dec.namePrefix = rr.namePrefix
 	dec.rawAuxBAMSink = rr.rawAuxBAMSink
+	if dec.rawAuxBAMSink {
+		// Reuse the RecordReader's persistent arena across slices: it is created
+		// once and its backing buffers are rewound (not reallocated) per slice, so
+		// every record's packed SEQ/QUAL/CIGAR/raw-aux is sub-sliced from buffers
+		// that persist for the whole decode. This drives the steady-state
+		// allocation rate — and the runtime pages held proportional to it — toward
+		// zero. Cross-slice reuse is safe on this single-threaded path because a
+		// slice's records are served+written before the next slice resets the
+		// arena (see the arena field's safety note on RecordReader).
+		if rr.arena == nil {
+			rr.arena = &recordArena{}
+		}
+		dec.arena = rr.arena
+	}
 	recs, suppress, err := dec.decodeSliceRecords(sl.Header.NumRecords)
 	if err != nil {
 		return nil, wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
