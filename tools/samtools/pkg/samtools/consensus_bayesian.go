@@ -606,12 +606,12 @@ func calculateConsensusGap5(bases []bayesPileupBase, useMQual bool, td int,
 			if mqual > float64(o.highMQual) {
 				mqual = float64(o.highMQual)
 			}
-			if qual > 100 {
-				qual = 100
-			}
-			if qual < 0 {
-				qual = 0
-			}
+			// Upstream bam_consensus.c:1402 indexes q2p[qual] with NO
+			// qual>100 / qual<0 clamp — qual is a uint8_t already floored
+			// to >=1 (lines 1338-1361), and q2p[] is sized [101] for the
+			// q range it ever sees. We mirror that: no spurious clamp here.
+			// (Inert for Illumina Q<=40; keeps the path structurally
+			// identical to upstream.)
 			P := q2pTab[qual]
 			mi := int(mqual)
 			if mi < 0 {
@@ -624,24 +624,34 @@ func calculateConsensusGap5(bases []bayesPileupBase, useMQual bool, td int,
 			qual = int(phLog(P + .75*M - P*M))
 		}
 
+		// Upstream bam_consensus.c:1424-1425 floors qual to >=1 ("Quality 0
+		// should never be permitted as it breaks the maths") and applies NO
+		// upper clamp before cp->pMM[qual] (line 1426). Mirror that: floor
+		// only.
 		if qual < 1 {
 			qual = 1
-		}
-		if qual > 100 {
-			qual = 100
 		}
 
 		// Upstream poly_len is likewise called with seq_offset+1
 		// (bam_consensus.c:1414); polyLen returns 0 when out of range.
 		poly := float64(polyLen(p.read, p.seqOff+1))
-		qual2 := int(float64(qual) - (poly-2)*cp.polyMul)
-		if qual2 < 1 {
+		// Upstream bam_consensus.c:1423:
+		//   int qual2 = MAX(1, qual-(poly-2)*cp->poly_mul);
+		// The subexpression qual-(poly-2)*poly_mul is a double, MAX(1,double)
+		// keeps the double, and assignment to int qual2 truncates toward
+		// zero. There is NO upper clamp on qual2.
+		t := float64(qual) - (poly-2)*cp.polyMul
+		qual2 := 0
+		if t < 1 {
 			qual2 = 1
-		}
-		if qual2 > 100 {
-			qual2 = 100
+		} else {
+			qual2 = int(t)
 		}
 
+		// CHANGE #3: do NOT re-parenthesise the cp.p*[qual]-xx grouping below
+		// (upstream bam_consensus.c:1426-1434). xx is subtracted from each of
+		// the eight log-prob terms in exactly this order; the grouping is
+		// already byte-faithful.
 		xx := cp.pxx[qual]
 		MM := cp.pMM[qual] - xx
 		xM := cp.pxM[qual] - xx
@@ -856,7 +866,12 @@ func calculateConsensusGap5m(bases []bayesPileupBase, useMQual bool, td int,
 		q1 := consP.phred
 		q2 := consR.hetLogOdd
 		cons = consR
-		cons.hetLogOdd = minInt(15, maxInt((q2-q1*2)/2, 1+q2/(q1+1)))
+		// Upstream bam_consensus.c:1847:
+		//   cons->het_logodd = MIN(15, MAX((q2-q1*2)/2, 1+q2/(q1+1.0)));
+		// (q2-q1*2)/2 is INT division (q1,q2 are int), but 1+q2/(q1+1.0)
+		// uses DOUBLE division (q1+1.0 is a double). MAX is taken on the
+		// doubles, then truncated to int by the assignment.
+		cons.hetLogOdd = minInt(15, int(math.Max(float64((q2-q1*2)/2), 1+float64(q2)/(float64(q1)+1.0))))
 	case consR.hetLogOdd >= 0:
 		q1 := consP.phred
 		q2 := consR.hetLogOdd
@@ -865,6 +880,11 @@ func calculateConsensusGap5m(bases []bayesPileupBase, useMQual bool, td int,
 		if consP.hetCall == consR.hetCall {
 			eq = 5
 		}
+		// CHANGE #5: do NOT re-parenthesise. Upstream bam_consensus.c:1853-1854:
+		//   cons->het_logodd = MAX(1, q2 - 0.3*q1) + 5*(consP.het_call==consR.het_call);
+		// MAX(1, q2-0.3*q1) is computed on the double q2-0.3*q1 then truncated
+		// to int (MAX of an int 1 and a double promotes to double); the eq
+		// term (0 or 5) is added afterwards. The grouping is already faithful.
 		cons.hetLogOdd = maxInt(1, int(float64(q2)-0.3*float64(q1))) + eq
 		cons.phred = 0
 	case consR.hetLogOdd < 0:
