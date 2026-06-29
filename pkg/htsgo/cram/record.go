@@ -424,6 +424,11 @@ func (rd *recordDecoder) decodeRecord(index int) (*decodedRecord, error) {
 	// renders SEQ/QUAL as "*". htslib resets cr->len to 0 here for the same
 	// effect; the CIGAR computed above is kept intact.
 	if cf&cfNoSeq != 0 {
+		// Discard any packed SEQ the passthrough stored so both paths converge
+		// on the identical "*" record before the BAM writer sees it (eager sets
+		// rec.Seq = "*", which the writer encodes as l_seq=1, packed 0xf0).
+		rec.RawSeq = nil
+		rec.SeqLen = 0
 		rec.Seq = "*"
 		rec.Qual = nil
 	}
@@ -458,6 +463,26 @@ func (rd *recordDecoder) decodeRecord(index int) (*decodedRecord, error) {
 		rec.Aux = finalAux
 	}
 	return dr, nil
+}
+
+// storeSeq attaches the reconstructed SEQ bytes to rec. On the memory-lean
+// view passthrough (rawAuxBAMSink) it packs seq directly into the on-disk BAM
+// 4-bit nibble layout and stores it in rec.RawSeq + rec.SeqLen, leaving rec.Seq
+// "" so the heavier SEQ string is never built — SEQ is the dominant fat
+// per-record field, so this is where the decode's peak RSS is saved. The packed
+// bytes are byte-for-byte what the BAM writer's PackSeqInto would emit for the
+// equivalent rec.Seq, so a record decoded here writes identically to one decoded
+// eagerly. Off the passthrough (the default) it stores the eager SEQ string,
+// exactly as before. resolveMates touches only coordinate fields, so packing SEQ
+// during decodeRecord is safe; mdnm reads the packed bases through sam.SeqBaseAt.
+func (rd *recordDecoder) storeSeq(rec *sam.Record, seq []byte) {
+	if rd.rawAuxBAMSink {
+		rec.RawSeq = sam.PackSeqBytesInto(nil, seq, len(seq))
+		rec.SeqLen = len(seq)
+		rec.Seq = ""
+		return
+	}
+	rec.Seq = string(seq)
 }
 
 // buildRawAux serialises an assembled aux list into a raw on-disk BAM aux byte
@@ -988,7 +1013,7 @@ func (rd *recordDecoder) decodeMapped(rec *sam.Record, cf int32, readLen int32, 
 	if err != nil {
 		return wrapf(err, "record %d", index)
 	}
-	rec.Seq = string(seq)
+	rd.storeSeq(rec, seq)
 	rec.Cigar = cigar
 
 	// A mapped record's quality is read as one block of readLen scores
@@ -1018,7 +1043,7 @@ func (rd *recordDecoder) decodeUnmapped(rec *sam.Record, cf int32, readLen int32
 		}
 		seq[i] = b
 	}
-	rec.Seq = string(seq)
+	rd.storeSeq(rec, seq)
 	if cf&cfQualityPreserved != 0 {
 		q, err := rd.readQualityBlock(readLen)
 		if err != nil {

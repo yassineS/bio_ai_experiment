@@ -263,7 +263,12 @@ func (bw *BAMWriter) encodeRecord(rec *Record) ([]byte, error) {
 		return nil, fmt.Errorf("sam: BAM read name too long (%d > 255)", len(nameBuf))
 	}
 
+	// l_seq is the base count. When SEQ is carried packed in RawSeq the count
+	// lives in SeqLen (rec.Seq is ""); otherwise it is len(rec.Seq).
 	lSeq := int32(len(rec.Seq))
+	if rec.RawSeq != nil {
+		lSeq = int32(rec.SeqLen)
+	}
 	bin := reg2bin(int(bamPos), int(bamPos)+rec.Cigar.ReferenceLength())
 
 	// Fixed 32-byte header.
@@ -290,9 +295,18 @@ func (bw *BAMWriter) encodeRecord(rec *Record) ([]byte, error) {
 		binary.Write(buf, binary.LittleEndian, uint32(op))
 	}
 
-	// Packed SEQ. encodeSeqInto packs into the reused seqBuf scratch.
-	bw.seqBuf = encodeSeqInto(bw.seqBuf, rec.Seq)
-	buf.Write(bw.seqBuf)
+	// Packed SEQ. When the record carries a raw on-disk SEQ nibble block (the
+	// CRAM→BAM view passthrough) it is already in BAM 4-bit layout — write it
+	// verbatim, skipping the ASCII→nibble pack. The bytes are byte-for-byte what
+	// PackSeqInto would have produced for the equivalent rec.Seq (both go through
+	// the same shared packer), so the on-disk record is identical to the eager
+	// path. Otherwise encodeSeqInto packs into the reused seqBuf scratch.
+	if rec.RawSeq != nil {
+		buf.Write(rec.RawSeq)
+	} else {
+		bw.seqBuf = encodeSeqInto(bw.seqBuf, rec.Seq)
+		buf.Write(bw.seqBuf)
+	}
 
 	// QUAL.
 	if int32(len(rec.Qual)) == lSeq && lSeq > 0 {
@@ -339,6 +353,18 @@ func encodeSeq(s string) []byte {
 // sequences leave the final low nibble zero — so dst is sliced to the exact size
 // and every byte written.
 func encodeSeqInto(dst []byte, s string) []byte {
+	return PackSeqInto(dst, s)
+}
+
+// PackSeqInto packs an ASCII nucleotide string into the BAM 4-bit (nibble) form,
+// reusing dst's backing array when it is large enough. It is the single,
+// exported definition of the SEQ pack so producers that need to build the
+// on-disk SEQ bytes directly (e.g. the CRAM decoder's memory-lean RawSeq
+// passthrough) emit byte-for-byte what the BAM writer would. The output length
+// is set, not appended: an odd-length sequence leaves the final low nibble zero,
+// so dst is sliced to (len(s)+1)/2 and every byte written. Unknown characters
+// map to N (code 15), matching the BAM writer.
+func PackSeqInto(dst []byte, s string) []byte {
 	n := (len(s) + 1) / 2
 	if cap(dst) >= n {
 		dst = dst[:n]
@@ -360,6 +386,55 @@ func encodeSeqInto(dst []byte, s string) []byte {
 		}
 	}
 	return dst
+}
+
+// PackSeqBytesInto is the []byte form of PackSeqInto: it packs nBases ASCII
+// nucleotides from src into the BAM 4-bit form, reusing dst's backing array when
+// large enough. It lets the CRAM decoder pack the reconstructed SEQ bytes
+// without first converting them to a string. The packed bytes are byte-for-byte
+// what PackSeqInto(dst, string(src[:nBases])) produces.
+func PackSeqBytesInto(dst, src []byte, nBases int) []byte {
+	n := (nBases + 1) / 2
+	if cap(dst) >= n {
+		dst = dst[:n]
+	} else {
+		dst = make([]byte, n)
+	}
+	for i := 0; i < n; i++ {
+		dst[i] = 0
+	}
+	for i := 0; i < nBases; i++ {
+		code := seqEncodeTable[src[i]]
+		if code == 0xff {
+			code = 15 // unknown → N
+		}
+		if i%2 == 0 {
+			dst[i/2] = code << 4
+		} else {
+			dst[i/2] |= code
+		}
+	}
+	return dst
+}
+
+// UnpackSeq expands an nBases-long BAM 4-bit (nibble) packed SEQ block into its
+// ASCII nucleotide bytes. It is the inverse of PackSeqInto and produces exactly
+// what the BAM reader would for the same packed bytes, so a record that carried
+// SEQ packed in RawSeq materialises into the same Seq string an eager decode
+// would have built. packed must hold at least (nBases+1)/2 bytes.
+func UnpackSeq(packed []byte, nBases int) []byte {
+	out := make([]byte, nBases)
+	for i := 0; i < nBases; i++ {
+		b := packed[i/2]
+		var nibble byte
+		if i%2 == 0 {
+			nibble = b >> 4
+		} else {
+			nibble = b & 0x0f
+		}
+		out[i] = seqLookup[nibble]
+	}
+	return out
 }
 
 // encodeBAMAux serialises one aux field to BAM binary form.
