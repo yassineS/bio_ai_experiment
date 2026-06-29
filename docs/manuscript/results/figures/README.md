@@ -36,6 +36,27 @@ Each figure is emitted as both `.pdf` (vector, for the manuscript) and `.png`
 > ([`../hardware.md`](../hardware.md)), read with the platform caveats there;
 > the large samtools/bcftools cells were captured at reps=5 (the rest reps=10).
 
+## PENDING: `fig_memory` CRAM-view cells need a refresh
+
+The `sam_view_cram2bam` (and `sam_view_bam2cram`) cells in `fig_memory` predate
+the 2026-06-29 CRAM `view -b -T` decode-RSS work, which took peak RSS to **chr20
+1.85×** and **up_small 2.07×** (byte-exact, wall-neutral — see
+[`../../../METRICS.md`](../../../METRICS.md) "CRAM `view -b -T` decode peak RSS"
+and the task #68 chain in [`../../../PARITY_ROADMAP.md`](../../../PARITY_ROADMAP.md)).
+The figures were **not** regenerated here on purpose: they are pinned to the
+linux/arm64 bench container, and `darwin`'s `ru_maxrss` is reported in different
+units, so regenerating from this machine would corrupt the cross-cell numbers.
+Refresh on the pinned bench machine via:
+
+```bash
+# 1. re-measure the CRAM group (reps=5) on the pinned linux/arm64 bench node
+parity-bench -group CRAM -reps 5
+# 2. splice the membench RSS into the figure source data
+python analysis/splice_membench.py
+# 3. regenerate the figures
+python analysis/plot_perf_parity.py
+```
+
 ## The "OOM at large" cells were disk, not RAM
 
 An earlier run reported `sam_mpileup` / `bcf_call` / `bcf_isec` as out-of-memory

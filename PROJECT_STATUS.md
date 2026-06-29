@@ -54,10 +54,21 @@ switch counts. A triage against the live oracle also found several **"standing"
 gaps already closed** — `mosdepth --by` region means, the three `bedtools`
 edges (`bedcluster`/`bedjaccard`/`bedsplit`), and `bcftools merge` INFO/DP — so
 the per-tool "~98/99%, small edge bugs" notes below understate reality. Two
-genuine residuals remain and are tracked as accepted, not gaps: the CRAM-decode
-RSS `≤2×` target (a structural GC-headroom floor, not a churn cut — see the
-roadmap) and the bayesian consensus `cq` libm last-ULP (`73/10.4M` positions,
-`cq` column only, proximity-parity class).
+genuine residuals remain and are tracked as accepted, not gaps. (1) The
+CRAM-decode RSS `≤2×` target: a bounded, byte-exact set of decode-allocation
+cuts (packed-SEQ passthrough, name-token pooling, a per-slice record arena reused
+across slices, tunable `BIOAI_CRAM_MEMLIMIT_MIB` default 48 → 36 MiB) brought
+`view -b -T <ref> <cram>` to **chr20 1.85× (AT ≤2×, wall-neutral)** and
+**up_small 2.07×**. Direct `gctrace` evidence retired the old "fat-record / needs
+a repo-wide packed `sam.Record` migration" theory: the live Go heap is only
+~20 MB — leaner than upstream's whole 24–31 MB RSS — so up_small's residual is a
+fixed Go-vs-C *runtime* floor (heap arenas/stacks/faidx + BGZF buffers) the
+migration could not move, and it was correctly not pursued (see the roadmap).
+(2) The bayesian consensus `cq` libm last-ULP (`68/10.4M` positions, `cq` column
+only, proximity-parity class): the float-order audit (matched to
+`bam_consensus.c`, fixing a latent mixed-mode het-div bug) is structurally
+faithful but provably inert on the cq diffs — the residual is the irreducible
+Go-math vs glibc-libm last-ULP core in the `cp[]` `log`/`pow` seeding.
 
 Previous wave (2026-06-11, ~70 PRs): `call` modes, `convert` GEN/HAP/TSV,
 `annotate`, `consensus` chain, `mendelian2`, `csq` slices 1–4, mpileup
