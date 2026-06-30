@@ -45,6 +45,13 @@ func ensureUpstreamFastpMerge(t *testing.T) string {
 		}
 		bin := filepath.Join(dir, "fastp")
 		if info, statErr := os.Stat(bin); statErr == nil && info.Mode()&0o111 != 0 {
+			// Verify the binary runs on this platform (not a cross-compiled ELF).
+			if probeErr := exec.Command(bin, "--version").Run(); probeErr != nil {
+				if isExecFormatError(probeErr) {
+					upstreamFastpMergeErr = probeErr
+					return
+				}
+			}
 			upstreamFastpMergePath = bin
 			return
 		}

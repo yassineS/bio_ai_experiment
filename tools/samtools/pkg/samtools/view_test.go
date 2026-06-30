@@ -974,7 +974,7 @@ func TestView_BedFilter_MultiRegionAccepted(t *testing.T) {
 // TestUnitSubsampleHash pins bug #4's fix: the subsample keep decision is the
 // upstream per-read-name hash (sam_view.c process_aln) rather than a per-
 // record RNG draw. It checks the two hash primitives against hand-computed
-// reference values, the glibc srand/rand seed transform, and the determinism
+// reference values, the platform srand/rand seed transform, and the determinism
 // + mate-pairing properties of subsampler.keep. No external binary.
 func TestUnitSubsampleHash(t *testing.T) {
 	// __ac_X31_hash_string reference values (h = h*31 + c, seeded by s[0]).
@@ -989,23 +989,16 @@ func TestUnitSubsampleHash(t *testing.T) {
 		t.Errorf("acX31HashString(\"AB\") = %d, want 2081", got)
 	}
 
-	// glibc srand(seed); rand() reference values (verified against the C
-	// library's TYPE_3 generator).
-	for _, tc := range []struct {
-		seed uint32
-		want uint32
-	}{
-		{1, 1804289383},
-		{2, 1505335290},
-		{3, 1205554746},
-		{42, 71876166},
-	} {
-		if got := glibcSrandRand(tc.seed); got != tc.want {
-			t.Errorf("glibcSrandRand(%d) = %d, want %d", tc.seed, got, tc.want)
+	// platformSrandRand reference values: checked against hand-computed values
+	// for the platform's own srand(seed)/rand() in platformSrandRandTestCases
+	// (view_srand_linux.go / view_srand_other.go).
+	for _, tc := range platformSrandRandTestCases {
+		if got := platformSrandRand(tc.seed); got != tc.want {
+			t.Errorf("platformSrandRand(%d) = %d, want %d", tc.seed, got, tc.want)
 		}
 	}
 
-	// A non-zero seed runs through the glibc transform; a zero seed is used
+	// A non-zero seed runs through the platform transform; a zero seed is used
 	// verbatim. The keep decision is deterministic and identical for any two
 	// records sharing a QNAME (so mates of a pair stay together).
 	s0 := newSubsampler(ViewOptions{Subsample: 0.5})
@@ -1013,8 +1006,9 @@ func TestUnitSubsampleHash(t *testing.T) {
 		t.Fatalf("seed 0 should be used verbatim, got %+v", s0)
 	}
 	s3 := newSubsampler(ViewOptions{Subsample: 0.5, SubsampleSeed: 3})
-	if s3 == nil || s3.seed != 1205554746 {
-		t.Fatalf("seed 3 should transform to 1205554746, got %+v", s3)
+	wantSeed3 := platformSrandRand(3)
+	if s3 == nil || s3.seed != wantSeed3 {
+		t.Fatalf("seed 3 should transform to %d via platformSrandRand, got %+v", wantSeed3, s3)
 	}
 	// Determinism + mate pairing: same name -> same decision every time.
 	for _, name := range []string{"read_001", "read_042", "frag/1"} {

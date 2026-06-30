@@ -35,11 +35,14 @@ const (
 	drand48Mask = (uint64(1) << 48) - 1
 )
 
-// newDrand48 returns a drand48 generator seeded to glibc's default
-// startup state (Xi = 0), matching an upstream samtools process that
-// never calls srand48(). The first Float64() therefore returns
-// 0xB / 2^48 ≈ 3.907985e-14, exactly as glibc's drand48() does.
-func newDrand48() *drand48 { return &drand48{state: 0} }
+// newDrand48 returns a drand48 generator seeded to the platform's default
+// startup state, matching an upstream samtools process that never calls
+// srand48(). The initial state is platform-specific (see
+// phase_drand48_linux.go and phase_drand48_other.go):
+//
+//   - Linux (glibc): Xi = 0; first Float64() ≈ 3.907985e-14.
+//   - macOS/BSD: Xi = 0x1234abcd330e; first Float64() ≈ 0.3965.
+func newDrand48() *drand48 { return &drand48{state: drand48DefaultState} }
 
 // Float64 advances the generator one step and returns the next value in
 // [0, 1), matching glibc drand48(). It is named Float64 so a *drand48

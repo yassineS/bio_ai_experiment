@@ -1533,6 +1533,40 @@ func TestParity_MaxMissingCount_2(t *testing.T) {
 // PCA parity tests live in pca_test.go alongside the algorithm-level
 // unit tests. The wave-19 implementation replaces the prior deferral.
 
+// TestUnitHardy_MonomorphicChiSqNaNSign verifies that the Hardy-Weinberg
+// output renders the chi-square for a fully-monomorphic site (all ALT
+// homozygous: hom1=0, het=0, hom2=1, freq=0) as "nan" (positive-sign NaN),
+// not "-nan". The chi-square sum contains 0.0/0.0 terms; on arm64 this
+// produces a positive NaN whose sign bit is clear, matching the upstream
+// binary built for arm64 Linux. formatCppDefault uses math.Signbit to pick
+// the correct rendering without hard-coding the sign.
+func TestUnitHardy_MonomorphicChiSqNaNSign(t *testing.T) {
+	// Build a VCF with a single sample whose genotype is 1|1 (all ALT).
+	// freq(REF) = 0 → expHom1 = 0, expHet = 0, expHom2 = 1.
+	// chiSq = (0-0)^2/0 + (0-0)^2/0 + (1-1)^2/1 = NaN + NaN + 0 = NaN.
+	const vcfText = "##fileformat=VCFv4.2\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tsample1\n" +
+		"chr1\t295\t.\tA\tG\t.\tPASS\t.\tGT\t1|1\n"
+	dir := t.TempDir()
+	params := &Params{OutPrefix: dir + "/out", Hardy: true}
+	if err := Run(strings.NewReader(vcfText), params); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	data, err := os.ReadFile(dir + "/out.hwe")
+	if err != nil {
+		t.Fatalf("reading .hwe: %v", err)
+	}
+	content := string(data)
+	// The ChiSq_HWE column must be "nan" (positive NaN, no minus sign).
+	if strings.Contains(content, "-nan") {
+		t.Errorf(".hwe contains '-nan' but want 'nan' for positive NaN:\n%s", content)
+	}
+	if !strings.Contains(content, "nan") {
+		t.Errorf(".hwe missing 'nan' for monomorphic ChiSq:\n%s", content)
+	}
+}
+
 // TestSNPHWE_Boundaries — unit test for the SNPHWE port against the
 // hand-computable cases.
 func TestSNPHWE_Boundaries(t *testing.T) {
