@@ -13,10 +13,9 @@ tabix calls.vcf.gz chr1:1,000,000-2,000,000   # print matching records
 The implementation builds on `pkg/htsgo/bgzf` (the in-tree BGZF
 codec) and has **no third-party dependencies** — pure Go standard library.
 
-It is pick #2 of the 2026 next-up list in `analysis/tool_ranking_2026.md`
-because tabix's bin/linear-index machinery is what the rest of the
-htslib-style ecosystem (`samtools view`, `bcftools view`, BAI indices)
-re-uses.
+It was an early priority because tabix's bin/linear-index machinery is what
+the rest of the htslib-style ecosystem (`samtools view`, `bcftools view`, BAI
+indices) re-uses.
 
 ## What is the `.tbi` format?
 

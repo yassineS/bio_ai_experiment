@@ -27,15 +27,25 @@ unit/parity tests for everything, and drop-in POSIX CLIs. Do **not** add a new
 ```
 .
 ├── go.mod                    # single Go module: github.com/yassineS/bio_ai_experiment
-├── pkg/                      # shared libraries used by all tools
-│   ├── bioformats/           # parsers/writers: fasta, fastq, vcf, bed, iohelper
+├── Makefile                  # builds binaries into bin/ (see Common commands)
+├── bin/                      # gitignored built binaries (bin/ours, bin/upstream) — `make`
+├── pkg/                      # shared libraries used by all tools (htsgo/* + cliflag)
+│   ├── htsgo/                # parsers/writers: fasta, fastq, vcf, bed, sam, bcf, cram, bgzf, iohelper
 │   └── cliflag/              # helper for flags that accept both short (-i) and long (--input) forms
 ├── tools/                    # Go re-implementations, one subdir per tool
 │   └── <tool>/
 │       ├── cmd/<tool>/main.go        # CLI entry point
 │       └── pkg/<tool>/*.go           # tool logic + *_test.go
+├── pipeline/                 # Go validation harness: realbench/realparity/giab (real-data
+│   │                         #   bench + parity) + crafted-input difffuzz/edgecases/
+│   │                         #   roundtrip/conformance + fixtures/matrix/runner/internal/stats
+│   └── cmd/<x>/main.go       # harness entry points (realbench, realparity, conformance, …)
 ├── reference_code/           # git submodules: upstream sources of the original tools
-├── analysis/                 # Python scripts + CSV/JSON/Markdown ranking the top ~200 tools
+├── test/                     # validation + paper area (not Go *_test.go; that lives next to code)
+│   ├── nextflow/             # Seqera/Nextflow real-data pipeline + Dockerfile (the canonical container)
+│   ├── manuscript/           # the paper: strategy, claims, results, figures, bug corpus
+│   ├── figures/              # figure-generation Python (plot_perf_parity.py, splice_membench.py)
+│   └── scripts/              # manuscript-metrics tooling (recompute-metrics.sh)
 ├── mcp-servers/              # DESCOPED: MCP servers not being built (see its README)
 ├── docs/                     # project docs (see below)
 └── .github/agents/           # role descriptions for the AI agents that build this repo
@@ -141,7 +151,14 @@ gofmt -w .                                        # format
 go vet ./...                                      # vet
 go build ./tools/seqtk/cmd/seqtk                  # build a single tool binary
 go run ./tools/seqtk/cmd/seqtk comp file.fasta    # run a tool without installing
+make ours                                         # build all our binaries into bin/ours/
+make upstream                                     # best-effort build upstream oracles into bin/upstream/
+make build                                        # ours + upstream ; make clean removes bin/
 ```
+
+The canonical full upstream container (all oracles incl. fastp/vcftools/prinseq)
+is `test/nextflow/Dockerfile`, built from the repo root:
+`docker build -f test/nextflow/Dockerfile .`.
 
 CI (`.github/workflows/ci.yml`) runs on every push to `main` and every PR
 targeting `main`: `gofmt -l`, `go vet ./...`, `go test -race -coverprofile=...
@@ -180,8 +197,12 @@ matches the declared version (currently 1.24.9) — there is no separate 1.21 pi
 - Every new behavior gets a test. Prefer table-driven tests. Aim for >80% coverage.
 - Tests live next to the code as `*_test.go` in `tools/<tool>/pkg/<tool>/`.
 - Add benchmarks for performance-sensitive paths; this project cares about being
-  faster than the originals (see `docs/METRICS.md` for the scope/speed summary
-  and `pipeline/bench` for the benchmark harness).
+  faster than the originals (see `docs/METRICS.md` for the scope/speed summary).
+  The performance + real-data parity harness is `pipeline/realbench` (run via the
+  `test/nextflow/` Seqera pipeline on real GIAB HG002/GRCh38 data); `pipeline/cmd/realparity`
+  is the real-data samtools/bcftools parity+perf runner. The crafted-input
+  correctness suites (`pipeline/difffuzz`, `pipeline/edgecases`,
+  `pipeline/roundtrip`, `pipeline/conformance`) live alongside them.
 
 ### Commits & PRs
 

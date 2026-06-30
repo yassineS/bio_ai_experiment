@@ -10,7 +10,7 @@ name: CI
 # manually dispatched (Actions tab → "Run workflow"). Re-enable by restoring the
 # `push:` / `pull_request:` blocks once the work settles. The jobs themselves are
 # green — the only standing failure was markdown lint over the auto-generated
-# bench/validation reports (docs/manuscript/results/ and pipeline/.fixtures/),
+# bench/validation reports (test/manuscript/results/ and pipeline/.fixtures/),
 # machine output rather than prose, now excluded from the lint globs below.
 
 on:
@@ -176,12 +176,12 @@ jobs:
           globs: |
             **/*.md
             !reference_code
-            !docs/manuscript/results
+            !test/manuscript/results
             !pipeline/.fixtures
 
   # Independent re-execution of the byte-exact parity suite against freshly built
   # upstream binaries. This is the canonical, non-self-reported validation the
-  # manuscript relies on (docs/manuscript/04 §1, §4b): the parity gate runs in
+  # manuscript relies on (test/manuscript/04 §1, §4b): the parity gate runs in
   # clean CI, not locally by a contributor. Builds htslib/bcftools/samtools from
   # the vendored submodules, then runs every `*Upstream*` parity test.
   upstream-parity:
@@ -190,7 +190,7 @@ jobs:
     steps:
       # Checkout WITH the 11 kept submodules (the unported survey submodules were
       # removed, so `recursive` is cheap). This job independently re-executes the
-      # byte-exact parity gate (docs/manuscript/04 §1, §4b) for the htslib core,
+      # byte-exact parity gate (test/manuscript/04 §1, §4b) for the htslib core,
       # against freshly built upstream binaries.
       - uses: actions/checkout@v4
         with:

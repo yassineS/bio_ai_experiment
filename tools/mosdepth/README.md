@@ -9,9 +9,8 @@ seeing in CI/conda environments. This port is a single static Go binary
 sitting on top of our in-tree SAM/BAM, CRAM, BGZF, and tabix libraries — no
 htslib, no Nim toolchain.
 
-`mosdepth` is pick #5 of the 2026 next-up list in
-`analysis/tool_ranking_2026.md`. It is built on top of the SAM/BAM stack
-that landed with `tools/samtools` (pick #3).
+`mosdepth` is built on top of the SAM/BAM stack that landed with
+`tools/samtools`.
 
 ## Build
 

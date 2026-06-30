@@ -13,9 +13,8 @@ stdlib-only BGZF building block so that downstream ports (`tabix`,
 `samtools view`, `bcftools view`, and the `vcftools` random-access paths) can
 share one implementation.
 
-See `analysis/tool_ranking_2026.md` — `bgzip` is pick #1 of the 2026 next-up
-list precisely because the rest of the SAM/BAM/VCF ecosystem rides on top of
-it.
+`bgzip` was a top early priority precisely because the rest of the SAM/BAM/VCF
+ecosystem rides on top of it.
 
 ## What is BGZF?
 

@@ -182,7 +182,7 @@ func TestTBIInterop(t *testing.T) {
 }
 
 // TestInteropSuite runs every interop check through the same env and asserts
-// none FAILs — the end-to-end gate that pipeline/cmd/full-validation relies on.
+// none FAILs — the end-to-end container interop gate.
 func TestInteropSuite(t *testing.T) {
 	requireInterop(t)
 	man, cache := interopManifest(t)

@@ -241,8 +241,8 @@ bio_ai_experiment/
 │       ├── cmd/<tool>/main.go   # CLI entry point
 │       ├── pkg/<tool>/          # tool logic + inline *_test.go
 │       └── README.md            # per-tool usage + parity notes
-├── analysis/            # Tool ranking + analysis reports
-├── mcp-servers/         # MCP server implementations (planned)
+├── test/                # validation + paper: nextflow, manuscript, figures, scripts
+├── mcp-servers/         # MCP server implementations (descoped)
 └── docs/                # Project documentation
 ```
 
@@ -272,7 +272,7 @@ This project uses AI agents to assist with various tasks. When contributing:
 - **Questions?** Ask in [Discussions Q&A](https://github.com/yassineS/bio_ai_experiment/discussions/categories/q-a)
 - **Ideas?** Share in [Discussions Ideas](https://github.com/yassineS/bio_ai_experiment/discussions/categories/ideas)
 - **Found a bug?** [Open an issue](https://github.com/yassineS/bio_ai_experiment/issues/new/choose) using the Bug Report template
-- **Documentation?** Check existing docs first in [docs/](docs/) and [analysis/](analysis/)
+- **Documentation?** Check existing docs first in [docs/](docs/) and [test/](test/)
 
 ## Project Organization
 
