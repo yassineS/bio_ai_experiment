@@ -6,7 +6,7 @@
 // flag with the same spelling as upstream — not whether the flag behaves
 // identically. Semantic equivalence is covered separately by the byte-exact
 // upstream-parity tests (the *Upstream* tests run in CI). See
-// docs/manuscript/results/flag_compat.md for the rendered results and caveats.
+// test/manuscript/results/flag_compat.md for the rendered results and caveats.
 //
 // Method:
 //

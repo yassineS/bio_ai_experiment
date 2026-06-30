@@ -80,6 +80,8 @@ parity work.
 ```text
 bio_ai_experiment/
 ├── go.mod                 # single root module (Go 1.24.x)
+├── Makefile               # builds binaries into bin/ (make ours | upstream | build | clean)
+├── bin/                   # gitignored built binaries: bin/ours, bin/upstream
 ├── pkg/                   # shared libraries
 │   ├── htsgo/             # fasta, fastq, vcf, bed, gff, sam, bcf, bam,
 │   │                      #   bgzf, tabix, cram, region, iohelper, …
@@ -95,10 +97,12 @@ bio_ai_experiment/
 ├── docs/
 │   ├── PARITY_ROADMAP.md      # authoritative gap list
 │   ├── UPSTREAM_BUGS.md       # bugs in originals we do not carry
-│   ├── CLI_CONVENTIONS.md     # CLI rules
-│   └── manuscript/            # manuscript plan + labeled bug corpus
-├── analysis/                  # tool ranking + research
-├── scripts/                   # repo scripts (e.g. recompute-metrics.sh)
+│   └── CLI_CONVENTIONS.md     # CLI rules
+├── test/                      # validation + paper area
+│   ├── nextflow/              # Seqera/Nextflow real-data pipeline + Dockerfile
+│   ├── manuscript/            # manuscript plan + results/figures + labeled bug corpus
+│   ├── figures/               # figure-generation Python (plot_perf_parity.py, …)
+│   └── scripts/               # manuscript-metrics tooling (recompute-metrics.sh)
 ├── reference_code/            # upstream sources as submodules (parity work)
 └── .github/agents/            # AI-agent role descriptions
 ```
@@ -278,7 +282,7 @@ Run `gofmt -w .`, `go vet ./...`, and `go test ./...` locally before pushing.
 - [`docs/UPSTREAM_BUGS.md`](docs/UPSTREAM_BUGS.md) — bugs in upstream we deliberately do not carry
 - [`docs/CLI_CONVENTIONS.md`](docs/CLI_CONVENTIONS.md) — CLI flag rules (POSIX short + GNU long)
 - [`docs/GOLANG_GUIDE.md`](docs/GOLANG_GUIDE.md) — Go best practices used here
-- [`analysis/tool_ranking_2026.md`](analysis/tool_ranking_2026.md) — ranking for *next* tools to port
+- [`test/manuscript/`](test/manuscript/README.md) — the paper: strategy, claims, results, figures
 
 ## Contributing
 
@@ -306,7 +310,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed contribution guidelines.
 - 💬 [Discussions](https://github.com/yassineS/bio_ai_experiment/discussions) - Ask questions, share ideas
 - 🐛 [Issues](https://github.com/yassineS/bio_ai_experiment/issues) - Report bugs, request features
 - 📖 [Documentation](docs/) - Guides and references
-- 📋 [Analysis](analysis/) - Tool analyses and evaluations
+- 📊 [Validation & paper](test/) - Real-data pipeline, manuscript, and figures
 
 ## License
 

@@ -1,5 +1,15 @@
 # Full validation flow (`pipeline/cmd/full-validation`)
 
+> **Superseded — historical context.** The synthetic `full-validation`
+> orchestrator (and the `pipeline/bench` micro-benchmarks and synthetic
+> `parity-pipeline` it tied together) has been **removed**. Performance and
+> real-data parity now run on **real GIAB data** via `realbench`
+> (`pipeline/realbench`, launched through the `test/nextflow/` Seqera pipeline — see
+> [`../test/nextflow/README.md`](../test/nextflow/README.md)) and `realparity`
+> (`pipeline/cmd/realparity`). The crafted-input round-trip / interop, edge-case,
+> differential-fuzz, and conformance suites are **unchanged**. The rest of this
+> document is retained as a record of the retired flow.
+
 A single orchestrated pass that runs the **entire** validation matrix and the
 performance sweep, writes a consolidated report per scale tier, and exits
 non-zero if anything diverges — so it can gate a release. It ties together three

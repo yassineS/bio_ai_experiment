@@ -150,3 +150,6 @@ reference_code/vcftools
 .a5c/
 _giab/
 tasks-artifacts/
+
+# Local scratch (agent patches, realparity temp runs) — never commit
+_rpscratch/

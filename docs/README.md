@@ -14,7 +14,7 @@ progress content lives in exactly one place and contributors don't re-fork it.
 | Validated-parity test methodology + skip ledger | [`FULL_VALIDATION.md`](FULL_VALIDATION.md) + [`CONFORMANCE.md`](CONFORMANCE.md) | How parity is proven against upstream corpora, and the validation run recipes. |
 | Upstream bugs we fixed on port | [`UPSTREAM_BUGS.md`](UPSTREAM_BUGS.md) | Deviations from upstream that are intentional fixes. |
 | Documented intentional CLI differences | [`CLI_CONVENTIONS.md`](CLI_CONVENTIONS.md) + per-tool [`../tools/<tool>/README.md`](../tools/) | The canonical CLI flag spec; per-tool READMEs note where flags/behaviour intentionally differ. |
-| Which **new** tools to port next | [`../analysis/tool_ranking_2026.md`](../analysis/tool_ranking_2026.md) | A priority list for *new* ports, not a deprioritise filter for existing ones. |
+| The paper (strategy, claims, results, figures) | [`../test/manuscript/`](../test/manuscript/README.md) | The manuscript and its results/figures live under `test/`, not `docs/`. |
 | How to use a specific tool | `../tools/<tool>/README.md` | Per-tool usage + parity notes. |
 | Repo layout, build/test commands, deps policy | [`../CLAUDE.md`](../CLAUDE.md) | The orientation doc for contributors and AI agents. |
 | How to contribute (PRs, issues, setup) | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | Workflow and coding standards. |
@@ -36,8 +36,15 @@ restating numbers.
   protocol.
 - [`../pkg/htsgo/README.md`](../pkg/htsgo/README.md) — format library docs.
 - [`METRICS.md`](METRICS.md) — scope, lines-of-code, and speed vs the originals
-  (the manuscript metrics); the benchmark harness lives in
-  [`../pipeline/bench`](../pipeline/bench).
+  (the manuscript metrics). The performance + real-data parity harness is
+  [`../pipeline/realbench`](../pipeline/realbench) (CLI `../pipeline/cmd/realbench`),
+  run via the [`../test/nextflow/`](../test/nextflow/README.md) Seqera pipeline on real
+  GIAB HG002/GRCh38 data; `../pipeline/cmd/realparity` is the companion real-data
+  samtools/bcftools parity+perf runner. (The retired synthetic `pipeline/bench` /
+  `full-validation` harness it replaced is documented in
+  [`FULL_VALIDATION.md`](FULL_VALIDATION.md) as historical context.)
+- [`FULL_VALIDATION.md`](FULL_VALIDATION.md) — historical record of the retired
+  synthetic full-validation flow, superseded by `realbench` + `realparity`.
 - [`DIFFERENTIAL_FUZZING.md`](DIFFERENTIAL_FUZZING.md) — the differential
   fuzzer (`../pipeline/cmd/diff-fuzz`) that cross-checks our output against
   upstream on randomised inputs.

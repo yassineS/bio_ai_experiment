@@ -20,8 +20,7 @@
 
 Subsequent PRs will continue to fill in the `mpileup` subcommand tail.
 
-`samtools` is pick #3 of the 2026 next-up list in
-`analysis/tool_ranking_2026.md` — the most widely-used CLI in genomics, with
+`samtools` was a top early priority — the most widely-used CLI in genomics, with
 ~6.5M bioconda downloads over its lifetime.
 
 The implementation has **no third-party dependencies** — pure Go standard

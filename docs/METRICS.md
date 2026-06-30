@@ -27,8 +27,9 @@ subcommand coverage is complete.
   ported tool, kept as read-only parity oracles (htslib, htscodecs, samtools,
   bcftools, bedtools, seqtk, prinseq, sickle, skewer, fastp, vcftools). The
   ~40 phase-1 *survey* submodules (bwa, STAR, salmon, …) that were never ported
-  have been removed (the survey ranking itself remains under `analysis/`), so
-  `reference_code/` now contains only what the project actually reimplements.
+  have been removed (the survey ranking that selected them has been retired now
+  that the project no longer takes on new tools), so `reference_code/` now
+  contains only what the project actually reimplements.
 
 So the correct manuscript claim is **"complete reimplementation of a bounded,
 named tool set,"** not "a subset of an open-ended porting effort."

@@ -186,26 +186,37 @@ per-tool feature gaps.
 
 ## Parity-and-performance pipeline
 
-`pipeline/` runs every tool over **real-sized, seeded BAM/CRAM/VCF/BED/FASTA/
-FASTQ/GFF fixtures** (`PIPELINE_SCALE=smoke|small|medium|large`) against the
-**vendored upstream binaries**, comparing deterministic transforms byte-for-byte
-(BGZF/BAM/CRAM decoded first — never compared as raw framing) and emitting a
-JSON+Markdown report. A curated combinatorics matrix (`matrix.Register`, with an
-`ExpandSpec`/`Combos` flag-sweep) covers each subcommand's flag space, and
-`pipeline/bench/` holds 33 heavy-op `benchPair` benchmarks reporting
-`ratio_ours/up`. The full small-scale sweep is currently
-**`total=400 PASS=346 SIMILAR=0 DIVERGE=0 SKIP=54 ERROR=0`** — every entry is
-byte-exact or a documented Skip with a root-caused reason.
+Performance and real-data parity now run on **real GIAB data**, not synthetic
+fixtures. `pipeline/realbench` (`pipeline/cmd/realbench`) drives **our** ports
+against the **vendored upstream binaries** over the full ported surface on a
+real GIAB HG002 / GRCh38 dataset, reporting both **parity**
+(byte-exact-after-provenance-stripping, with BGZF/BAM/CRAM decoded first — never
+compared as raw framing) and **performance** (wall / CPU / peak RSS, ours-vs-upstream
+ratios) per cell, at three tiers (`chr20` | `exome` | `wgs`). It is launched via
+the `test/nextflow/` Seqera pipeline, which stages the real inputs and **region-subsets
+them with the upstream tools** so the per-tier inputs never come from the code
+under test (see [`test/nextflow/README.md`](test/nextflow/README.md)).
+`pipeline/cmd/realparity` is the companion real-data samtools/bcftools
+differential parity + performance runner on whole-genome, multi-contig inputs.
 
-This pipeline materially outperformed the per-tool suites: it surfaced ~25 real
-byte-parity bugs they had missed (sickle window default, vcftools recode INFO
-order, fastp default end-quality-trim, mosdepth region outputs, 11 bedtools
-semantics bugs, samtools sort/subsample/depth/mpileup/stats-GCD, seqtk cutN
-wrap, and the bcftools view/norm/annotate/merge/concat/consensus/roh set) — all
-since fixed. The residual documented Skips are the small edge cases listed
-per-tool above (bedcluster/bedjaccard `-s`, bedsplit `-a size`, mosdepth `--by`
-±1 boundary, bcftools norm-ID/merge-INFO/csq-phase) plus genuine runner
-limitations (BGZF-binary-only outputs, BEDPE/PL fixtures, sampling heuristics).
+The earlier **synthetic** combinatorics harness — the `PIPELINE_SCALE`-tiered
+`parity-pipeline` / `full-validation` drivers and the `pipeline/bench`
+micro-benchmarks — has been **retired**; it materially outperformed the per-tool
+suites in its day (surfacing ~25 real byte-parity bugs they had missed — sickle
+window default, vcftools recode INFO order, fastp default end-quality-trim,
+mosdepth region outputs, 11 bedtools semantics bugs,
+samtools sort/subsample/depth/mpileup/stats-GCD, seqtk cutN wrap, and the
+bcftools view/norm/annotate/merge/concat/consensus/roh set — all since fixed).
+The residual documented sub-gaps remain the small edge cases listed per-tool
+above (bedcluster/bedjaccard `-s`, bedsplit `-a size`, mosdepth `--by` ±1
+boundary, bcftools norm-ID/merge-INFO/csq-phase).
+
+The **crafted-input correctness suites are unchanged**: differential fuzzing
+(`pipeline/difffuzz`, `pipeline/cmd/diff-fuzz`), the `pipeline/edgecases`
+battery, container round-trip / interop (`pipeline/roundtrip`), and the
+htslib/htscodecs conformance corpora (`pipeline/conformance`) all still run, as
+does the shared `pipeline/fixtures` / `pipeline/matrix` / `pipeline/runner`
+machinery they build on.
 
 ## Non-goals (not gaps)
 
@@ -252,6 +263,5 @@ These are deliberately not ported and should not be counted against parity:
 | Authoritative per-tool gap list? | [`docs/PARITY_ROADMAP.md`](docs/PARITY_ROADMAP.md) |
 | Per-subcommand feature lists? | [`tools/PORTING_STATUS.md`](tools/PORTING_STATUS.md) |
 | Upstream bugs we fixed on port? | [`docs/UPSTREAM_BUGS.md`](docs/UPSTREAM_BUGS.md) |
-| Which tools to port next? | [`analysis/tool_ranking_2026.md`](analysis/tool_ranking_2026.md) |
 | How is the repo organised? | [`CLAUDE.md`](CLAUDE.md) |
 | How do I use tool X? | `tools/<tool>/README.md` |

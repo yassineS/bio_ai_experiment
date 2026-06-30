@@ -1,0 +1,17 @@
+{
+  // markdownlint-cli2 project config. Rules live in .markdownlint.json (referenced
+  // below); this file only scopes WHICH markdown is linted, mirroring the CI job
+  // (.github/workflows/ci.yml "Lint Markdown") so `markdownlint-cli2 "**/*.md"`
+  // run locally matches CI exactly.
+  "config": ".markdownlint.json",
+  "ignores": [
+    // Upstream submodule prose — read-only references, never our lint surface.
+    "reference_code/**",
+    // Auto-generated bench/validation reports — machine output, not prose.
+    "test/manuscript/results/**",
+    "pipeline/.fixtures/**",
+    // Local tooling state and vendored deps — gitignored, never repo prose.
+    ".a5c/**",
+    "**/node_modules/**"
+  ]
+}

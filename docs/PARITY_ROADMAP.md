@@ -127,9 +127,8 @@ destination.
 > we identify in the originals as we go. We don't carry those over; we
 > either fix on port or note and skip with a clear pointer.
 
-The companion file [`../analysis/tool_ranking_2026.md`](../analysis/tool_ranking_2026.md)
-ranks **next** tools to port. It is **not** a "deprioritise existing tools"
-filter — existing tools all get carried to 1:1.
+The project no longer takes on new tools: every existing tool is carried to 1:1
+parity, and there is no "deprioritise existing tools" filter.
 
 > **Salvage of PR #219 (this branch).** The high-value bcftools/samtools
 > parity from the stale, conflicting PR #219 was lifted onto current
