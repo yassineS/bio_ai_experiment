@@ -14,10 +14,12 @@ package fastp
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -45,6 +47,14 @@ func upstreamFastp(t *testing.T) (string, error) {
 			return
 		}
 		if info, statErr := os.Stat(abs); statErr == nil && info.Mode()&0o111 != 0 {
+			// Verify the binary is runnable on this platform (e.g. not a
+			// Linux ELF on macOS). Use --version as a lightweight probe.
+			if probeErr := exec.Command(abs, "--version").Run(); probeErr != nil {
+				if isExecFormatError(probeErr) {
+					upstreamFastpErr = probeErr
+					return
+				}
+			}
 			upstreamFastpPath = abs
 			return
 		}
@@ -70,6 +80,21 @@ type buildError struct {
 }
 
 func (e *buildError) Error() string { return e.err.Error() + ": " + string(e.out) }
+
+// isExecFormatError reports whether err (from exec.Cmd.Run / Start) is an
+// ENOEXEC "exec format error", which occurs when the binary is built for a
+// different CPU architecture or OS than the host.
+func isExecFormatError(err error) bool {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return false // ran, just exited non-zero
+	}
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return errors.Is(pathErr.Err, syscall.ENOEXEC)
+	}
+	return false
+}
 
 // commonDisableFlags turns off everything except the feature under test so
 // the comparison isolates the new behaviour. The Go port mirrors these via

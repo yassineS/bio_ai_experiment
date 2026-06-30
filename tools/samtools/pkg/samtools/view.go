@@ -1183,14 +1183,14 @@ type subsampler struct {
 // newSubsampler builds the subsample filter for the requested fraction/seed,
 // or returns nil when no subsampling is requested (frac <= 0 or >= 1). The
 // seed is the SEED component of `-s SEED.FRAC`; a non-zero seed is passed
-// through glibcSrandRand to match upstream's entropy-spreading step.
+// through platformSrandRand to match upstream's entropy-spreading step.
 func newSubsampler(opts ViewOptions) *subsampler {
 	if opts.Subsample <= 0 || opts.Subsample >= 1 {
 		return nil
 	}
 	seed := uint32(opts.SubsampleSeed)
 	if seed != 0 {
-		seed = glibcSrandRand(seed)
+		seed = platformSrandRand(seed)
 	}
 	return &subsampler{frac: opts.Subsample, seed: seed}
 }
@@ -1226,37 +1226,18 @@ func acWangHash(key uint32) uint32 {
 	return key
 }
 
-// glibcSrandRand reproduces the result of `srand(seed); return rand();` under
-// glibc's default TYPE_3 additive-feedback generator. samtools view runs the
-// user seed through this transform (sam_view.c:1307-1311) to spread the
-// entropy of small integer seeds before XOR-ing it into the name hash, so we
-// must reproduce it exactly for byte-identical subsampling.
-func glibcSrandRand(seed uint32) uint32 {
-	if seed == 0 {
-		seed = 1
-	}
-	var r [344]int32
-	r[0] = int32(seed)
-	for i := 1; i < 31; i++ {
-		// r[i] = (16807 * r[i-1]) % 2147483647, via Schrage's method to
-		// avoid 32-bit signed overflow (matches glibc's int arithmetic).
-		hi := r[i-1] / 127773
-		lo := r[i-1] % 127773
-		w := 16807*lo - 2836*hi
-		if w < 0 {
-			w += 2147483647
-		}
-		r[i] = w
-	}
-	for i := 31; i < 34; i++ {
-		r[i] = r[i-31]
-	}
-	for i := 34; i < 344; i++ {
-		r[i] = r[i-31] + r[i-3]
-	}
-	val := r[344-31] + r[344-3]
-	return (uint32(val) >> 1) & 0x7fffffff
-}
+// platformSrandRand reproduces the result of `srand(seed); return rand();`
+// on the platform used to compile the upstream samtools binary being tested
+// against. samtools view runs the user seed through this transform
+// (sam_view.c:1307-1311) to spread entropy before XOR-ing it into the name
+// hash, so we must match the platform's libc exactly for byte-identical
+// subsampling. The implementation is selected at compile time via build tags:
+//
+//   - Linux: glibcSrandRand (TYPE_3 additive-feedback generator).
+//   - macOS/BSD (darwin): Park-Miller LCG — (seed * 16807) % (2^31-1).
+//
+// The function is defined in view_srand_linux.go and view_srand_other.go
+// respectively.
 
 // LoadReadGroupsFile reads a file of read group IDs (one per line) and
 // returns them as a set. Lines starting with '#' and blank lines are skipped.

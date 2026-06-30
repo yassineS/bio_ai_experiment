@@ -186,7 +186,12 @@ func runUpstreamPhase(g *upstreamPhaseRunner, hash *fragKhash, recs []*sam.Recor
 			// hash state, before updateVpos slides the indices. min_pos
 			// is cns[vpos]>>32 when a frag with vpos>=block_vpos exists
 			// (phase.c:411), else MaxInt32 to flush all queued reads.
-			if bs != nil {
+			//
+			// Upstream phase() returns early when vpos == 0 (before
+			// calling dump_aln), so we must guard the call the same way.
+			// Calling dumpAln at vpos=0 would consume a spurious drand48
+			// value (for is_flip) that shifts all subsequent RNG draws.
+			if bs != nil && vpos > 0 {
 				minPos := int32(math.MaxInt32)
 				if hashHasFragSpanning(vpos, hash) {
 					minPos = int32(cns[vpos] >> 32)

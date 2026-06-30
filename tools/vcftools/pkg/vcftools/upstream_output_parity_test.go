@@ -20,6 +20,7 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -98,6 +100,14 @@ func buildUpstreamVcftools() (string, error) {
 	submodule := filepath.Join(root, "reference_code", "vcftools")
 	binary := filepath.Join(submodule, "src", "cpp", "vcftools")
 	if _, err := os.Stat(binary); err == nil {
+		// Verify the binary is actually runnable on this platform (e.g. not a
+		// cross-compiled Linux ELF on macOS). A probe exec returning "exec
+		// format error" means the binary is the wrong architecture.
+		if probeErr := exec.Command(binary, "--help").Run(); probeErr != nil {
+			if isExecFormatError(probeErr) {
+				return "", fmt.Errorf("upstream vcftools binary is not executable on this platform (wrong architecture): %w", probeErr)
+			}
+		}
 		return binary, nil
 	}
 
@@ -136,6 +146,22 @@ func (e *buildError) Error() string {
 		tail = tail[len(tail)-2000:]
 	}
 	return "build step '" + e.step + "' failed: " + e.err.Error() + "\n" + tail
+}
+
+// isExecFormatError reports whether err (from exec.Cmd.Run / Start) is an
+// ENOEXEC "exec format error", which occurs when the binary is built for a
+// different CPU architecture or OS than the host.
+func isExecFormatError(err error) bool {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return false // ran, just exited non-zero
+	}
+	// exec.Cmd.Start wraps the OS error in *os.PathError.
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return errors.Is(pathErr.Err, syscall.ENOEXEC)
+	}
+	return false
 }
 
 // runUpstream runs the upstream binary with the given args plus --vcf/--out
