@@ -74,11 +74,17 @@ type containerJob struct {
 	err            error
 }
 
-// containerJobBuffer bounds the number of in-flight containers (queued plus
-// awaiting collection), keeping memory modest while leaving slack to keep
-// workers busy. A CRAM container is far larger than a BGZF block, so a smaller
-// bound than the BGZF reader's suffices.
-const containerJobBuffer = 32
+// containerJobSlack is the extra in-flight slack added on top of the worker
+// count when sizing the pipeline channels. Each decoded container holds all of
+// its slices' reconstructed records (~200k on a WGS CRAM), so the in-flight
+// bound must scale with the worker parallelism, not be a large fixed constant:
+// a fixed 32-deep buffer on each of the three channels let up to ~96 decoded
+// containers pile up — 10–100× the single-threaded working set — independent of
+// thread count. Sizing each channel to threads+slack keeps every worker fed
+// (the reorder window can never exceed the number of concurrently-decoding
+// workers, so this cannot deadlock) while bounding peak RSS to the active set,
+// mirroring htslib's handful-of-containers-per-thread in-flight policy.
+const containerJobSlack = 2
 
 // startParallel spins up the feeder, worker pool and ordering collector. It is
 // called lazily on the first Read once SetThreads has requested parallel
@@ -91,12 +97,13 @@ func (rr *RecordReader) startParallel() {
 		// CPU-bound decode.
 		threads = max + 1
 	}
+	buf := threads + containerJobSlack
 	pd := &parallelDriver{
 		rr:      rr,
 		threads: threads,
-		jobs:    make(chan *containerJob, containerJobBuffer),
-		results: make(chan *containerJob, containerJobBuffer),
-		out:     make(chan *containerJob, containerJobBuffer),
+		jobs:    make(chan *containerJob, buf),
+		results: make(chan *containerJob, buf),
+		out:     make(chan *containerJob, buf),
 		closed:  make(chan struct{}),
 	}
 	rr.par = pd
