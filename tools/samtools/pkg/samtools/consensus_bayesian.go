@@ -606,12 +606,16 @@ func calculateConsensusGap5(bases []bayesPileupBase, useMQual bool, td int,
 			if mqual > float64(o.highMQual) {
 				mqual = float64(o.highMQual)
 			}
-			// Upstream bam_consensus.c:1402 indexes q2p[qual] with NO
-			// qual>100 / qual<0 clamp — qual is a uint8_t already floored
-			// to >=1 (lines 1338-1361), and q2p[] is sized [101] for the
-			// q range it ever sees. We mirror that: no spurious clamp here.
-			// (Inert for Illumina Q<=40; keeps the path structurally
-			// identical to upstream.)
+			// Upstream bam_consensus.c:1402 indexes q2p[qual]; qual is a
+			// uint8_t floored to >=1, and q2p[] is sized for the q range valid
+			// SAM ever sees (Phred 0..93). C silently reads past its static
+			// array for a non-conformant qual>100 (undefined behaviour, no
+			// crash); Go panics on the [101] table instead, so clamp to 100 as
+			// a crash-safety guard — byte-inert for valid SAM, but a malformed
+			// BAM with qual>100 no longer aborts the process.
+			if qual > 100 {
+				qual = 100
+			}
 			P := q2pTab[qual]
 			mi := int(mqual)
 			if mi < 0 {
@@ -631,6 +635,12 @@ func calculateConsensusGap5(bases []bayesPileupBase, useMQual bool, td int,
 		if qual < 1 {
 			qual = 1
 		}
+		// Crash-safety guard (see the q2pTab note above): clamp qual to the
+		// cp.p*[101] table bound. Byte-inert for valid SAM (Phred 0..93);
+		// prevents an index-out-of-range panic on a non-conformant BAM.
+		if qual > 100 {
+			qual = 100
+		}
 
 		// Upstream poly_len is likewise called with seq_offset+1
 		// (bam_consensus.c:1414); polyLen returns 0 when out of range.
@@ -646,6 +656,12 @@ func calculateConsensusGap5(bases []bayesPileupBase, useMQual bool, td int,
 			qual2 = 1
 		} else {
 			qual2 = int(t)
+		}
+		// Crash-safety guard: qual2 indexes the cp.p*[101] tables, and the
+		// poly term can push it past 100 on a non-conformant BAM (qual>100).
+		// Clamp to keep the index in range. Byte-inert for valid SAM input.
+		if qual2 > 100 {
+			qual2 = 100
 		}
 
 		// CHANGE #3: do NOT re-parenthesise the cp.p*[qual]-xx grouping below
