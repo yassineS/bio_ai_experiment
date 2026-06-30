@@ -43,7 +43,8 @@ params.highconf_bed  = null   // NIST v4.2.1 high-confidence BED
 params.fastq_r1      = null   // HG002 raw Illumina R1 (.fastq.gz)
 params.fastq_r2      = null   // HG002 raw Illumina R2 (.fastq.gz)
 
-params.exome_bed     = null   // exome capture target BED (user supplies/verifies)
+// exome targets are derived from the gene_gff CDS features inside DERIVE_EXOME;
+// no external capture BED is required.
 params.gene_gff      = null   // GRCh38 gene annotation GFF3 (.gff3.gz / .gff.gz)
 
 // Run shape.
@@ -268,7 +269,6 @@ process DERIVE_EXOME {
     tuple path(ref), path(fai)
     tuple path(aln), path(alnidx), val(kind)
     tuple path(vcf), path(vcftbi)
-    path  exome_bed
     tuple path(gff), path(gfftbi)
 
     output:
@@ -290,8 +290,19 @@ process DERIVE_EXOME {
     """
     set -euo pipefail
 
-    # The exome BED is the tier BED, passed through unchanged.
-    cp "${exome_bed}" exome.bed
+    # Exome targets = merged CDS intervals from the gene-annotation GFF. No
+    # external capture BED is needed; the targets are reproducible from the
+    # staged GFF. NOTE: the GFF's contig names must match the reference (a
+    # chr-named Gencode GRCh38 GFF3; a RefSeq NC_-accession GFF would need the
+    # assembly-report rename first — see conf/hg002_grch38.config).
+    zcat -f "${gff}" \
+        | awk -F'\t' 'BEGIN{OFS="\t"} !/^#/ && $3=="CDS" {print $1, $4-1, $5}' \
+        | sort -k1,1 -k2,2n \
+        | ${params.upstream_bin}/bedtools merge -i - > exome.bed
+    if [ ! -s exome.bed ]; then
+        echo "DERIVE_EXOME: no CDS intervals derived from the GFF — check that the GFF contigs match the reference (chr-named Gencode, not RefSeq NC_)." >&2
+        exit 1
+    fi
 
     # --- BAM: region-slice over the exome targets -----------------------------
     if [ "${kind}" = "cram" ]; then
@@ -534,11 +545,10 @@ workflow {
     if (!isSet(params.gene_gff)) { error "params.gene_gff is required (the GRCh38 gene annotation GFF3)" }
     STAGE_GFF(channel.value(optFile(params.gene_gff)))
 
-    // The high-confidence BED drives the chr20/wgs tiers; the exome BED drives
-    // the exome tier.
+    // The high-confidence BED drives the chr20/wgs tiers; the exome tier derives
+    // its targets from the gene_gff CDS features (see DERIVE_EXOME).
     if (!isSet(params.highconf_bed)) { error "params.highconf_bed is required (the NIST high-confidence BED)" }
     highconf_ch = channel.value(optFile(params.highconf_bed))
-    exome_ch    = isSet(params.exome_bed) ? channel.value(optFile(params.exome_bed)) : channel.empty()
 
     // Convenience handles.
     ref_out   = STAGE_REF.out.ref
@@ -573,10 +583,11 @@ workflow {
     }
 
     if (params.tiers.contains('exome')) {
-        if (!isSet(params.exome_bed)) {
-            error "tier 'exome' requested but params.exome_bed is not set"
-        }
-        DERIVE_EXOME(ref_out, aln_out, vcf_out, exome_ch, gff_out)
+        // Exome targets are derived from the gene-annotation GFF's CDS features
+        // inside DERIVE_EXOME (no external capture BED needed). params.gene_gff
+        // is already required above, and its contigs MUST match the reference
+        // (use a chr-named Gencode GRCh38 GFF3, not a RefSeq NC_-accession GFF).
+        DERIVE_EXOME(ref_out, aln_out, vcf_out, gff_out)
         tier_ch = tier_ch.mix(DERIVE_EXOME.out.tier)
         matched = true
     }

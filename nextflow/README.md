@@ -51,7 +51,7 @@ STAGE_GFF  ┘       subsetting)           ours vs upstream)      summary.json/.
 | Tier    | Size   | What it is | Default |
 |---------|--------|------------|---------|
 | `chr20` | small  | every input sliced to chromosome 20 | **on** |
-| `exome` | medium | every input restricted to the exome capture targets (`params.exome_bed`); reference stays whole-genome | **on** |
+| `exome` | medium | every input restricted to the exome targets — **merged CDS intervals derived from `params.gene_gff`** (no capture BED needed); reference stays whole-genome | **on** |
 | `wgs`   | large  | the full whole-genome inputs, unchanged | **off** |
 
 All three tiers come from the **same** WGS source — chr20 and exome are exact
@@ -170,8 +170,7 @@ ref_fasta:    s3://giab/release/references/GRCh38/GCA_000001405.15_GRCh38_no_alt
 wgs_bam:      s3://giab/data/AshkenazimTrio/HG002_NA24385_son/NIST_HiSeq_HG002_Homogeneity-10953946/NHGRI_Illumina300X_AJtrio_novoalign_bams/HG002.GRCh38.300x.bam
 benchmark_vcf: s3://giab/release/AshkenazimTrio/HG002_NA24385_son/NISTv4.2.1/GRCh38/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz
 highconf_bed:  s3://giab/release/AshkenazimTrio/HG002_NA24385_son/NISTv4.2.1/GRCh38/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed
-exome_bed:     s3://<your-bucket>/exome_targets.GRCh38.bed   # YOU must supply this
-gene_gff:      https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/405/GCF_000001405.40_GRCh38.p14/GCF_000001405.40_GRCh38.p14_genomic.gff.gz
+gene_gff:      https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_46/gencode.v46.annotation.gff3.gz  # chr-named (drives exome CDS derivation)
 outdir:        s3://<your-bucket>/results
 ```
 
@@ -199,14 +198,14 @@ paths are in [`conf/hg002_grch38.config`](conf/hg002_grch38.config).
 > different paths. Use `s3://` on AWS Batch; use an `https://` form for local
 > runs.
 
-Two inputs you **must** supply/verify yourself:
+One input you **must** verify yourself:
 
-- **`exome_bed`** — there is no single canonical "GIAB exome BED". Supply the
-  capture-kit target BED you care about (Twist / IDT xGen v2 / Agilent
-  SureSelect V8, or your own), with **GRCh38 `chr`-prefixed** contig names. The
-  `exome` tier errors out if this is unset.
-- **`gene_gff`** — a GRCh38 gene annotation (RefSeq or Gencode). The default
-  points at NCBI RefSeq; a Gencode alternative is commented in the config.
+- **`gene_gff`** — a GRCh38 gene annotation GFF3. It drives **both** the
+  `csq`/`subseq` cells **and** the `exome` tier (whose targets are the merged
+  CDS intervals derived from this GFF — no separate capture BED is needed). It
+  **must be `chr`-named** to match the GRCh38 no-alt reference: the default is a
+  **Gencode** GFF3 (chr-named). A RefSeq genomic GFF uses `NC_` accessions and
+  would derive zero exome intervals unless you rename its contigs first.
 
 ## Outputs
 
