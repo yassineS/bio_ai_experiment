@@ -129,21 +129,41 @@ nextflow run test/nextflow/main.nf -profile standard \
 ### Seqera Platform / Tower (AWS Batch)
 
 1. **Compute environment.** In the Seqera Platform, create an **AWS Batch**
-   compute environment whose job role has **read** access to `s3://giab` (the
-   GIAB bucket is public — an unsigned/anonymous read works, but the role must
-   not be blocked from it) and **read/write** on your own work/results bucket.
-   Set the Nextflow **work directory** to `s3://<your-bucket>/work`.
+   compute environment whose job role has **read/write** on your own
+   work/results bucket. Set the Nextflow **work directory** to
+   `s3://<your-bucket>/work`.
 
-2. **Container.** Point the pipeline at the pushed image. It is already the
-   default (`params.container`); override per-launch if you publish elsewhere.
+   The GIAB inputs need **no credentials of yours** — `s3://giab` is an
+   [AWS Open Data](https://registry.opendata.aws/giab/) public bucket whose
+   bucket policy grants read to any requester, so no S3 key or special IAM grant
+   is required for them. Two equivalent ways to reach it:
+   - **Data Explorer (recommended on Platform):** add `s3://giab` as a *public*
+     Data Link (Data Explorer → Add cloud bucket → public, no credentials), then
+     reference the staged paths. See
+     <https://docs.seqera.io/platform-cloud/data/data-explorer>.
+   - **Direct `s3://giab/...` params:** the compute-env role reads the public
+     bucket via its policy (signed requests work without a GIAB grant). For a
+     credential-free *local* run, use the public HTTPS mirror
+     (`https://s3.amazonaws.com/giab/...`) or set `aws.client.anonymous = true`
+     (only when the work dir is local, not your private S3 bucket).
 
-3. **Launch from the CLI** with the Tower CLI:
+2. **Container.** The image is built for you by CI — the
+   `.github/workflows/realbench-image.yml` workflow builds `test/nextflow/Dockerfile`
+   (our Go binaries + the upstream binaries from the submodules) and pushes
+   `ghcr.io/<owner>/bio-ai-realbench:latest` (= the default `params.container`).
+   Run it once (Actions → "realbench container image" → Run workflow), then make
+   the GHCR package **public** so the compute env can pull it without registry
+   creds (or add a registry credential in the Platform). *Alternative:* enable
+   **Wave** in your Seqera workspace to build the Dockerfile on the fly — then no
+   GHCR image is needed at all.
+
+3. **Launch from the CLI** with the Tower CLI (`tw`):
 
    ```sh
    tw launch https://github.com/yassineS/bio_ai_experiment \
        --compute-env  <your-aws-batch-ce> \
        --work-dir     s3://<your-bucket>/work \
-       --revision     claude/realbench-harness \
+       --revision     main \
        --main-script  test/nextflow/main.nf \
        --profile      awsbatch \
        --params-file  test/nextflow/conf/params.example.yaml \
