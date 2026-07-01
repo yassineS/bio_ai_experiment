@@ -84,7 +84,6 @@ def optFile(p) { isSet(p) ? file(p, checkIfExists: true) : null }
  * -------------------------------------------------------------------------- */
 process STAGE_REF {
     tag 'reference'
-    publishDir "${params.outdir}/staged", mode: 'copy', overwrite: true
 
     input:
     path ref
@@ -111,7 +110,6 @@ process STAGE_REF {
  * -------------------------------------------------------------------------- */
 process STAGE_ALIGN {
     tag { aln.name }
-    publishDir "${params.outdir}/staged", mode: 'copy', overwrite: true
 
     input:
     tuple path(aln), path(idx), val(kind)
@@ -141,7 +139,6 @@ process STAGE_ALIGN {
  * -------------------------------------------------------------------------- */
 process STAGE_VCF {
     tag { vcf.name }
-    publishDir "${params.outdir}/staged", mode: 'copy', overwrite: true
 
     input:
     tuple path(vcf), path(tbi)
@@ -164,7 +161,6 @@ process STAGE_VCF {
  * -------------------------------------------------------------------------- */
 process STAGE_GFF {
     tag { gff.name }
-    publishDir "${params.outdir}/staged", mode: 'copy', overwrite: true
 
     input:
     path gff
@@ -191,7 +187,6 @@ process STAGE_GFF {
  * -------------------------------------------------------------------------- */
 process DERIVE_CHR20 {
     tag 'chr20'
-    publishDir "${params.outdir}/tiers/chr20", mode: 'copy', overwrite: true
     label 'derive'
 
     input:
@@ -262,7 +257,6 @@ process DERIVE_CHR20 {
  * -------------------------------------------------------------------------- */
 process DERIVE_EXOME {
     tag 'exome'
-    publishDir "${params.outdir}/tiers/exome", mode: 'copy', overwrite: true
     label 'derive'
 
     input:
@@ -340,7 +334,6 @@ process DERIVE_EXOME {
  * -------------------------------------------------------------------------- */
 process DERIVE_WGS {
     tag 'wgs'
-    publishDir "${params.outdir}/tiers/wgs", mode: 'copy', overwrite: true
     label 'derive_wgs'
 
     input:
