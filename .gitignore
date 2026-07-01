@@ -153,3 +153,12 @@ tasks-artifacts/
 
 # Local scratch (agent patches, realparity temp runs) — never commit
 _rpscratch/
+
+# secrets
+.env
+
+# nextflow
+.nextflow*
+work/
+.nextflow/
+.nextflow.log*
