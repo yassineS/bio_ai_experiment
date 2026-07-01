@@ -212,6 +212,38 @@ func TestReportJSONShape(t *testing.T) {
 	}
 }
 
+// TestWriteReportsCurrentDir guards the "-out ." case the Nextflow harness uses:
+// WriteReports must succeed when the output directory is "." or "". Previously it
+// called MkdirAll("."), which on some FUSE-backed filesystems (Fusion on AWS
+// Batch) spuriously returns "file exists" and threw away a completed run.
+func TestWriteReportsCurrentDir(t *testing.T) {
+	rep := &Report{Tier: "chr20", Reps: 1}
+	rep.finalize()
+
+	// Run inside a temp dir so the "." outputs land somewhere disposable.
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+
+	for _, dir := range []string{".", ""} {
+		jsonPath, mdPath, err := WriteReports(rep, dir)
+		if err != nil {
+			t.Fatalf("WriteReports(%q) errored: %v", dir, err)
+		}
+		if _, err := os.Stat(jsonPath); err != nil {
+			t.Errorf("WriteReports(%q): json missing: %v", dir, err)
+		}
+		if _, err := os.Stat(mdPath); err != nil {
+			t.Errorf("WriteReports(%q): md missing: %v", dir, err)
+		}
+	}
+}
+
 // TestMatrixCoversToolSurface asserts the matrix actually exercises every ported
 // tool family and a healthy number of cells, so a future refactor that silently
 // drops a tool is caught.

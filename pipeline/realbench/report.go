@@ -2,7 +2,9 @@ package realbench
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -123,8 +125,15 @@ func WriteReports(r *Report, dir string) (jsonPath, mdPath string, err error) {
 	if dir == "" {
 		dir = "."
 	}
-	if err = os.MkdirAll(dir, 0o755); err != nil {
-		return "", "", err
+	// The working directory (".") always exists, so skip creating it. This also
+	// avoids a quirk on some FUSE-backed filesystems (e.g. Fusion on AWS Batch),
+	// where MkdirAll(".") spuriously fails with "file exists" — which would throw
+	// away an entire completed run at the final report-writing step. Only create
+	// a real subdirectory, and tolerate it already existing.
+	if dir != "." {
+		if err = os.MkdirAll(dir, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+			return "", "", err
+		}
 	}
 	jsonPath = filepath.Join(dir, "realbench."+r.Tier+".json")
 	mdPath = filepath.Join(dir, "realbench."+r.Tier+".md")
