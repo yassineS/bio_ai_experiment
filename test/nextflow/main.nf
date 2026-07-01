@@ -296,7 +296,7 @@ process DERIVE_EXOME {
     # chr-named Gencode GRCh38 GFF3; a RefSeq NC_-accession GFF would need the
     # assembly-report rename first — see conf/hg002_grch38.config).
     zcat -f "${gff}" \
-        | awk -F'\t' 'BEGIN{OFS="\t"} !/^#/ && $3=="CDS" {print $1, $4-1, $5}' \
+        | awk -F'\\t' 'BEGIN{OFS="\\t"} !/^#/ && \$3=="CDS" {print \$1, \$4-1, \$5}' \
         | sort -k1,1 -k2,2n \
         | ${params.upstream_bin}/bedtools merge -i - > exome.bed
     if [ ! -s exome.bed ]; then
