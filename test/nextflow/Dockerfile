@@ -107,40 +107,40 @@ RUN cd reference_code/bcftools && \
     make -j"$(nproc)" && \
     cp bcftools /opt/upstream/
 
+# The "leaf" QC/format tools below are BEST-EFFORT: several are old C/C++ that
+# may not compile with a modern (gcc-12) toolchain — e.g. skewer trips a
+# std::map const-comparator static_assert. A failure here must NOT abort the
+# image: the tool is simply absent from /opt/upstream and realbench SKIPs its
+# cells. (htslib/samtools/bcftools above stay strict — they are the core.)
+
 # --- bedtools ----------------------------------------------------------------
-RUN cd reference_code/bedtools && \
-    make -j"$(nproc)" && \
-    cp bin/bedtools /opt/upstream/
+RUN cd reference_code/bedtools && make -j"$(nproc)" && cp bin/bedtools /opt/upstream/ \
+    || echo "WARN: bedtools upstream build failed; realbench bed* cells will SKIP"
 
 # --- seqtk -------------------------------------------------------------------
-RUN cd reference_code/seqtk && \
-    make && \
-    cp seqtk /opt/upstream/
+RUN cd reference_code/seqtk && make && cp seqtk /opt/upstream/ \
+    || echo "WARN: seqtk upstream build failed; realbench seqtk cells will SKIP"
 
 # --- sickle ------------------------------------------------------------------
-RUN cd reference_code/sickle && \
-    make && \
-    cp sickle /opt/upstream/
+RUN cd reference_code/sickle && make && cp sickle /opt/upstream/ \
+    || echo "WARN: sickle upstream build failed; realbench sickle cells will SKIP"
 
-# --- skewer ------------------------------------------------------------------
+# --- skewer (old C++; try a permissive std, else skip) -----------------------
 RUN cd reference_code/skewer && \
-    make && \
-    cp skewer /opt/upstream/
+    { make || make CXXFLAGS='-O3 -std=gnu++98 -fpermissive'; } && cp skewer /opt/upstream/ \
+    || echo "WARN: skewer upstream build failed; realbench skewer cells will SKIP"
 
 # --- fastp (needs libisal + libdeflate) --------------------------------------
-RUN cd reference_code/fastp && \
-    make -j"$(nproc)" && \
-    cp fastp /opt/upstream/
+RUN cd reference_code/fastp && make -j"$(nproc)" && cp fastp /opt/upstream/ \
+    || echo "WARN: fastp upstream build failed; realbench fastp cells will SKIP"
 
 # --- vcftools (autotools; apply the vendored tmpfile patch first) ------------
 RUN cd reference_code/vcftools && \
     (git apply ../patches/vcftools-tmpfile-vla-off-by-one.patch 2>/dev/null || \
      patch -p1 < ../patches/vcftools-tmpfile-vla-off-by-one.patch 2>/dev/null || \
      echo "vcftools patch already applied or not needed") && \
-    ./autogen.sh && \
-    ./configure && \
-    make -j"$(nproc)" && \
-    cp src/cpp/vcftools /opt/upstream/
+    ./autogen.sh && ./configure && make -j"$(nproc)" && cp src/cpp/vcftools /opt/upstream/ \
+    || echo "WARN: vcftools upstream build failed; realbench vcftools cells will SKIP"
 
 # --- prinseq (Perl script, not a compiled binary) ----------------------------
 # Installed as an executable wrapper so /opt/upstream/prinseq runs it via perl.
