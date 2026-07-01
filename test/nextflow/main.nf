@@ -52,6 +52,13 @@ params.tiers         = ['chr20', 'exome']   // wgs is defined but off by default
 params.reps          = 3
 params.outdir        = 'results'
 
+// Optional read subsampling for the derived tiers. When set to a fraction in
+// (0,1), the chr20/exome BAM slice is downsampled with `samtools view -s` so
+// the whole matrix stays fast on real data. The GIAB 300x source is far too
+// deep for a quick smoke: 0.0167 -> ~5x, 0.0333 -> ~10x, 0.1 -> ~30x. Leave
+// null (or 1) to keep full depth (the real benchmark). Applied in DERIVE_*.
+params.subsample     = null
+
 // Container + binary directories (defaults are the in-image install locations
 // built by the Dockerfile; override only if you mount alternative binaries).
 params.container     = 'ghcr.io/yassines/bio-ai-realbench:latest'
@@ -213,6 +220,7 @@ process DERIVE_CHR20 {
     def BT = "${params.upstream_bin}/bcftools"
     def TB = "${params.upstream_bin}/tabix"
     def BG = "${params.upstream_bin}/bgzip"
+    def SS = (params.subsample && "${params.subsample}".isNumber() && ("${params.subsample}" as float) > 0 && ("${params.subsample}" as float) < 1) ? "-s ${params.subsample}" : ""
     """
     set -euo pipefail
 
@@ -220,11 +228,11 @@ process DERIVE_CHR20 {
     ${ST} faidx "${ref}" "${C}" > chr20.ref.fa
     ${ST} faidx chr20.ref.fa
 
-    # --- BAM: region-slice, then index ----------------------------------------
+    # --- BAM: region-slice (optionally subsampled with ${SS}), then index -------
     if [ "${kind}" = "cram" ]; then
-        ${ST} view -@ ${task.cpus} -T "${ref}" -b "${aln}" "${C}" -o chr20.bam
+        ${ST} view -@ ${task.cpus} ${SS} -T "${ref}" -b "${aln}" "${C}" -o chr20.bam
     else
-        ${ST} view -@ ${task.cpus} -b "${aln}" "${C}" -o chr20.bam
+        ${ST} view -@ ${task.cpus} ${SS} -b "${aln}" "${C}" -o chr20.bam
     fi
     ${ST} index -@ ${task.cpus} chr20.bam
 
@@ -281,6 +289,7 @@ process DERIVE_EXOME {
     def BT = "${params.upstream_bin}/bcftools"
     def TB = "${params.upstream_bin}/tabix"
     def BG = "${params.upstream_bin}/bgzip"
+    def SS = (params.subsample && "${params.subsample}".isNumber() && ("${params.subsample}" as float) > 0 && ("${params.subsample}" as float) < 1) ? "-s ${params.subsample}" : ""
     """
     set -euo pipefail
 
@@ -298,11 +307,11 @@ process DERIVE_EXOME {
         exit 1
     fi
 
-    # --- BAM: region-slice over the exome targets -----------------------------
+    # --- BAM: region-slice over the exome targets (optionally subsampled) ------
     if [ "${kind}" = "cram" ]; then
-        ${ST} view -@ ${task.cpus} -T "${ref}" -b -L exome.bed "${aln}" -o exome.bam
+        ${ST} view -@ ${task.cpus} ${SS} -T "${ref}" -b -L exome.bed "${aln}" -o exome.bam
     else
-        ${ST} view -@ ${task.cpus} -b -L exome.bed "${aln}" -o exome.bam
+        ${ST} view -@ ${task.cpus} ${SS} -b -L exome.bed "${aln}" -o exome.bam
     fi
     ${ST} index -@ ${task.cpus} exome.bam
 
