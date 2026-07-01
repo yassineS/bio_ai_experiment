@@ -505,7 +505,7 @@ process AGGREGATE {
 /* -------------------------------------------------------------------------- *
  *  Workflow wiring
  * -------------------------------------------------------------------------- */
-workflow {
+workflow REALBENCH {
 
     main:
 
@@ -609,4 +609,11 @@ workflow {
     AGGREGATE(RUN_MATRIX.out.json.map { _tier, j -> j }.collect())
 
     log.info "realbench tiers=${params.tiers} reps=${params.reps} -> ${params.outdir}"
+}
+
+// Anonymous entry point so `nextflow run test/nextflow/main.nf` works directly
+// (the root ./main.nf wrapper imports REALBENCH for Seqera Platform, which
+// requires a repo-root main.nf).
+workflow {
+    REALBENCH()
 }
