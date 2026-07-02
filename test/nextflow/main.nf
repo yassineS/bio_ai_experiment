@@ -228,11 +228,15 @@ process DERIVE_CHR20 {
     ${ST} faidx "${ref}" "${C}" > chr20.ref.fa
     ${ST} faidx chr20.ref.fa
 
-    # --- BAM: region-slice (optionally subsampled with ${SS}), then index -------
+    # --- BAM: region-slice (optionally subsampled with ${SS}), then SORT + index.
+    # The GIAB novoalign source is tagged @HD SO:unsorted even though its reads
+    # are coordinate-ordered; samtools view copies that tag, which would force
+    # downstream tools (ours and upstream) onto slow, memory-heavy buffered paths.
+    # Sorting stamps a proper SO:coordinate header so every cell streams. --------
     if [ "${kind}" = "cram" ]; then
-        ${ST} view -@ ${task.cpus} ${SS} -T "${ref}" -b "${aln}" "${C}" -o chr20.bam
+        ${ST} view -@ ${task.cpus} ${SS} -T "${ref}" -u "${aln}" "${C}" | ${ST} sort -@ ${task.cpus} -o chr20.bam
     else
-        ${ST} view -@ ${task.cpus} ${SS} -b "${aln}" "${C}" -o chr20.bam
+        ${ST} view -@ ${task.cpus} ${SS} -u "${aln}" "${C}" | ${ST} sort -@ ${task.cpus} -o chr20.bam
     fi
     ${ST} index -@ ${task.cpus} chr20.bam
 
@@ -307,11 +311,14 @@ process DERIVE_EXOME {
         exit 1
     fi
 
-    # --- BAM: region-slice over the exome targets (optionally subsampled) ------
+    # --- BAM: region-slice over the exome targets (optionally subsampled), then
+    # SORT + index. The GIAB source is tagged SO:unsorted despite being
+    # coordinate-ordered; sorting stamps a proper SO:coordinate header so
+    # downstream cells stream instead of buffering the whole slice in memory. ----
     if [ "${kind}" = "cram" ]; then
-        ${ST} view -@ ${task.cpus} ${SS} -T "${ref}" -b -L exome.bed "${aln}" -o exome.bam
+        ${ST} view -@ ${task.cpus} ${SS} -T "${ref}" -u -L exome.bed "${aln}" | ${ST} sort -@ ${task.cpus} -o exome.bam
     else
-        ${ST} view -@ ${task.cpus} ${SS} -b -L exome.bed "${aln}" -o exome.bam
+        ${ST} view -@ ${task.cpus} ${SS} -u -L exome.bed "${aln}" | ${ST} sort -@ ${task.cpus} -o exome.bam
     fi
     ${ST} index -@ ${task.cpus} exome.bam
 
