@@ -441,7 +441,6 @@ process RUN_MATRIX {
         -our-bin "${params.our_bin}" \
         -upstream-bin "${params.upstream_bin}" \
         -reps ${params.reps} \
-        -tmp . \
         -report-only \
         -out .
     """
