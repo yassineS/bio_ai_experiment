@@ -330,7 +330,18 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) error {
 	if err != nil {
 		return fmt.Errorf("samtools consensus: %w", err)
 	}
-	return consensusFromReader(rd, rd.Header(), out, opts)
+	hdr := rd.Header()
+	// Whole-input fast path: a coordinate-sorted stream with no region and no
+	// all-positions mode is piled up contig-by-contig by the memory-bounded
+	// engine (which defaults to a whole-contig window per contig), instead of
+	// draining every read into per-chrom buckets — the source of the whole-contig
+	// peak RSS (4.8 GiB on a chr20 slice). Output is byte-identical to
+	// consensusFromReader (same records, same order); genuinely-unsorted input
+	// (no SO:coordinate) keeps the buffered path.
+	if len(opts.Regions) == 0 && !opts.AllPositions && !opts.AllContigs && headerIsCoordinateSorted(hdr) {
+		return consensusFromSortedReader(rd, hdr, out, opts)
+	}
+	return consensusFromReader(rd, hdr, out, opts)
 }
 
 // consensusFromReader is the shared consensus engine fed by both the linear
