@@ -2,6 +2,7 @@ package bcftools
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -329,17 +330,25 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) (int, error) 
 	bw := bufio.NewWriter(out)
 	applied := 0
 	for _, rec := range opts.Reference {
-		seq := append([]byte(nil), rec.Sequence...)
-		seq = applyMask(seq, rec.ID, opts.Mask, opts.MaskWith)
-		if opts.Absent != 0 {
-			// Upstream's -a CHAR replaces positions NOT covered by any
-			// variant. v1 implementation: mark every position not later
-			// rewritten as opts.Absent. We approximate by zeroing the
-			// sequence first and writing back ref/alt as we go; this is
-			// the standard "absent" semantics used by upstream when the
-			// VCF has at most one variant per position.
-			for i := range seq {
-				seq[i] = opts.Absent
+		ref0 := applyMask(append([]byte(nil), rec.Sequence...), rec.ID, opts.Mask, opts.MaskWith)
+		// Build the consensus in a single left-to-right pass: out holds the
+		// finalized output and consumed is the next unconsumed index in ref0, so
+		// the untouched reference tail is copied exactly ONCE (at the end) rather
+		// than the whole sequence being rebuilt for every variant. This is
+		// O(len+variants) instead of the previous O(len*variants).
+		out := make([]byte, 0, len(ref0))
+		consumed := 0
+		// emitGap appends the reference span ref0[from:to] to out — or, with
+		// -a/--absent set, that many copies of the absent fill char (upstream's
+		// "replace positions no variant covers" behaviour).
+		emitGap := func(from, to int) {
+			if from >= to {
+				return
+			}
+			if opts.Absent != 0 {
+				out = append(out, bytes.Repeat([]byte{opts.Absent}, to-from)...)
+			} else {
+				out = append(out, ref0[from:to]...)
 			}
 		}
 
@@ -414,23 +423,27 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) (int, error) 
 			// drive opts.Absent's "fill the original ref" logic when
 			// absent is set: in that path we restore the REF bases.
 			origStart := v.Pos - 1
+			end0 := origStart + len(ref)
 			start := origStart + offset
 			end := start + len(ref)
-			if opts.Absent != 0 {
-				// Restore the REF bases (zeroed above) before we modify.
-				copy(seq[start:end], ref)
-			}
-			if start < 0 || end > len(seq) {
+			if start < 0 || end0 > len(ref0) {
 				continue
 			}
 			if isRefAllele {
-				// Reference allele selected (upstream ialt==0): the sequence
-				// is left unchanged, but the freeze position still advances to
+				// Reference allele selected (upstream ialt==0): the reference
+				// bases stay in place, but the freeze position still advances to
 				// the last reference base the record spans (verified against
 				// upstream: a 0/0 record at a position causes a subsequent
-				// same-position substitution to be dropped as overlapping,
-				// while a clean insertion there is still applied). A ref
-				// allele is never a net insertion, so prevIsInsert is false.
+				// same-position substitution to be dropped as overlapping, while
+				// a clean insertion there is still applied). With --absent the ref
+				// bases must be emitted explicitly (surrounded by the fill char);
+				// otherwise they are simply left in the untouched tail and emitted
+				// as a later gap. A ref allele is never a net insertion.
+				if opts.Absent != 0 {
+					emitGap(consumed, origStart)
+					out = append(out, ref...)
+					consumed = end0
+				}
 				if newFrz := origStart + len(ref) - 1; newFrz > frzPos {
 					frzPos = newFrz
 					prevIsInsert = false
@@ -456,22 +469,36 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) (int, error) 
 					ibeg++
 				}
 			}
-			newSeq := make([]byte, 0, len(seq)+len(alt)-len(ref))
-			newSeq = append(newSeq, seq[:start+ibeg]...)
+			// emittedAlt is the run written in place of the reference span
+			// [posIns,end). With mark-del padding it is padded to len(ref) so
+			// downstream coordinates stay aligned.
+			var emittedAlt []byte
 			if opts.MarkDel.Mode == MarkChar && len(alt) < len(ref) {
-				// Pad the deletion with a literal character so the
-				// downstream coordinates stay aligned. The total
-				// emitted length equals len(ref).
-				newSeq = append(newSeq, alt[ibeg:]...)
-				for i := 0; i < len(ref)-len(alt); i++ {
-					newSeq = append(newSeq, opts.MarkDel.Char)
-				}
+				emittedAlt = append(emittedAlt, alt[ibeg:]...)
+				emittedAlt = append(emittedAlt, bytes.Repeat([]byte{opts.MarkDel.Char}, len(ref)-len(alt))...)
 				emitted = len(ref)
 			} else {
-				newSeq = append(newSeq, alt[ibeg:]...)
+				emittedAlt = []byte(alt[ibeg:])
 			}
-			newSeq = append(newSeq, seq[end:]...)
-			seq = newSeq
+			// Splice emittedAlt in for the reference span [posIns,end). The common
+			// case — the variant lands at or after the output frontier — is a pure
+			// append of the intervening gap plus emittedAlt, so the reference tail
+			// is never recopied. A same-position rewrite (posIns already inside the
+			// finalized output) does a small local splice near the frontier.
+			posIns := start + ibeg
+			if posIns >= len(out) {
+				emitGap(consumed, origStart+ibeg)
+				out = append(out, emittedAlt...)
+				consumed = end0
+			} else {
+				if end > len(out) {
+					emitGap(consumed, end0)
+					consumed = end0
+				}
+				tail := append([]byte(nil), out[end:]...)
+				out = append(out[:posIns], emittedAlt...)
+				out = append(out, tail...)
+			}
 			// Record the indel as a chain gap before advancing the offset.
 			// Upstream pushes only when the emitted length differs from the
 			// reference run (len_diff != 0); mark-del padding keeps the run
@@ -507,6 +534,9 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) (int, error) 
 			}
 			applied++
 		}
+		// Emit the untouched reference tail exactly once.
+		emitGap(consumed, len(ref0))
+		seq := out
 		if chain != nil {
 			if err := cw.writeChain(chain, rec.ID, len(rec.Sequence)); err != nil {
 				return applied, err

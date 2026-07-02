@@ -13,7 +13,13 @@ on:
       - test/nextflow/Dockerfile
       - pipeline/realbench/**
       - pipeline/cmd/realbench/**
+      # Our tool ports and the shared libraries are baked into the image, so a
+      # fix to any of them must rebuild it — otherwise the benchmark would run
+      # stale binaries. (The gha cache keeps incremental rebuilds ~2 min.)
+      - tools/**
+      - pkg/**
       - go.mod
+      - go.sum
       - .github/workflows/realbench-image.yml
 
 permissions:
