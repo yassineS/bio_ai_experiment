@@ -60,6 +60,8 @@ func run(argv []string) int {
 		upBin   = fs.String("upstream-bin", "", "dir of upstream tool binaries; default resolves the vendored reference_code/ build locations")
 		reps    = fs.Int("reps", 3, "measurement repetitions (wall/CPU = min, RSS = max)")
 		outDir  = fs.String("out", "", "report output directory (default: current directory)")
+		tmpRoot = fs.String("tmp", "", "scratch directory for intermediate files (default: system temp). Point this at the task work dir on cloud/Fusion so scratch is fast, visible, and off the small instance root volume.")
+		reportO = fs.Bool("report-only", false, "always exit 0 even when parity divergences (DIFF) are found; use for benchmark collection (the default exits 1 on DIFF to gate CI).")
 		verbose = fs.Bool("v", false, "verbose progress logging to stderr")
 		showVer = fs.Bool("version", false, "print version and exit")
 	)
@@ -75,7 +77,17 @@ func run(argv []string) int {
 		*reps = 1
 	}
 
-	tmpDir, err := os.MkdirTemp("", "realbench-")
+	// Scratch root: default to the system temp dir, but honour -tmp so cloud runs
+	// can keep intermediates in the (large, fast, S3-backed) task work dir rather
+	// than the instance's small root /tmp. If -tmp names a dir that does not yet
+	// exist, create it first.
+	if *tmpRoot != "" {
+		if err := os.MkdirAll(*tmpRoot, 0o755); err != nil && !os.IsExist(err) {
+			fmt.Fprintln(os.Stderr, "realbench: creating -tmp dir:", err)
+			return 1
+		}
+	}
+	tmpDir, err := os.MkdirTemp(*tmpRoot, "realbench-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "realbench: creating temp dir:", err)
 		return 1
@@ -124,8 +136,11 @@ func run(argv []string) int {
 	fmt.Printf("wrote %s\n", mdPath)
 
 	// Exit non-zero on a genuine parity divergence, so this can gate CI on a
-	// data-bearing machine. A run with no data (all SKIP) exits 0.
-	if rep.Diff > 0 {
+	// data-bearing machine. A run with no data (all SKIP) exits 0. With
+	// -report-only the run always exits 0 (the reports are written either way),
+	// so a benchmark pipeline can collect DIFF/perf results without the harness
+	// tripping the orchestrator's error handling.
+	if rep.Diff > 0 && !*reportO {
 		return 1
 	}
 	return 0
