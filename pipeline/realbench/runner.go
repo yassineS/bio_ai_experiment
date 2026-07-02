@@ -202,8 +202,11 @@ func runSide(cfg Config, spec CellSpec, bin string, upStub []string, perl bool) 
 		}
 		return s, &m, nil
 
-	case PostNone:
-		// Exit status is the signal; output discarded.
+	case PostNone, PostOursOnly:
+		// Exit status is the signal; output discarded. PostNone (e.g. quickcheck)
+		// compares the two sides' exit verdicts; PostOursOnly has no upstream pair
+		// to compare against, so it is a pure perf/exit measurement. Either way we
+		// only need to run the command reps times and surface any execution error.
 		m, rerr := repeatRun(cfg.Reps, runBin, args, "", workDir, env, nil)
 		return sum, &m, rerr
 
