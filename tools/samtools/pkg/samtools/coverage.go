@@ -83,10 +83,20 @@ type coverageRefState struct {
 	// position, the sum and count of qualifying base qualities. Upstream only
 	// folds these into the mean baseQ at positions counted as covered (depth
 	// >= mindepth), so they are kept per-position and summed in
-	// computeCoverageStats rather than globally here.
+	// computeCoverageStats. They are only allocated when perPosBaseQ is set
+	// (mindepth > 1 or a region restriction) — otherwise the whole-contig,
+	// mindepth<=1 case uses the global sums below, since every base then sits at
+	// a covered position. Keeping per-position maps only when required avoids an
+	// O(reference length) blow-up (a whole-chromosome OOM on deep BAMs).
 	baseQSumAtPos map[int]uint64
 	baseQCntAtPos map[int]uint64
-	mapQSum       uint64
+	// baseQSumGlobal / baseQCntGlobal accumulate the same quantities over ALL
+	// qualifying bases; used directly when perPosBaseQ is false.
+	baseQSumGlobal uint64
+	baseQCntGlobal uint64
+	// perPosBaseQ records whether the per-position baseQ maps are populated.
+	perPosBaseQ bool
+	mapQSum     uint64
 }
 
 // defaultCoverageNBins is the histogram column count used when no terminal
@@ -115,14 +125,22 @@ func Coverage(in io.Reader, w io.Writer, opts CoverageOptions) error {
 		minDepth = 1
 	}
 
+	// Per-position baseQ bookkeeping is only needed when a base can sit at an
+	// UNcovered position (mindepth > 1) or the output is region-restricted; the
+	// common whole-contig, mindepth<=1 case uses the global sums instead.
+	perPosBaseQ := minDepth > 1 || len(opts.Regions) > 0
 	states := make([]*coverageRefState, len(hdr.Refs))
 	for i, ref := range hdr.Refs {
-		states[i] = &coverageRefState{
-			length:        ref.Length,
-			posDelta:      map[int]int{},
-			baseQSumAtPos: map[int]uint64{},
-			baseQCntAtPos: map[int]uint64{},
+		st := &coverageRefState{
+			length:      ref.Length,
+			posDelta:    map[int]int{},
+			perPosBaseQ: perPosBaseQ,
 		}
+		if perPosBaseQ {
+			st.baseQSumAtPos = map[int]uint64{}
+			st.baseQCntAtPos = map[int]uint64{}
+		}
+		states[i] = st
 	}
 
 	for {
@@ -168,21 +186,49 @@ func Coverage(in io.Reader, w io.Writer, opts CoverageOptions) error {
 			length := int(op.Length())
 			switch op.Op() {
 			case sam.CigarMatch, sam.CigarEqual, sam.CigarMismatch:
-				for i := 0; i < length; i++ {
-					var q uint8 = 0xff
-					if queryPos+i < len(rec.Qual) {
-						q = rec.Qual[queryPos+i]
+				if opts.MinBaseQ == 0 {
+					// No base-quality filter: every base of the run counts toward
+					// depth, so record the depth delta ONCE for the whole run
+					// instead of a posDelta entry per reference position (the
+					// telescoping intermediate entries are net-zero — same sweep,
+					// O(1) instead of O(length)).
+					st.posDelta[refPos]++
+					st.posDelta[refPos+length]--
+					for i := 0; i < length; i++ {
+						var q uint8 = 0xff
+						if queryPos+i < len(rec.Qual) {
+							q = rec.Qual[queryPos+i]
+						}
+						if q != 0xff {
+							st.baseQSumGlobal += uint64(q)
+							st.baseQCntGlobal++
+							if st.perPosBaseQ {
+								st.baseQSumAtPos[refPos+i] += uint64(q)
+								st.baseQCntAtPos[refPos+i]++
+							}
+						}
 					}
-					if opts.MinBaseQ > 0 && q < opts.MinBaseQ {
-						continue
+				} else {
+					for i := 0; i < length; i++ {
+						var q uint8 = 0xff
+						if queryPos+i < len(rec.Qual) {
+							q = rec.Qual[queryPos+i]
+						}
+						if q < opts.MinBaseQ {
+							continue
+						}
+						pos := refPos + i
+						if q != 0xff {
+							st.baseQSumGlobal += uint64(q)
+							st.baseQCntGlobal++
+							if st.perPosBaseQ {
+								st.baseQSumAtPos[pos] += uint64(q)
+								st.baseQCntAtPos[pos]++
+							}
+						}
+						st.posDelta[pos]++
+						st.posDelta[pos+1]--
 					}
-					pos := refPos + i
-					if q != 0xff {
-						st.baseQSumAtPos[pos] += uint64(q)
-						st.baseQCntAtPos[pos]++
-					}
-					st.posDelta[pos]++
-					st.posDelta[pos+1]--
 				}
 				refPos += length
 				queryPos += length
@@ -331,18 +377,63 @@ func walkDepths(start, end int32, st *coverageRefState, minDepth int) map[int]in
 	return out
 }
 
-// computeCoverageStats resolves the per-position depths into the covered-base /
-// summed-coverage / baseQ totals for the half-open 0-based window
-// [start-1, end). Positions with depth < minDepth are not counted as covered,
-// mirroring upstream's `depth >= mindepth` gate; baseQ sums are folded in only
-// at covered positions to match upstream's per-column accounting.
-func computeCoverageStats(start, end int32, st *coverageRefState, minDepth int) coverageStats {
-	cs := coverageStats{covDepth: walkDepths(start, end, st, minDepth)}
-	for p, depth := range cs.covDepth {
-		cs.covBases++
-		cs.summedCoverage += uint64(depth)
-		cs.baseQSum += st.baseQSumAtPos[p]
-		cs.baseQCnt += st.baseQCntAtPos[p]
+// computeCoverageStats resolves the covered-base / summed-coverage / baseQ
+// totals for the half-open 0-based window [start-1, end) by SWEEPING the depth
+// delta intervals — it never materialises a per-position depth map for the
+// tabular row (the O(reference length) blow-up). Positions with depth < minDepth
+// are not counted as covered, mirroring upstream's `depth >= mindepth` gate.
+// baseQ is taken from the global sums when the per-position maps were not kept
+// (the whole-contig, mindepth<=1 case — every base then sits at a covered
+// position), else summed per covered position. When wantCovDepth is set (the
+// histogram renderer) the per-position depth map is materialised as before.
+func computeCoverageStats(start, end int32, st *coverageRefState, minDepth int, wantCovDepth bool) coverageStats {
+	var cs coverageStats
+	if wantCovDepth {
+		cs.covDepth = map[int]int{}
+	}
+	lo := int(start) - 1
+	hi := int(end)
+	if len(st.posDelta) > 0 {
+		keys := make([]int, 0, len(st.posDelta))
+		for k := range st.posDelta {
+			keys = append(keys, k)
+		}
+		sort.Ints(keys)
+		depth := 0
+		prev := keys[0]
+		for _, k := range keys {
+			if depth >= minDepth && k > prev {
+				from, to := prev, k
+				if from < lo {
+					from = lo
+				}
+				if to > hi {
+					to = hi
+				}
+				if to > from {
+					n := uint64(to - from)
+					cs.covBases += n
+					cs.summedCoverage += uint64(depth) * n
+					if st.perPosBaseQ {
+						for p := from; p < to; p++ {
+							cs.baseQSum += st.baseQSumAtPos[p]
+							cs.baseQCnt += st.baseQCntAtPos[p]
+						}
+					}
+					if wantCovDepth {
+						for p := from; p < to; p++ {
+							cs.covDepth[p] = depth
+						}
+					}
+				}
+			}
+			depth += st.posDelta[k]
+			prev = k
+		}
+	}
+	if !st.perPosBaseQ {
+		cs.baseQSum = st.baseQSumGlobal
+		cs.baseQCnt = st.baseQCntGlobal
 	}
 	return cs
 }
@@ -358,7 +449,7 @@ func summariseCoverage(name string, start, end int32, st *coverageRefState, minD
 	if st.nSelectedReads > 0 {
 		row.MeanMapQ = float64(st.mapQSum) / float64(st.nSelectedReads)
 	}
-	cs := computeCoverageStats(start, end, st, minDepth)
+	cs := computeCoverageStats(start, end, st, minDepth, false)
 	if cs.baseQCnt > 0 {
 		row.MeanBaseQ = float64(cs.baseQSum) / float64(cs.baseQCnt)
 	}
@@ -403,7 +494,7 @@ func printCoverageHist(w io.Writer, name string, start, end int32, st *coverageR
 		binWidth = 1
 	}
 
-	cs := computeCoverageStats(start, end, st, minDepth)
+	cs := computeCoverageStats(start, end, st, minDepth, true)
 
 	// Fill the per-bin histogram counts. Under -D (plot depth) upstream sums
 	// the depth at every position with depth >= 1 — BEFORE the mindepth gate
