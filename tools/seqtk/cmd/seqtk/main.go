@@ -719,12 +719,14 @@ func cutNCommand() {
 	var hv subFlags
 	hv.register(fs, true)
 	var minN int
+	var penalty int
 	var gaps bool
 	var output string
 
 	// -1 sentinel so we can detect "not provided" — required flag with no default.
 	cliflag.IntVar(fs, &minN, "n", "min-n", -1, "Minimum N-run length to cut at (required)")
-	cliflag.BoolVar(fs, &gaps, "g", "gaps", false, "Print BED-format records of cut N-runs to stderr")
+	cliflag.IntVar(fs, &penalty, "p", "penalty", 10, "Penalty for a non-N base when bridging an N tract")
+	cliflag.BoolVar(fs, &gaps, "g", "gaps", false, "Print gaps only (no sequence): name<TAB>start0<TAB>end")
 	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
 
 	fs.Usage = func() {
@@ -745,14 +747,15 @@ Arguments:
   <input>    Input FASTA/FASTQ file (use '-' for stdin, supports .gz)
 
 Options:
-  -n, --min-n INT        Minimum N-run length to cut at (required)
-  -g, --gaps             Print cut N-runs to stderr in BED format
-                         (chrom<TAB>start0<TAB>end<TAB>N; 0-based half-open)
+  -n, --min-n INT        Minimum N tract length to cut at (required)
+  -p, --penalty INT      Penalty for a non-N base when bridging an N tract [10]
+  -g, --gaps             Print gaps only, no sequence
+                         (name<TAB>start0<TAB>end; 0-based half-open)
   -o, --output FILE      Output file (default: stdout, supports .gz)
 
 Examples:
   seqtk cutN -n 10 genome.fa > fragments.fa
-  seqtk cutN -n 5 -g genome.fa > fragments.fa 2> gaps.bed
+  seqtk cutN -n 1 -g genome.fa > gaps.bed
 
 `)
 	}
@@ -791,10 +794,7 @@ Examples:
 	}
 	defer out.Close()
 
-	opts := seqtk.CutNOptions{MinN: minN, EmitGaps: gaps}
-	if gaps {
-		opts.GapsW = os.Stderr
-	}
+	opts := seqtk.CutNOptions{MinN: minN, Penalty: penalty, GapOnly: gaps}
 
 	if err := seqtk.CutN(input, out, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

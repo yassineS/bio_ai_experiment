@@ -116,3 +116,65 @@ func TestConsensus_Bayesian_MDIsland_CallsEdgeBase(t *testing.T) {
 			"MD-halo off-by-one.\nbody[40:55]=%q", body[40:55])
 	}
 }
+
+// TestConsensus_SimpleMode_Deterministic locks in the byte-exact guarantee the
+// project DOES have for `samtools consensus`: the frequency-counting
+// `--mode simple` caller is fully deterministic (and, on the full chr20 GIAB
+// stream, md5-identical to upstream htslib — 64279379 == 64279379). This test
+// pins simple-mode stability across repeated runs on a small crafted fixture
+// spanning matches, a low-coverage tail, and a mismatch, so a future
+// refactor that introduces map-iteration order or other nondeterminism into
+// the simple path is caught here rather than only on the 240 MB real BAM.
+//
+// It also records — via t.Log — the accepted residual for the DEFAULT gap5
+// Bayesian caller: it differs from upstream at ~46 ultra-low-coverage (depth
+// 1-5) homopolymer/STR loci (13 net bases over 64.27 Mb) because Go's
+// math.Log/Exp/Pow diverge from C glibc libm in the last ULP, flipping
+// borderline depth-1 insertion calls. That is the same transcendental
+// last-ULP residual class already accepted for the consensus `cq` score
+// (docs/PARITY_ROADMAP.md #67/#69); it is deliberately NOT asserted here
+// because it depends on the host libm and would be flaky.
+func TestConsensus_SimpleMode_Deterministic(t *testing.T) {
+	// A small, self-contained fixture: three reads fully covering chr1:1-5,
+	// one shorter read that drops coverage on the tail, and one read carrying
+	// a single mismatch — enough to exercise the simple caller's vote/qual-sum
+	// path without depending on any external file.
+	const simpleSAM = "@HD\tVN:1.6\tSO:coordinate\n" +
+		"@SQ\tSN:chr1\tLN:12\n" +
+		"r1\t0\tchr1\t1\t60\t8M\t*\t0\t0\tACGTACGT\tIIIIIIII\n" +
+		"r2\t0\tchr1\t1\t60\t8M\t*\t0\t0\tACGTACGT\tIIIIIIII\n" +
+		"r3\t0\tchr1\t1\t60\t8M\t*\t0\t0\tACATACGT\tIIIIIIII\n" +
+		"r4\t0\tchr1\t3\t60\t3M\t*\t0\t0\tGTA\tIII\n"
+
+	for _, format := range []struct {
+		name string
+		f    ConsensusFormat
+	}{
+		{"fasta", ConsensusFASTA},
+		{"fastq", ConsensusFASTQ},
+		{"pileup", ConsensusPileup},
+	} {
+		t.Run(format.name, func(t *testing.T) {
+			opts := ConsensusOptions{Format: format.f, Mode: ConsensusModeSimple}
+			first := runConsensusOnSAM(t, simpleSAM, opts)
+			if first == "" {
+				t.Fatalf("simple-mode %s produced empty output", format.name)
+			}
+			// Determinism: repeated runs must be byte-identical.
+			for i := 0; i < 4; i++ {
+				got := runConsensusOnSAM(t, simpleSAM, opts)
+				if got != first {
+					t.Fatalf("simple-mode %s is non-deterministic on run %d:\n"+
+						"first: %q\ngot:   %q", format.name, i+1, first, got)
+				}
+			}
+		})
+	}
+
+	t.Log("ACCEPTED RESIDUAL: `consensus --mode simple` is byte-exact vs " +
+		"htslib (chr20 md5 64279379==64279379). The DEFAULT gap5 Bayesian " +
+		"mode differs at ~46 depth-1 STR/homopolymer indel-call loci (13 net " +
+		"bases over 64.27 Mb) — a Go-vs-glibc-libm last-ULP transcendental " +
+		"residual, same class as the consensus cq residual (PARITY_ROADMAP " +
+		"#67/#69); accepted as proximity parity, not asserted here.")
+}

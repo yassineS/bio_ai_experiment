@@ -470,6 +470,94 @@ func (br *Reader) Close() error {
 	return nil
 }
 
+// DecompressedRemainder returns the bytes of the current block that have been
+// decoded but not yet consumed through Read — i.e. br.block[br.off:]. After the
+// caller has read a stream prefix that ended mid-block (e.g. a BAM header that
+// shares its BGZF block with the first records), these are the leftover
+// decompressed payload bytes of that block. The returned slice aliases the
+// Reader's internal buffer and is only valid until the next Read/nextBlock, so
+// callers must consume or copy it immediately. It is the Go analogue of
+// htslib's `in->uncompressed_block + in->block_offset` tail that samtools cat
+// re-emits before switching to a verbatim compressed-block copy.
+func (br *Reader) DecompressedRemainder() []byte {
+	if br.off >= len(br.block) {
+		return nil
+	}
+	return br.block[br.off:]
+}
+
+// RawRemaining returns an io.Reader over the still-unconsumed *compressed* bytes
+// of the underlying stream: every BGZF block that begins after the one currently
+// decoded into the Reader. Because nextBlock reads whole blocks and never reads
+// ahead, the underlying stream is positioned exactly at a block boundary, so the
+// bytes read from here are complete BGZF blocks (including the input's trailing
+// EOF block) that can be copied verbatim to another BGZF stream without
+// inflating them. It is the Go analogue of htslib's bgzf_raw_read loop in
+// bam_cat. Callers must first drain DecompressedRemainder (those bytes belong to
+// the block *before* this boundary); mixing Read and RawRemaining reads is not
+// supported.
+func (br *Reader) RawRemaining() io.Reader {
+	return br.counted
+}
+
+// CopyRawTrimEOF copies compressed bytes from src to dst, dropping the final
+// 28-byte BGZF EOF block. It mirrors htslib bam_cat's ebuf/es hold-back: when
+// concatenating BGZF streams verbatim, every input's terminating EOF marker
+// must be removed so the joined output carries exactly one EOF block (which the
+// caller appends after the last input). CopyRawTrimEOF streams through a rolling
+// 28-byte hold-back buffer, so it never buffers the whole input. It returns the
+// number of bytes written to dst.
+//
+// It returns ErrTruncated when src holds fewer than 28 bytes (no EOF block, so
+// the input was truncated). If the trailing 28 bytes are not the canonical EOF
+// block, they are preserved (written through) rather than dropped — matching
+// htslib's "unexpected block structure" behaviour of emitting the bytes with a
+// warning, so no data is silently lost.
+func CopyRawTrimEOF(dst io.Writer, src io.Reader) (int64, error) {
+	const eof = 28 // the BGZF EOF block is always exactly 28 bytes.
+	buf := make([]byte, 64*1024)
+	hold := make([]byte, 0, eof+len(buf))
+	var written int64
+	sawAny := false
+	for {
+		n, rerr := src.Read(buf)
+		if n > 0 {
+			sawAny = true
+			hold = append(hold, buf[:n]...)
+			if len(hold) > eof {
+				emit := len(hold) - eof
+				m, werr := dst.Write(hold[:emit])
+				written += int64(m)
+				if werr != nil {
+					return written, werr
+				}
+				// Retain only the trailing eof bytes for the next round.
+				hold = append(hold[:0], hold[emit:]...)
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return written, rerr
+		}
+	}
+	if !sawAny || len(hold) < eof {
+		return written, ErrTruncated
+	}
+	// hold now holds exactly the trailing EOF block; drop it — unless it is not
+	// the canonical marker, in which case preserve the bytes (matches htslib's
+	// warn-and-emit path so unexpected trailing data is not lost).
+	if !bytes.Equal(hold, EOFBlock) {
+		m, werr := dst.Write(hold)
+		written += int64(m)
+		if werr != nil {
+			return written, werr
+		}
+	}
+	return written, nil
+}
+
 // VirtualOffset returns the BGZF virtual offset of the next byte that Read
 // will deliver. The high 48 bits are the compressed-stream offset of the
 // block that owns the next byte; the low 16 bits are the uncompressed

@@ -126,11 +126,14 @@ type ViewOptions struct {
 	// conventional sibling `<input>.csi`/`<input>.bai` lookup; the index
 	// kind (CSI or BAI) is auto-detected from the file's magic bytes.
 	IndexPath string
-	// Threads is the BGZF compression worker count from `-@/--threads`. A
-	// value above 1 enables the parallel BGZF back end for BAM output; the
-	// decoded records are byte-identical to single-threaded output. It has no
-	// effect on SAM output (uncompressed text) and is a no-op for CRAM, whose
-	// container does not yet parallelise. 0 or 1 means single-threaded.
+	// Threads is the worker count from `-@/--threads`, applied to both input
+	// decode and output encode. A value >= 2 enables the parallel BGZF back
+	// end for BAM output and the block/slice-parallel input decoder for
+	// BGZF-wrapped BAM and CRAM input (via alnio.NewReaderThreaded, which
+	// drives cram.RecordReader.SetThreads for CRAM); the decoded records and
+	// every downstream byte are identical to single-threaded output for any
+	// thread count — only decode/encode throughput changes. It has no effect
+	// on SAM output (uncompressed text). 0 or 1 means single-threaded.
 	Threads int
 }
 
@@ -1302,7 +1305,10 @@ func loadBedFilter(path string) (func(*sam.Record) bool, error) {
 		trees[chrom] = bed.NewIntervalTree(recs)
 	}
 	return func(rec *sam.Record) bool {
-		if rec.IsUnmapped() || rec.RName == "" || rec.RName == "*" {
+		// Upstream sam_view.c drops a record only when tid<0 (RName unset or
+		// "*"); a placed-but-unmapped read (FUNMAP with a valid RName) is
+		// retained and clamped, so we must NOT test IsUnmapped() here.
+		if rec.RName == "" || rec.RName == "*" {
 			return false
 		}
 		t, ok := trees[rec.RName]
@@ -1313,12 +1319,17 @@ func loadBedFilter(path string) (func(*sam.Record) bool, error) {
 		if pos0 < 0 {
 			pos0 = 0
 		}
+		// Mirror htslib bam_endpos: an unmapped read has no CIGAR footprint
+		// so its span is forced to zero, and any zero-length footprint
+		// (CIGAR `*`, all-clip, or unmapped) is widened to a single base so
+		// the record spans at least [pos0, pos0+1) and is tested against the
+		// interval tree — matching buildRegionFilter's clamp exactly.
 		refLen := rec.Cigar.ReferenceLength()
+		if rec.IsUnmapped() {
+			refLen = 0
+		}
 		if refLen <= 0 {
-			// Zero-length footprint (CIGAR `*` or all-clip) cannot
-			// overlap any BED interval per upstream bed_overlap's strict
-			// half-open semantics. Drop the record.
-			return false
+			refLen = 1
 		}
 		q := &bed.Record{Chrom: rec.RName, ChromStart: pos0, ChromEnd: pos0 + refLen}
 		return len(t.Query(q)) > 0

@@ -44,6 +44,26 @@ func (c *byteCursor) readN(n int) ([]byte, error) {
 	return out, nil
 }
 
+// borrowN returns the next n bytes as a sub-slice of the cursor's own
+// backing buffer — no copy — advancing past them. The returned slice is
+// capped at exactly n (a 3-index slice) so a later append reallocates
+// rather than writing into the following bytes. Unlike readN the result
+// ALIASES the block's decompressed buffer, so it is valid only until that
+// buffer is released and MUST NOT be retained or mutated; callers use it
+// only for values they immediately copy out (a string() conversion or a
+// numeric parse). It returns an error if fewer than n bytes remain.
+func (c *byteCursor) borrowN(n int) ([]byte, error) {
+	if n < 0 {
+		return nil, fmt.Errorf("cram: external block read of negative length %d", n)
+	}
+	if c.pos+n > len(c.data) {
+		return nil, fmt.Errorf("cram: external block exhausted: need %d bytes, %d remain", n, c.remaining())
+	}
+	out := c.data[c.pos : c.pos+n : c.pos+n]
+	c.pos += n
+	return out, nil
+}
+
 // readInt reads one version-aware unsigned 32-bit integer from the
 // cursor (ITF-8 for v2/v3, uint7 for v4), advancing past it. It is the
 // EXTERNAL-integer read used by the v2/v3 integer data series; v4 stores
@@ -90,6 +110,12 @@ type seriesSource struct {
 	core *bitReader
 	// external lazily creates and caches one byteCursor per content id.
 	external map[int32]*byteCursor
+	// cursors is the same set of created cursors held as an insertion-ordered
+	// slice, so consumed() can sum their positions by iterating a slice instead
+	// of ranging the external map on every record and feature (a hot per-record
+	// and per-feature cost on a large CRAM). It is appended to in lockstep with
+	// external and is never used for lookup, so the two stay consistent.
+	cursors []*byteCursor
 	// blocks maps a content id to the external block's decompressed
 	// payload.
 	blocks map[int32][]byte
@@ -123,7 +149,7 @@ func (s *seriesSource) totalBytes() int32 {
 // the loop can stop instead of producing unbounded zero-byte items.
 func (s *seriesSource) consumed() int64 {
 	total := int64(s.core.pos)*8 - int64(s.core.nb)
-	for _, c := range s.external {
+	for _, c := range s.cursors {
 		total += int64(c.pos) * 8
 	}
 	return total
@@ -151,6 +177,7 @@ func (s *seriesSource) cursor(id int32) (*byteCursor, error) {
 	}
 	c := &byteCursor{data: data, r: s.reader}
 	s.external[id] = c
+	s.cursors = append(s.cursors, c)
 	return c, nil
 }
 
@@ -483,6 +510,76 @@ func (enc *Encoding) decodeByteArrays(s *seriesSource, n int) ([][]byte, error) 
 		out = append(out, v)
 	}
 	return out, nil
+}
+
+// decodeByteArrayBorrow decodes a single variable-length byte array like
+// decodeByteArray, but for the common EXTERNAL-backed encodings it returns
+// a NO-COPY sub-slice of the block's decompressed buffer (see borrowN)
+// instead of a freshly allocated copy. It is used only where the value is
+// consumed immediately — copied into a string (a read name) or parsed into
+// a scalar (a tag value) — before the block is released, so the alias is
+// never retained or mutated. For any encoding whose bytes are computed
+// rather than copied verbatim from a block (HUFFMAN/BETA/XPACK/XRLE/XDELTA)
+// it falls back to the allocating decodeByteArray, so the returned bytes
+// are byte-for-byte identical to decodeByteArray for every input.
+func (enc *Encoding) decodeByteArrayBorrow(s *seriesSource) ([]byte, error) {
+	if enc == nil {
+		return enc.decodeByteArray(s)
+	}
+	switch enc.ID {
+	case EncodingByteArrayStop:
+		c, err := s.cursor(enc.ExternalID)
+		if err != nil {
+			return nil, err
+		}
+		start := c.pos
+		for {
+			if c.pos >= len(c.data) {
+				return nil, fmt.Errorf("cram: BYTE_ARRAY_STOP ran off the end before its stop byte %#02x", enc.StopByte)
+			}
+			b := c.data[c.pos]
+			c.pos++
+			if b == enc.StopByte {
+				end := c.pos - 1
+				return c.data[start:end:end], nil
+			}
+		}
+	case EncodingByteArrayLen:
+		ln, err := enc.LenEnc.decodeInt(s)
+		if err != nil {
+			return nil, fmt.Errorf("cram: BYTE_ARRAY_LEN length: %w", err)
+		}
+		if ln < 0 {
+			return nil, fmt.Errorf("cram: BYTE_ARRAY_LEN decoded a negative length %d", ln)
+		}
+		return enc.ValEnc.decodeRawBytesBorrow(s, int(ln))
+	default:
+		// EXTERNAL single byte, and every computed-byte encoding, take the
+		// unchanged allocating path — byte-identical to decodeByteArray.
+		return enc.decodeByteArray(s)
+	}
+}
+
+// decodeRawBytesBorrow reads exactly n raw bytes like decodeRawBytes, but
+// returns a no-copy sub-slice of the block buffer for the EXTERNAL /
+// BYTE_ARRAY_STOP block cases (the values half of a BYTE_ARRAY_LEN over an
+// external block). Any other sub-encoding computes its bytes, so it
+// delegates to the allocating decodeRawBytes. The bytes are identical
+// either way; see decodeByteArrayBorrow for the retention contract.
+func (enc *Encoding) decodeRawBytesBorrow(s *seriesSource, n int) ([]byte, error) {
+	if enc == nil {
+		return enc.decodeRawBytes(s, n)
+	}
+	switch enc.ID {
+	case EncodingExternal, EncodingByteArrayStop:
+		c, err := s.cursor(enc.ExternalID)
+		if err != nil {
+			return nil, err
+		}
+		return c.borrowN(n)
+	default:
+		return enc.decodeRawBytes(s, n)
+	}
 }
 
 // decodeByteArray decodes a single variable-length byte array through

@@ -238,7 +238,19 @@ func Roh(in io.Reader, out io.Writer, opts RohOptions) (RohResult, error) {
 		return RohResult{}, fmt.Errorf("Error: cannot use -b with -V")
 	}
 
-	hdr, vars, err := readAllVariants(in)
+	// Stream the input one record at a time. roh only ever extracts a small
+	// per-sample marker (chrom, pos, two emission probabilities) from each
+	// accepted site; the full variant records are never needed again once the
+	// marker lists are built, so there is no reason to buffer the whole VCF.
+	// Peak memory is O(accepted markers), not O(file). The processing order and
+	// per-record logic are identical to the former readAllVariants slice loop,
+	// so the emitted tables are byte-for-byte unchanged.
+	br := bufio.NewReader(in)
+	head, err := br.Peek(5)
+	if err != nil && err != io.EOF {
+		return RohResult{}, fmt.Errorf("bcftools roh: %w", err)
+	}
+	src, hdr, err := openVariantSource(br, head)
 	if err != nil {
 		return RohResult{}, fmt.Errorf("bcftools roh: %w", err)
 	}
@@ -279,7 +291,14 @@ func Roh(in io.Reader, out io.Writer, opts RohOptions) (RohResult, error) {
 
 	prevChrom := ""
 	prevPos := -1
-	for _, v := range vars {
+	for {
+		v, err := src.next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return RohResult{}, fmt.Errorf("bcftools roh: %w", err)
+		}
 		if len(opts.Regions) > 0 && !regionMatches(v, opts.Regions) {
 			continue
 		}

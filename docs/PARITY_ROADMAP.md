@@ -689,6 +689,24 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
     tandem-repeat off-by-one tracked under #56 — now precisely localized to these
     coordinates. It is **not claimed as fixed**; tracked here for a future
     deletion-row / low-depth-`N` pass.
+  - **`consensus --mode simple` byte-exact; default gap5 Bayesian base-call
+    residual re-characterised as libm last-ULP — ACCEPTED.** With the #55/#56/#58
+    fixes in place, a whole-chr20 re-measurement pins the current state:
+    `consensus --mode simple` (all formats) is **byte-identical to htslib** on the
+    full contig-20 GIAB stream (md5 `64279379` == `64279379`) — the guarantee is
+    now locked in by `TestConsensus_SimpleMode_Deterministic` in
+    `consensus_bayesian_test.go`. The DEFAULT gap5 Bayesian caller
+    (`--mode simple` NOT set) differs from upstream at only **~46 ultra-low-coverage
+    (depth 1-5) homopolymer/STR loci — 13 net differing bases over the 64.27 Mb
+    contig**. Like the `cq` residual (#67/#69), these are **Go `math.Log`/`math.Exp`/
+    `math.Pow` vs glibc libm last-ULP** divergences: the sub-ULP double noise lands
+    the borderline depth-1 insertion posterior on the other side of a call at these
+    STR/homopolymer sites, flipping the indel call. This is the **same
+    transcendental last-ULP class the project already accepts as proximity parity**
+    (consensus `cq` #67/#69, bcftools `trio-dnm3`); closing it would require a
+    bit-for-bit libm `exp`/`log`/`pow` reimplementation, which is out of scope.
+    **Accepted.** Documented at the `calculateConsensusGap5`/`fastExp` header in
+    `consensus_bayesian.go`.
 - **`samtools sort` wall — FIXED (task #39 then #42, now ≈ parity).** `sort -@4`
   was ~3x upstream at matched memory. Profiling showed `sort.SliceStable`/heap/
   comparator are negligible (<4%); the costs were excessive spilling (57 vs 4

@@ -358,15 +358,20 @@ func TestRun_BAMInput_MaxDepthCap(t *testing.T) {
 	}
 }
 
-// TestRun_BAMInput_SkipsUnmappedSecondaryDup: records flagged unmapped /
-// secondary / supplementary / duplicate / QC-fail must not be indexed.
-func TestRun_BAMInput_SkipsUnmappedSecondaryDup(t *testing.T) {
+// TestRun_BAMInput_FlagPolicy: bedtools multicov counts reads "regardless of
+// the BAM FLAG field" — only duplicate and QC-fail are dropped. Secondary and
+// supplementary reads ARE counted; a placed-unmapped read (FLAG 0x4) gets a
+// 1bp span, so with CIGAR "30M" at POS=1 it does not reach chr1:15-20. Here
+// the A interval [15,20) is spanned by the mapped 30M reads: secondary,
+// supplementary, and primary count (3); duplicate and QC-fail are dropped;
+// the 1bp unmapped read does not overlap.
+func TestRun_BAMInput_FlagPolicy(t *testing.T) {
 	alns := []bamAln{
-		{rname: "chr1", pos: 1, mapq: 40, cigar: "30M", flag: 4},    // unmapped
-		{rname: "chr1", pos: 1, mapq: 40, cigar: "30M", flag: 256},  // secondary
-		{rname: "chr1", pos: 1, mapq: 40, cigar: "30M", flag: 2048}, // supplementary
-		{rname: "chr1", pos: 1, mapq: 40, cigar: "30M", flag: 1024}, // duplicate
-		{rname: "chr1", pos: 1, mapq: 40, cigar: "30M", flag: 512},  // QC fail
+		{rname: "chr1", pos: 1, mapq: 40, cigar: "30M", flag: 4},    // unmapped, 1bp span -> no overlap
+		{rname: "chr1", pos: 1, mapq: 40, cigar: "30M", flag: 256},  // secondary, counted
+		{rname: "chr1", pos: 1, mapq: 40, cigar: "30M", flag: 2048}, // supplementary, counted
+		{rname: "chr1", pos: 1, mapq: 40, cigar: "30M", flag: 1024}, // duplicate, dropped
+		{rname: "chr1", pos: 1, mapq: 40, cigar: "30M", flag: 512},  // QC fail, dropped
 		{rname: "chr1", pos: 1, mapq: 40, cigar: "30M", flag: 0},    // primary, counted
 	}
 	bam := makeBAM(t, alns)
@@ -377,8 +382,45 @@ func TestRun_BAMInput_SkipsUnmappedSecondaryDup(t *testing.T) {
 		&got, Options{}); err != nil {
 		t.Fatalf("RunSources: %v", err)
 	}
-	if got.String() != "chr1\t15\t20\t1\n" {
-		t.Fatalf("flag filter mismatch: got %q (want exactly 1)", got.String())
+	if got.String() != "chr1\t15\t20\t3\n" {
+		t.Fatalf("flag policy mismatch: got %q (want 3: secondary+supplementary+primary)", got.String())
+	}
+}
+
+// TestRun_BAMInput_PlacedUnmappedCounted is the regression test for the
+// count DIFF fix: a placed-unmapped read (FLAG 0x4, CIGAR "*", valid
+// RefID+POS) is given a 1bp span [POS-1, POS) via bam_endpos semantics and
+// so overlaps its enclosing A interval — matching `bedtools multicov`, which
+// counts reads regardless of the FLAG field. Our old code dropped such reads
+// (IsUnmapped) and under-counted.
+func TestRun_BAMInput_PlacedUnmappedCounted(t *testing.T) {
+	// A single placed-unmapped read with no CIGAR at chr1:100 (1-based),
+	// i.e. 0-based span [99,100). The A interval [90,110) encloses it.
+	bam := makeBAM(t, []bamAln{
+		{rname: "chr1", pos: 100, mapq: 0, cigar: "*", flag: 4},
+	})
+	a := "chr1\t90\t110\n"
+	var got bytes.Buffer
+	if _, err := RunSources(strings.NewReader(a),
+		[]Source{{Reader: bytes.NewReader(bam), Kind: SourceBAM}},
+		&got, Options{}); err != nil {
+		t.Fatalf("RunSources: %v", err)
+	}
+	if got.String() != "chr1\t90\t110\t1\n" {
+		t.Fatalf("placed-unmapped read not counted: got %q (want count 1)", got.String())
+	}
+
+	// Same read, but the interval [50,90) sits entirely before the 1bp span:
+	// it must NOT be counted (the span is [99,100), not the full read length).
+	b := "chr1\t50\t90\n"
+	got.Reset()
+	if _, err := RunSources(strings.NewReader(b),
+		[]Source{{Reader: bytes.NewReader(bam), Kind: SourceBAM}},
+		&got, Options{}); err != nil {
+		t.Fatalf("RunSources: %v", err)
+	}
+	if got.String() != "chr1\t50\t90\t0\n" {
+		t.Fatalf("1bp span overreached: got %q (want count 0)", got.String())
 	}
 }
 

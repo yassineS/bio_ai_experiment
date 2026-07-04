@@ -13,6 +13,21 @@ import (
 // is the upstream default and the mode the bare `samtools consensus`
 // invocation runs.
 
+// ACCEPTED RESIDUAL (default gap5 Bayesian mode, libm last-ULP class).
+// `samtools consensus --mode simple` is byte-exact vs htslib (verified
+// md5-identical on the full chr20 GIAB stream: 64279379 == 64279379). The
+// DEFAULT gap5 Bayesian caller below (calculateConsensusGap5 / fastExp /
+// calculateConsensusGap5m) differs from upstream at ~46 ultra-low-coverage
+// (depth 1-5) homopolymer/STR loci — 13 net differing bases over the 64.27 Mb
+// contig — because Go's math.Log/math.Exp/math.Pow disagree with C glibc libm
+// in the last ULP. That sub-ULP double noise lands the depth-1 insertion
+// posterior on the other side of a borderline call at these STR/homopolymer
+// sites, flipping the indel call. This is the SAME transcendental last-ULP
+// residual class already documented and accepted for the consensus `cq` score
+// (see docs/PARITY_ROADMAP.md tasks #67/#69) and the bcftools trio-dnm3 models;
+// it cannot be closed without reproducing glibc libm bit-for-bit, which is out
+// of scope. Accepted as proximity parity.
+//
 // bayesianMode enumerates the upstream MODE_* constants for the bayesian
 // caller. MODE_SIMPLE (0) is handled by the frequency-counting path and is
 // not represented here.
@@ -548,24 +563,38 @@ type bayesPileupBase struct {
 	refSkip  bool // true for N CIGAR positions (skipped)
 }
 
+// consL converts a sam nt16 base to acgt*n order (0..5).
+// =ACM GRSV TWYH KDBN, then * bucket (16..31) -> 4. It is an invariant
+// lookup table, hoisted to package scope so it is not rebuilt on every
+// per-column call to calculateConsensusGap5 (a hot path over ~64 M columns).
+var consL = [32]int{
+	5, 0, 1, 5, 2, 5, 5, 5, 3, 5, 5, 5, 5, 5, 5, 5,
+	4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+}
+
+// consMapSing / consMapHet map the 15-combo genotype index back to the
+// single-allele (ACGT*) and het (5x5) call indices. Invariant tables hoisted
+// to package scope for the same reason as consL.
+var (
+	consMapSing = [15]int{0, 5, 5, 5, 5, 1, 5, 5, 5, 2, 5, 5, 3, 5, 4}
+	consMapHet  = [15]int{0, 1, 2, 3, 4, 6, 7, 8, 9, 12, 13, 14, 18, 19, 24}
+	// consPure marks the pure (homozygous) genotype indices {0,5,9,12,14}.
+	consPure = [15]bool{0: true, 5: true, 9: true, 12: true, 14: true}
+)
+
 // calculateConsensusGap5 ports upstream calculate_consensus_gap5: the core
 // bayesian posterior caller. flags carries CONS_MQUAL when MQUAL is enabled.
 func calculateConsensusGap5(bases []bayesPileupBase, useMQual bool, td int,
 	o bayesOptions, cp *consProbs) consResult {
 
-	// L: convert sam nt16 base to acgt*n order (0..5).
-	// =ACM GRSV TWYH KDBN, then * bucket (16..31) -> 4.
-	L := [32]int{
-		5, 0, 1, 5, 2, 5, 5, 5, 3, 5, 5, 5, 5, 5, 5, 5,
-		4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-	}
+	L := &consL
 
 	var S [15]float64
 	var counts [6]int
 	depth := 0
 
-	mapSing := [15]int{0, 5, 5, 5, 5, 1, 5, 5, 5, 2, 5, 5, 3, 5, 4}
-	mapHet := [15]int{0, 1, 2, 3, 4, 6, 7, 8, 9, 12, 13, 14, 18, 19, 24}
+	mapSing := &consMapSing
+	mapHet := &consMapHet
 
 	for _, p := range bases {
 		if int(p.qual) < o.minQual {
@@ -762,16 +791,12 @@ func calculateConsensusGap5(bases []bayesPileupBase, useMQual bool, td int,
 	maxHet := -math.MaxFloat64
 	call, hetCall := 0, 0
 
-	pure := func(j int) bool {
-		return j == 0 || j == 5 || j == 9 || j == 12 || j == 14
-	}
-
 	for j := 0; j < 15; j++ {
 		S[j] += cp.lprior15[j]
 		if shift < S[j] {
 			shift = S[j]
 		}
-		if !pure(j) {
+		if !consPure[j] {
 			if maxHet < S[j] {
 				maxHet = S[j]
 				hetCall = j

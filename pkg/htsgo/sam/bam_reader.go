@@ -115,6 +115,16 @@ func NewBAMBodyReader(r io.Reader, hdr *Header) *BAMReader {
 // Header returns the parsed BAM header.
 func (br *BAMReader) Header() *Header { return br.hdr }
 
+// BGZFReader returns the underlying BGZF reader when the BAM stream is
+// BGZF-wrapped (the normal case for NewBAMReader), or nil when the reader was
+// constructed over an already-decompressed stream (newBAMReaderRaw /
+// NewBAMBodyReader). It lets callers that want to copy the remaining compressed
+// BGZF blocks verbatim — samtools cat's fast path, which avoids decoding and
+// recompressing every record — reach the block-level raw-copy API on
+// *bgzip.Reader (DecompressedRemainder / RawRemaining) after the header has been
+// parsed.
+func (br *BAMReader) BGZFReader() *bgzip.Reader { return br.bgz }
+
 // readHeader parses the BAM header: magic, text header, then reference table.
 func (br *BAMReader) readHeader() error {
 	var magic [4]byte

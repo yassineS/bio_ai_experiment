@@ -96,26 +96,41 @@ func AnnotateFile(path string, out io.Writer, opts AnnotateOptions) (int, error)
 	return Annotate(in, out, opts)
 }
 
-// Annotate is the streaming entry point. It reads the input fully (matching
-// upstream's behaviour where the annotation source dictates record-by-record
-// random access), applies the transformations, and writes the result.
+// Annotate is the streaming entry point. Every annotate transformation is
+// per-record: the header changes depend only on the options and the (separate)
+// annotation-source file, never on the input records, and each record is
+// mutated independently of the others. So Annotate does all header preparation
+// and builds the annotation lookups up front, then streams the input records
+// one at a time through an ordered list of per-record appliers before writing.
+// Peak memory is O(annotation source), not O(input file) — the input is never
+// buffered. The annotation source itself (a sidecar TAB table, or the
+// annotation VCF/BCF) is still read fully into memory because it needs random
+// access, exactly as upstream's regidx / synced-reader require; that buffer is
+// unrelated to the size of the main input. The emitted records, their order,
+// the final header, and the output bytes are identical to the former
+// read-everything slice pipeline.
 func Annotate(in io.Reader, out io.Writer, opts AnnotateOptions) (int, error) {
-	hdr, recs, err := readAllVariants(in)
+	br := bufio.NewReader(in)
+	head, err := br.Peek(5)
+	if err != nil && err != io.EOF {
+		return 0, fmt.Errorf("bcftools annotate: %w", err)
+	}
+	src, hdr, err := openVariantSource(br, head)
 	if err != nil {
 		return 0, fmt.Errorf("bcftools annotate: %w", err)
 	}
 
+	// appliers holds the per-record transforms in the exact order the former
+	// slice pipeline ran them: rename-chrs, rename-annots, annotation source,
+	// removals, set-id. Each header-side effect is performed immediately below;
+	// only the record-side effect is deferred into the closure.
+	var appliers []func(*vcf.Variant)
+
 	// Apply --rename-chrs first so downstream key matching uses new names.
-	var chromMap map[string]string
 	if opts.RenameChromMap != "" {
-		chromMap, err = loadChromRenameMap(opts.RenameChromMap)
+		chromMap, err := loadChromRenameMap(opts.RenameChromMap)
 		if err != nil {
 			return 0, fmt.Errorf("bcftools annotate: --rename-chrs %s: %w", opts.RenameChromMap, err)
-		}
-		for _, v := range recs {
-			if n, ok := chromMap[v.Chrom]; ok {
-				v.Chrom = n
-			}
 		}
 		// Header contig lines: rewrite IDs in place.
 		for i, m := range hdr.MetaInfo {
@@ -130,6 +145,11 @@ func Annotate(in io.Reader, out io.Writer, opts AnnotateOptions) (int, error) {
 				hdr.MetaInfo[i] = strings.Replace(m, "ID="+id, "ID="+n, 1)
 			}
 		}
+		appliers = append(appliers, func(v *vcf.Variant) {
+			if n, ok := chromMap[v.Chrom]; ok {
+				v.Chrom = n
+			}
+		})
 	}
 
 	// -h/--header-lines: prepend extra meta lines (after fileformat).
@@ -148,7 +168,7 @@ func Annotate(in io.Reader, out io.Writer, opts AnnotateOptions) (int, error) {
 		if err != nil {
 			return 0, fmt.Errorf("bcftools annotate: --rename-annots %s: %w", opts.RenameAnnots, err)
 		}
-		applyRenameAnnots(recs, hdr, maps)
+		appliers = append(appliers, prepRenameAnnots(hdr, maps))
 	}
 
 	// Parse the advanced overlap/merge/pair options.
@@ -189,26 +209,27 @@ func Annotate(in io.Reader, out io.Writer, opts AnnotateOptions) (int, error) {
 		return 0, fmt.Errorf("bcftools annotate: the --merge-logic is intended for use with BED or TAB-delimited files only.")
 	}
 	if opts.Annotations != "" && len(cols) > 0 {
+		var apply func(*vcf.Variant)
 		switch {
 		case isVCFSource:
-			if err := applyVCFAnnotations(opts.Annotations, recs, cols, pairLogic, hdr); err != nil {
-				return 0, fmt.Errorf("bcftools annotate: %w", err)
-			}
+			apply, err = prepVCFAnnotations(opts.Annotations, cols, pairLogic, hdr)
 		case hasRangeColumns(cols):
-			if err := applyTableRangeAnnotations(opts.Annotations, recs, cols, hdr, mergeLogic, minOverlap, opts.SingleOverlaps); err != nil {
-				return 0, fmt.Errorf("bcftools annotate: %w", err)
-			}
+			apply, err = prepTableRangeAnnotations(opts.Annotations, cols, hdr, mergeLogic, minOverlap, opts.SingleOverlaps)
 		default:
-			if err := applyTableAnnotations(opts.Annotations, recs, cols, hdr); err != nil {
-				return 0, fmt.Errorf("bcftools annotate: %w", err)
-			}
+			apply, err = prepTableAnnotations(opts.Annotations, cols, hdr)
 		}
+		if err != nil {
+			return 0, fmt.Errorf("bcftools annotate: %w", err)
+		}
+		appliers = append(appliers, apply)
 	}
 
 	// -x: field removal.
 	removedAllFilters := false
 	if opts.Remove != "" {
-		removedAllFilters = applyRemovals(recs, hdr, opts.Remove)
+		var apply func(*vcf.Variant)
+		apply, removedAllFilters = prepRemovals(hdr, opts.Remove)
+		appliers = append(appliers, apply)
 	}
 
 	// --set-id: macro-expand the ID column. Upstream applies this last, after
@@ -218,16 +239,16 @@ func Annotate(in io.Reader, out io.Writer, opts AnnotateOptions) (int, error) {
 		if err != nil {
 			return 0, fmt.Errorf("bcftools annotate: --set-id: %w", err)
 		}
-		for _, v := range recs {
+		appliers = append(appliers, func(v *vcf.Variant) {
 			val, ok := prog.expand(v)
 			if !ok {
-				continue
+				return
 			}
 			if prog.onlyIfEmpty && v.ID != "" && v.ID != "." {
-				continue
+				return
 			}
 			v.ID = val
-		}
+		})
 	}
 
 	// Region post-filter.
@@ -250,7 +271,17 @@ func Annotate(in io.Reader, out io.Writer, opts AnnotateOptions) (int, error) {
 		return 0, err
 	}
 	count := 0
-	for _, v := range recs {
+	for {
+		v, err := src.next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return count, fmt.Errorf("bcftools annotate: %w", err)
+		}
+		for _, apply := range appliers {
+			apply(v)
+		}
 		if len(regions) > 0 && !overlapsAny(v, regions) {
 			continue
 		}
@@ -304,14 +335,17 @@ func parseAnnColumns(spec string) ([]annColumn, error) {
 	return out, nil
 }
 
-// applyTableAnnotations reads a TAB-delimited annotation file and copies the
-// chosen columns onto each matching record. Matching uses the (CHROM, POS)
-// key by default; (CHROM, POS, REF) and (CHROM, POS, REF, ALT) tighten the
-// match when those columns are present in the column spec.
-func applyTableAnnotations(path string, recs []*vcf.Variant, cols []annColumn, hdr *vcf.Header) error {
+// prepTableAnnotations reads a TAB-delimited annotation file, injects the
+// ##INFO header lines for the transferred tags, and returns a per-record
+// applier that copies the chosen columns onto each matching record. Matching
+// uses the (CHROM, POS) key by default; (CHROM, POS, REF) and
+// (CHROM, POS, REF, ALT) tighten the match when those columns are present in
+// the column spec. The annotation table is read fully into memory (it is the
+// small sidecar, not the main input) so the applier can look each record up.
+func prepTableAnnotations(path string, cols []annColumn, hdr *vcf.Header) (func(*vcf.Variant), error) {
 	in, err := iohelper.OpenReader(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer in.Close()
 
@@ -325,7 +359,7 @@ func applyTableAnnotations(path string, recs []*vcf.Variant, cols []annColumn, h
 		}
 	}
 	if len(keyCols) < 2 {
-		return fmt.Errorf("annotation table needs at least CHROM and POS columns")
+		return nil, fmt.Errorf("annotation table needs at least CHROM and POS columns")
 	}
 
 	// Walk the table, accumulating INFO assignments.
@@ -378,12 +412,25 @@ func applyTableAnnotations(path string, recs []*vcf.Variant, cols []annColumn, h
 		}
 	}
 
-	// Apply.
-	for _, v := range recs {
+	// Inject ##INFO header lines for tags we wrote that are not yet declared.
+	// This is record-independent, so it runs during prep (before the records
+	// stream) and yields the identical final header.
+	for _, c := range cols {
+		if c.Kind != "INFO" {
+			continue
+		}
+		if !hasInfoLine(hdr, c.Tag) {
+			hdr.MetaInfo = append([]string{hdr.MetaInfo[0],
+				fmt.Sprintf(`##INFO=<ID=%s,Number=.,Type=String,Description="Added by bcftools annotate">`, c.Tag)},
+				hdr.MetaInfo[1:]...)
+		}
+	}
+
+	return func(v *vcf.Variant) {
 		key := buildVariantKey(v, cols)
 		row, ok := keyed[key]
 		if !ok {
-			continue
+			return
 		}
 		if row.id != "" && row.id != "." {
 			v.ID = row.id
@@ -400,19 +447,7 @@ func applyTableAnnotations(path string, recs []*vcf.Variant, cols []annColumn, h
 			}
 			v.Info[a.tag] = a.value
 		}
-	}
-	// Inject ##INFO header lines for tags we wrote that are not yet declared.
-	for _, c := range cols {
-		if c.Kind != "INFO" {
-			continue
-		}
-		if !hasInfoLine(hdr, c.Tag) {
-			hdr.MetaInfo = append([]string{hdr.MetaInfo[0],
-				fmt.Sprintf(`##INFO=<ID=%s,Number=.,Type=String,Description="Added by bcftools annotate">`, c.Tag)},
-				hdr.MetaInfo[1:]...)
-		}
-	}
-	return nil
+	}, nil
 }
 
 // hasRangeColumns reports whether the -c spec includes BEG/END (FROM/TO)
@@ -440,16 +475,19 @@ type annRangeRow struct {
 	assigns  []struct{ tag, value string }
 }
 
-// applyTableRangeAnnotations reads a TAB-delimited annotation table whose
-// columns include CHROM,BEG,END (range form) and copies the chosen columns
-// onto every overlapping VCF record. Multi-overlap merging is governed by
-// mergeLogic (default first), the per-row overlap thresholds by minOverlap,
-// and singleOverlaps restricts to the first overlapping row. It mirrors the
-// observable behaviour of annotate_from_regidx.
-func applyTableRangeAnnotations(path string, recs []*vcf.Variant, cols []annColumn, hdr *vcf.Header, mergeLogic map[string]MergeLogic, minOverlap MinOverlap, singleOverlaps bool) error {
+// prepTableRangeAnnotations reads a TAB-delimited annotation table whose
+// columns include CHROM,BEG,END (range form), injects the ##INFO header lines
+// for the transferred tags, and returns a per-record applier that copies the
+// chosen columns onto every overlapping VCF record. Multi-overlap merging is
+// governed by mergeLogic (default first), the per-row overlap thresholds by
+// minOverlap, and singleOverlaps restricts to the first overlapping row. It
+// mirrors the observable behaviour of annotate_from_regidx. The interval table
+// is read fully into memory (the small sidecar, not the main input) so the
+// applier can test each record against it.
+func prepTableRangeAnnotations(path string, cols []annColumn, hdr *vcf.Header, mergeLogic map[string]MergeLogic, minOverlap MinOverlap, singleOverlaps bool) (func(*vcf.Variant), error) {
 	in, err := iohelper.OpenReader(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer in.Close()
 
@@ -465,7 +503,7 @@ func applyTableRangeAnnotations(path string, recs []*vcf.Variant, cols []annColu
 		}
 	}
 	if chromIdx < 0 || begIdx < 0 || endIdx < 0 {
-		return fmt.Errorf("annotation table needs CHROM, BEG and END columns")
+		return nil, fmt.Errorf("annotation table needs CHROM, BEG and END columns")
 	}
 
 	// Read all interval rows, grouped by chromosome.
@@ -515,7 +553,21 @@ func applyTableRangeAnnotations(path string, recs []*vcf.Variant, cols []annColu
 		}
 	}
 
-	for _, v := range recs {
+	// Inject ##INFO header lines for tags we wrote that are not yet declared.
+	// Record-independent, so it runs during prep and yields the identical
+	// final header.
+	for _, c := range cols {
+		if c.Kind != "INFO" {
+			continue
+		}
+		if !hasInfoLine(hdr, c.Tag) {
+			hdr.MetaInfo = append([]string{hdr.MetaInfo[0],
+				fmt.Sprintf(`##INFO=<ID=%s,Number=.,Type=String,Description="Added by bcftools annotate">`, c.Tag)},
+				hdr.MetaInfo[1:]...)
+		}
+	}
+
+	return func(v *vcf.Variant) {
 		vbeg := v.Pos
 		vend := variantEnd(v)
 		// Collect overlapping rows in table order.
@@ -533,7 +585,7 @@ func applyTableRangeAnnotations(path string, recs []*vcf.Variant, cols []annColu
 			}
 		}
 		if len(overlaps) == 0 {
-			continue
+			return
 		}
 
 		// ID and FILTER follow first-overlap semantics.
@@ -573,35 +625,26 @@ func applyTableRangeAnnotations(path string, recs []*vcf.Variant, cols []annColu
 			}
 			v.Info[tag] = val
 		}
-	}
-
-	// Inject ##INFO header lines for tags we wrote that are not yet declared.
-	for _, c := range cols {
-		if c.Kind != "INFO" {
-			continue
-		}
-		if !hasInfoLine(hdr, c.Tag) {
-			hdr.MetaInfo = append([]string{hdr.MetaInfo[0],
-				fmt.Sprintf(`##INFO=<ID=%s,Number=.,Type=String,Description="Added by bcftools annotate">`, c.Tag)},
-				hdr.MetaInfo[1:]...)
-		}
-	}
-	return nil
+	}, nil
 }
 
-// applyVCFAnnotations transfers the named INFO/FILTER fields from the
-// matching records of a VCF/BCF annotation file to the input records. The
+// prepVCFAnnotations reads a VCF/BCF annotation file, carries the source's
+// ##INFO header definitions for the transferred tags into the output header,
+// and returns a per-record applier that transfers the named INFO/FILTER/ID
+// fields from the matching annotation record to each input record. The
 // pairLogic mode controls how an annotation record is paired with an input
-// record (see --pair-logic).
-func applyVCFAnnotations(path string, recs []*vcf.Variant, cols []annColumn, pairLogic PairLogic, hdr *vcf.Header) error {
+// record (see --pair-logic). The annotation VCF is read fully into memory
+// because pair-logic needs to scan every candidate at a site; this is the
+// annotation source, not the main input, and mirrors upstream's synced reader.
+func prepVCFAnnotations(path string, cols []annColumn, pairLogic PairLogic, hdr *vcf.Header) (func(*vcf.Variant), error) {
 	in, err := iohelper.OpenReader(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer in.Close()
 	annHdr, annRecs, err := readAllVariants(in)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Group annotation records by (CHROM, POS) so pair-logic can scan the
 	// candidates at a site.
@@ -625,7 +668,27 @@ func applyVCFAnnotations(path string, recs []*vcf.Variant, cols []annColumn, pai
 			wantID = true
 		}
 	}
-	for _, v := range recs {
+	// Carry the source's ##INFO header definitions for each transferred tag
+	// into the output header (matching upstream, which copies the matching
+	// header records from the annotation file). We iterate cols (not the
+	// wantInfo map) so the appended lines follow the -c column order. This is
+	// record-independent, so it runs during prep and yields the identical
+	// final header.
+	for _, c := range cols {
+		if c.Kind != "INFO" || c.Tag == "" {
+			continue
+		}
+		if hasInfoLine(hdr, c.Tag) {
+			continue
+		}
+		def := findMetaLineByID(annHdr, "INFO", c.Tag)
+		if def == "" {
+			def = fmt.Sprintf(`##INFO=<ID=%s,Number=.,Type=String,Description="Added by bcftools annotate">`, c.Tag)
+		}
+		hdr.MetaInfo = append(hdr.MetaInfo, def)
+	}
+
+	return func(v *vcf.Variant) {
 		var src *vcf.Variant
 		for _, cand := range byPos[v.Chrom+"\t"+strconv.Itoa(v.Pos)] {
 			if pairLogicMatches(v, cand, pairLogic) {
@@ -634,7 +697,7 @@ func applyVCFAnnotations(path string, recs []*vcf.Variant, cols []annColumn, pai
 			}
 		}
 		if src == nil {
-			continue
+			return
 		}
 		for tag := range wantInfo {
 			val, has := src.Info[tag]
@@ -655,25 +718,7 @@ func applyVCFAnnotations(path string, recs []*vcf.Variant, cols []annColumn, pai
 		if wantID && src.ID != "" && src.ID != "." {
 			v.ID = src.ID
 		}
-	}
-	// Carry the source's ##INFO header definitions for each transferred tag
-	// into the output header (matching upstream, which copies the matching
-	// header records from the annotation file). We iterate cols (not the
-	// wantInfo map) so the appended lines follow the -c column order.
-	for _, c := range cols {
-		if c.Kind != "INFO" || c.Tag == "" {
-			continue
-		}
-		if hasInfoLine(hdr, c.Tag) {
-			continue
-		}
-		def := findMetaLineByID(annHdr, "INFO", c.Tag)
-		if def == "" {
-			def = fmt.Sprintf(`##INFO=<ID=%s,Number=.,Type=String,Description="Added by bcftools annotate">`, c.Tag)
-		}
-		hdr.MetaInfo = append(hdr.MetaInfo, def)
-	}
-	return nil
+	}, nil
 }
 
 // findMetaLineByID returns the verbatim ##<kind>=<...ID=id...> meta line from
@@ -688,21 +733,25 @@ func findMetaLineByID(hdr *vcf.Header, kind, id string) string {
 	return ""
 }
 
-// applyRemovals processes -x/--remove. Each entry is one of `INFO/TAG`,
-// `INFO` (drop all INFO), `FILTER`, `FILTER/NAME`, or `ID`. It returns
-// removedAllFilters=true when a bare `FILTER` entry was processed, so the
-// caller can suppress the write-time PASS re-injection (upstream
+// prepRemovals processes -x/--remove. Each entry is one of `INFO/TAG`,
+// `INFO` (drop all INFO), `FILTER`, `FILTER/NAME`, or `ID`. It performs the
+// (record-independent) header stripping immediately and returns a per-record
+// applier plus removedAllFilters=true when a bare `FILTER` entry was processed,
+// so the caller can suppress the write-time PASS re-injection (upstream
 // remove_hdr_lines(BCF_HL_FLT) drops every FILTER line, including PASS, and
-// they do not come back).
-func applyRemovals(recs []*vcf.Variant, hdr *vcf.Header, spec string) (removedAllFilters bool) {
+// they do not come back). The per-record ops run in the same entry order the
+// former slice loop used, so the mutation of any given record is identical.
+func prepRemovals(hdr *vcf.Header, spec string) (func(*vcf.Variant), bool) {
+	var ops []func(*vcf.Variant)
+	removedAllFilters := false
 	for _, raw := range strings.Split(spec, ",") {
 		ent := strings.TrimSpace(raw)
 		switch {
 		case ent == "INFO":
-			for _, v := range recs {
+			ops = append(ops, func(v *vcf.Variant) {
 				v.Info = map[string]string{}
 				v.InfoOrder = nil
-			}
+			})
 			// Upstream remove_hdr_lines(BCF_HL_INFO) strips every ##INFO line.
 			out := hdr.MetaInfo[:0]
 			for _, m := range hdr.MetaInfo {
@@ -714,7 +763,7 @@ func applyRemovals(recs []*vcf.Variant, hdr *vcf.Header, spec string) (removedAl
 			hdr.MetaInfo = out
 		case strings.HasPrefix(ent, "INFO/"):
 			tag := ent[len("INFO/"):]
-			for _, v := range recs {
+			ops = append(ops, func(v *vcf.Variant) {
 				if v.Info != nil {
 					delete(v.Info, tag)
 				}
@@ -727,7 +776,7 @@ func applyRemovals(recs []*vcf.Variant, hdr *vcf.Header, spec string) (removedAl
 					}
 					v.InfoOrder = out
 				}
-			}
+			})
 			// Strip the matching ##INFO header line.
 			out := hdr.MetaInfo[:0]
 			for _, m := range hdr.MetaInfo {
@@ -742,9 +791,9 @@ func applyRemovals(recs []*vcf.Variant, hdr *vcf.Header, spec string) (removedAl
 			// Upstream remove_filter with a NULL key sets FILTER to "." (missing)
 			// on every record and remove_hdr_lines(BCF_HL_FLT) drops every
 			// ##FILTER header line (PASS included).
-			for _, v := range recs {
+			ops = append(ops, func(v *vcf.Variant) {
 				v.Filter = []string{"."}
-			}
+			})
 			out := hdr.MetaInfo[:0]
 			for _, m := range hdr.MetaInfo {
 				if k, _ := structuredID(m); k == "FILTER" {
@@ -759,7 +808,7 @@ func applyRemovals(recs []*vcf.Variant, hdr *vcf.Header, spec string) (removedAl
 			// Upstream sets flt_keep_pass=1 for FILTER/NAME: a record left with
 			// no filters after dropping NAME becomes PASS, not "." — and the
 			// matching ##FILTER header line is removed.
-			for _, v := range recs {
+			ops = append(ops, func(v *vcf.Variant) {
 				out := v.Filter[:0]
 				for _, f := range v.Filter {
 					if f == name {
@@ -771,7 +820,7 @@ func applyRemovals(recs []*vcf.Variant, hdr *vcf.Header, spec string) (removedAl
 					out = []string{"PASS"}
 				}
 				v.Filter = out
-			}
+			})
 			out := hdr.MetaInfo[:0]
 			for _, m := range hdr.MetaInfo {
 				if k, id := structuredID(m); k == "FILTER" && id == name {
@@ -784,53 +833,67 @@ func applyRemovals(recs []*vcf.Variant, hdr *vcf.Header, spec string) (removedAl
 			// Drop every FORMAT field and its per-sample values, plus the
 			// ##FORMAT header lines (upstream remove_format +
 			// remove_hdr_lines(BCF_HL_FMT)).
-			removeFormatTags(recs, hdr, nil)
+			removeFormatTagsHeader(hdr, nil)
+			ops = append(ops, func(v *vcf.Variant) {
+				removeFormatTagsRecord(v, nil)
+			})
 		case strings.HasPrefix(ent, "FORMAT/"), strings.HasPrefix(ent, "FMT/"):
 			tag := ent[strings.IndexByte(ent, '/')+1:]
-			removeFormatTags(recs, hdr, map[string]bool{tag: true})
+			want := map[string]bool{tag: true}
+			removeFormatTagsHeader(hdr, want)
+			ops = append(ops, func(v *vcf.Variant) {
+				removeFormatTagsRecord(v, want)
+			})
 		case ent == "ID":
-			for _, v := range recs {
+			ops = append(ops, func(v *vcf.Variant) {
 				v.ID = "."
-			}
+			})
 		}
 	}
-	return removedAllFilters
+	return func(v *vcf.Variant) {
+		for _, op := range ops {
+			op(v)
+		}
+	}, removedAllFilters
 }
 
-// removeFormatTags drops FORMAT fields from each record and the matching
-// ##FORMAT header lines. When want is nil every FORMAT tag *except GT* is
-// removed (upstream remove_format and remove_hdr_lines both preserve GT);
+// removeFormatTagsRecord drops FORMAT fields from one record. When want is nil
+// every FORMAT tag *except GT* is removed (upstream remove_format preserves GT);
 // otherwise only the named tags are removed (remove_format_tag), and a named GT
 // is removed like any other tag.
-func removeFormatTags(recs []*vcf.Variant, hdr *vcf.Header, want map[string]bool) {
+func removeFormatTagsRecord(v *vcf.Variant, want map[string]bool) {
 	keep := func(tag string) bool {
 		if want == nil {
 			return tag == "GT" // bare FORMAT/FMT keeps GT
 		}
 		return !want[tag]
 	}
-	for _, v := range recs {
-		if len(v.Format) == 0 {
+	if len(v.Format) == 0 {
+		return
+	}
+	newFmt := v.Format[:0]
+	for _, f := range v.Format {
+		if keep(f) {
+			newFmt = append(newFmt, f)
+		}
+	}
+	v.Format = newFmt
+	for si := range v.Samples {
+		if v.Samples[si].Data == nil {
 			continue
 		}
-		newFmt := v.Format[:0]
-		for _, f := range v.Format {
-			if keep(f) {
-				newFmt = append(newFmt, f)
-			}
-		}
-		v.Format = newFmt
-		for si := range v.Samples {
-			if v.Samples[si].Data == nil {
-				continue
-			}
-			for tag := range v.Samples[si].Data {
-				if !keep(tag) {
-					delete(v.Samples[si].Data, tag)
-				}
+		for tag := range v.Samples[si].Data {
+			if !keep(tag) {
+				delete(v.Samples[si].Data, tag)
 			}
 		}
 	}
+}
+
+// removeFormatTagsHeader strips the matching ##FORMAT header lines. When want
+// is nil every ##FORMAT line except GT is dropped (remove_hdr_lines preserves
+// GT); otherwise only the named tags are removed.
+func removeFormatTagsHeader(hdr *vcf.Header, want map[string]bool) {
 	out := hdr.MetaInfo[:0]
 	for _, m := range hdr.MetaInfo {
 		if k, id := structuredID(m); k == "FORMAT" {

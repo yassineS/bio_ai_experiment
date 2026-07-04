@@ -468,6 +468,19 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) (int, error) 
 					origStart+ibeg <= prevBasePos {
 					ibeg++
 				}
+			} else if trimBeg {
+				// Deletion (or same-size event carrying the shared anchor):
+				// upstream writes the alt starting at i=trim_beg
+				// (consensus.c:1014 `for (i=trim_beg; i<alen; i++)`), so an
+				// anchored indel never rewrites its leading anchor base — it
+				// leaves whatever is already in the buffer. In the ordinary
+				// non-overlapping case that byte is the reference anchor (emitted
+				// verbatim by emitGap, preserving fasta case). When an earlier
+				// overlapping variant already edited that base, the overlap
+				// splice below keeps out[start:start+ibeg] intact so the prior
+				// edit survives, matching upstream. trimBeg implies lenDelta != 0
+				// (isIndel), so this branch only fires for deletions.
+				ibeg = 1
 			}
 			// emittedAlt is the run written in place of the reference span
 			// [posIns,end). With mark-del padding it is padded to len(ref) so

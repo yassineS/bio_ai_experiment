@@ -147,11 +147,30 @@ type VCFFilterOptions struct {
 // soft-filtered output to out. It is the in-memory entry point for tests
 // and CLI tools that already have an io.Reader.
 func VCFFilter(in io.Reader, out io.Writer, opts VCFFilterOptions) (int, error) {
-	hdr, variants, err := readAllVariants(in)
+	// The SnpGap/IndelGap checks need a global per-contig indel index (a
+	// neighbour lookback both ahead of and behind the current record), so those
+	// modes must see every record before emitting. Only then do we buffer.
+	if opts.SnpGap > 0 || opts.IndelGap > 0 {
+		hdr, variants, err := readAllVariants(in)
+		if err != nil {
+			return 0, err
+		}
+		return writeFiltered(hdr, variants, out, opts)
+	}
+
+	// Common case: no gap lookback needed, so evaluate and emit one record at a
+	// time. This keeps peak memory O(1) in the record count rather than holding
+	// the whole input (readAllVariants) for the run.
+	br := bufio.NewReader(in)
+	head, err := br.Peek(5)
+	if err != nil && err != io.EOF {
+		return 0, err
+	}
+	src, hdr, err := openVariantSource(br, head)
 	if err != nil {
 		return 0, err
 	}
-	return writeFiltered(hdr, variants, out, opts)
+	return streamFiltered(hdr, src.next, nil, out, opts)
 }
 
 // VCFFilterFile opens the named input through iohelper and emits the
@@ -197,6 +216,30 @@ func VCFFilterFile(path string, out io.Writer, opts VCFFilterOptions) (int, erro
 //     FILTER column according to Mode; optionally rewrite GTs. If it
 //     PASSES with mode 'x', force FILTER to PASS.
 func writeFiltered(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts VCFFilterOptions) (int, error) {
+	// Pre-compute indel positions per chromosome for SnpGap/IndelGap. Only the
+	// buffered path can supply the full index; the streaming path passes nil
+	// (it is never taken when a gap is requested).
+	indelPos := indelIndex(variants)
+	i := 0
+	next := func() (*vcf.Variant, error) {
+		if i >= len(variants) {
+			return nil, io.EOF
+		}
+		v := variants[i]
+		i++
+		return v, nil
+	}
+	return streamFiltered(hdr, next, indelPos, out, opts)
+}
+
+// streamFiltered is the record-by-record core of the filter pipeline shared by
+// the buffered (SnpGap/IndelGap) and streaming (common-case) entry points. It
+// compiles the -i/-e expressions, resolves post-filters/mask/soft-filter name,
+// injects the header lines, then pulls records from next until io.EOF, applying
+// the identical per-record decision the former slice loop used. indelPos is the
+// pre-built per-contig indel index for the gap checks; it may be nil when no
+// gap check is requested (in which case violatesGap is never called).
+func streamFiltered(hdr *vcf.Header, next func() (*vcf.Variant, error), indelPos map[string][]int, out io.Writer, opts VCFFilterOptions) (int, error) {
 	include, exclude, err := compileExpressions(ViewOptions{
 		IncludeExpr: opts.IncludeExpr,
 		ExcludeExpr: opts.ExcludeExpr,
@@ -217,9 +260,6 @@ func writeFiltered(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts
 		return 0, fmt.Errorf("bcftools filter: %w", err)
 	}
 	hasMask := len(opts.MaskRegions) > 0
-
-	// Pre-compute indel positions per chromosome for SnpGap/IndelGap.
-	indelPos := indelIndex(variants)
 
 	// Resolve the soft-filter name. The literal "+" means "auto-pick a
 	// unique name"; we follow upstream's "FilterN" convention but emit
@@ -250,7 +290,14 @@ func writeFiltered(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts
 	}
 
 	count := 0
-	for _, v := range variants {
+	for {
+		v, err := next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return count, err
+		}
 		if len(parsedTargets) > 0 && !overlapsAny(v, parsedTargets) {
 			continue
 		}

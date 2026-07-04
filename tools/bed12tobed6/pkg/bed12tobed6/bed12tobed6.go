@@ -18,8 +18,13 @@
 // highest index (matches upstream `bed12tobed6 -n`, which numbers i+1 only
 // when strand == "+"; test case t5 covers the '-' strand).
 //
-// Records with fewer than 12 columns, or with no blocks, are passed through
-// unchanged (matching upstream behaviour when given BED6/BED4).
+// Records whose column count is not exactly 12 are treated by upstream as a
+// single implicit block spanning the whole feature and are normalised to a
+// 6-column BED6 record (chrom, start, end, name, score, strand), with empty
+// strings substituted for any absent trailing columns. When -n is set such a
+// record's score becomes the block number, which is always 1 for a single
+// block. This mirrors bedtools' GetBedBlocks (fields.size() != 12 pushes the
+// whole record) followed by ProcessBed always printing six fields.
 package bed12tobed6
 
 import (
@@ -29,6 +34,22 @@ import (
 	"strconv"
 	"strings"
 )
+
+// FieldCountError reports a record whose column count differs from the count
+// established by the first data record. Upstream bedtools sets its expected
+// BED field count from the first non-header line and aborts with
+// "Differing number of BED fields encountered at line: N.  Exiting..." the
+// moment a later line disagrees (bedFile.h parseBedLine). Error reproduces
+// that message byte-for-byte so the CLI can print it verbatim.
+type FieldCountError struct {
+	// Line is the 1-based physical line number of the offending record.
+	Line int
+}
+
+// Error returns the upstream bedtools diagnostic verbatim.
+func (e *FieldCountError) Error() string {
+	return fmt.Sprintf("Differing number of BED fields encountered at line: %d.  Exiting...", e.Line)
+}
 
 // Options configures the conversion.
 type Options struct {
@@ -44,8 +65,9 @@ type Options struct {
 // written.
 //
 // Lines starting with '#', 'track', or 'browser', plus blank lines, are
-// silently skipped. Records with fewer than 12 columns or zero blocks are
-// emitted unchanged as a defensive pass-through.
+// silently skipped. Records whose column count is not exactly 12 are
+// normalised to a 6-column BED6 record (see the package doc); 12-column
+// records with zero blocks are emitted unchanged as a defensive pass-through.
 func Convert(in io.Reader, out io.Writer, opts Options) (int, error) {
 	scanner := bufio.NewScanner(in)
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
@@ -54,6 +76,10 @@ func Convert(in io.Reader, out io.Writer, opts Options) (int, error) {
 
 	written := 0
 	lineNo := 0
+	// expectFields mirrors bedtools' bedType: it is set from the first data
+	// record's column count and every subsequent record must match it. -1
+	// means "not yet established".
+	expectFields := -1
 	for scanner.Scan() {
 		lineNo++
 		raw := scanner.Text()
@@ -67,9 +93,57 @@ func Convert(in io.Reader, out io.Writer, opts Options) (int, error) {
 			continue
 		}
 		fields := strings.Split(raw, "\t")
-		if len(fields) < 12 {
-			// Not a BED12 record — pass through unchanged.
-			if _, err := bw.WriteString(raw); err != nil {
+		// Enforce a uniform column count across records, exactly as upstream
+		// bedtools does. The first data record fixes the expected count; any
+		// later record with a different count aborts with the upstream
+		// message. Blank/header lines above are skipped and never counted.
+		if expectFields == -1 {
+			expectFields = len(fields)
+		} else if len(fields) != expectFields {
+			return written, &FieldCountError{Line: lineNo}
+		}
+		if len(fields) != 12 {
+			// Not a BED12 record. Upstream (GetBedBlocks) treats it as a
+			// single whole-feature block and ProcessBed always prints six
+			// columns, substituting empty strings for absent trailing
+			// fields. Re-emit as a normalised BED6 record.
+			if len(fields) < 3 {
+				return written, fmt.Errorf("line %d: expected at least 3 columns, got %d", lineNo, len(fields))
+			}
+			startVal, err := strconv.Atoi(strings.TrimSpace(fields[1]))
+			if err != nil {
+				return written, fmt.Errorf("line %d: invalid chromStart %q: %v", lineNo, fields[1], err)
+			}
+			endVal, err := strconv.Atoi(strings.TrimSpace(fields[2]))
+			if err != nil {
+				return written, fmt.Errorf("line %d: invalid chromEnd %q: %v", lineNo, fields[2], err)
+			}
+			name := ""
+			if len(fields) >= 4 {
+				name = fields[3]
+			}
+			score := ""
+			if len(fields) >= 5 {
+				score = fields[4]
+			}
+			strand := ""
+			if len(fields) >= 6 {
+				strand = fields[5]
+			}
+			if opts.NumberBlocks {
+				// A single implicit block: strand=="+" gives i+1==1, any
+				// other strand gives size()-i==1, so the number is always 1.
+				score = "1"
+			}
+			row := []string{
+				fields[0],
+				strconv.Itoa(startVal),
+				strconv.Itoa(endVal),
+				name,
+				score,
+				strand,
+			}
+			if _, err := bw.WriteString(strings.Join(row, "\t")); err != nil {
 				return written, err
 			}
 			if err := bw.WriteByte('\n'); err != nil {

@@ -489,6 +489,47 @@ func writeFastaRecord(w *bufio.Writer, header string, seq []byte, lineLen int) e
 	return nil
 }
 
+// writeFastqRecord writes a single FASTQ record (header, sequence and quality)
+// to w in the byte-exact layout of upstream seqtk's cutN print_seq: '@'+header,
+// the sequence wrapped at lineLen, the "+" separator, a leading blank line, then
+// the quality wrapped at lineLen. The blank line before the quality string is an
+// upstream quirk: print_seq writes "+\n" and its quality loop then emits an
+// extra newline before the first quality byte (its (i-begin)%60==0 test fires on
+// the first iteration). This function reproduces that byte-for-byte. lineLen must
+// be > 0 (cutN always passes 60); seq and qual must have equal length.
+func writeFastqRecord(w *bufio.Writer, header string, seq, qual []byte, lineLen int) error {
+	if _, err := fmt.Fprintf(w, "@%s", header); err != nil {
+		return err
+	}
+	for i := 0; i < len(seq); i++ {
+		if i%lineLen == 0 {
+			if err := w.WriteByte('\n'); err != nil {
+				return err
+			}
+		}
+		if err := w.WriteByte(seq[i]); err != nil {
+			return err
+		}
+	}
+	if err := w.WriteByte('\n'); err != nil {
+		return err
+	}
+	if _, err := w.WriteString("+\n"); err != nil {
+		return err
+	}
+	for i := 0; i < len(qual); i++ {
+		if i%lineLen == 0 {
+			if err := w.WriteByte('\n'); err != nil {
+				return err
+			}
+		}
+		if err := w.WriteByte(qual[i]); err != nil {
+			return err
+		}
+	}
+	return w.WriteByte('\n')
+}
+
 // emitSubseqRecord writes the output for one input sequence (identified by name,
 // full header and sequence bytes) according to the parsed spec. In name-list
 // mode it emits the whole record with its original header; in BED mode it emits
@@ -749,74 +790,107 @@ const cutNLineWidth = 60
 
 // CutNOptions holds parameters for CutN.
 type CutNOptions struct {
-	// MinN is the minimum length of a run of Ns required to trigger a cut.
-	// Must be >= 1.
+	// MinN is the minimum length of an N tract required to trigger a cut
+	// (upstream `-n`, cutN_min_N_tract). Must be >= 1.
 	MinN int
-	// EmitGaps, if true, causes the cut-out N-runs to be written to GapsW
-	// as BED-like records: "<chrom>\t<start0>\t<end>\tN\n" (0-based half-open).
-	EmitGaps bool
-	// GapsW is the writer for BED-format gap records when EmitGaps is true.
-	// If nil and EmitGaps is true, gap records are silently dropped.
-	GapsW io.Writer
+	// Penalty is the score deducted for each non-N base when scanning for an
+	// N tract (upstream `-p`, cutN_nonN_penalty). It lets a tract bridge a
+	// few interspersed non-N bases. Values <= 0 select the upstream default
+	// of 10.
+	Penalty int
+	// GapOnly, when true, makes CutN print only the gap coordinates of each
+	// cut N tract as "<name>\t<start0>\t<end>\n" (0-based half-open) and emit
+	// no sequence, matching upstream `-g`. Gaps are written to the same
+	// destination as sequence output (w).
+	GapOnly bool
 }
 
 // CutN reads a FASTA or FASTQ stream from in (auto-detected via the first
-// non-whitespace byte: '>' => FASTA, '@' => FASTQ) and writes FASTA fragments
-// to w, splitting each input sequence at runs of 'N' or 'n' of length >=
-// opts.MinN. Each retained fragment is emitted as a new FASTA record named
-// "<orig-name>:<start>-<end>", where coordinates are 1-based inclusive (start
-// is the position of the first retained base, end the position of the last).
-// If a record has no qualifying N-run it is emitted unchanged with its
-// original header and no coordinate suffix. If a sequence is entirely Ns or
-// the only fragments would be empty (e.g. leading/trailing N-runs only), no
-// record is emitted for that input.
+// non-whitespace byte: '>' => FASTA, '@' => FASTQ) and writes fragments to w,
+// splitting each input sequence at N tracts of length >= opts.MinN. The tract
+// finder mirrors upstream seqtk's stk_cutN/find_next_cut: it scores a candidate
+// tract by +1 for each N base and -opts.Penalty for each non-N base, so a run
+// can bridge a few interspersed non-N bases before it is cut. "N" here means
+// any byte upstream's seq_nt16_table maps to 15 (N/n, gaps such as '-', and any
+// non-IUPAC byte), not only literal 'N'.
 //
-// When opts.EmitGaps is true and opts.GapsW is non-nil, the cut-out N-runs
-// are written to opts.GapsW as BED-like records: "<chrom>\t<start0>\t<end>\tN"
-// where coordinates are 0-based half-open.
+// FASTA input yields FASTA fragments; FASTQ input yields FASTQ fragments (with
+// the quality sub-slice for each fragment), matching upstream print_seq. Each
+// retained fragment is emitted as a new record named "<orig-name>:<start>-<end>"
+// with 1-based inclusive coordinates. A record with no qualifying tract is
+// emitted unchanged as "<name>:1-<len>". A leading tract at position 0 is
+// dropped without emitting a fragment (upstream's `if (begin != 0)` guard), and
+// no empty fragment is emitted for a trailing tract.
+//
+// When opts.GapOnly is true, CutN emits no sequence and instead writes one line
+// per cut tract to w as "<name>\t<start0>\t<end>\n" (0-based half-open),
+// matching upstream `-g`; the leading-tract and no-trailing-gap rules apply
+// identically.
 //
 // Returns an error if opts.MinN < 1, or on I/O errors.
 func CutN(in io.Reader, w io.Writer, opts CutNOptions) error {
 	if opts.MinN < 1 {
 		return fmt.Errorf("cutN: -n/--min-n must be >= 1 (got %d)", opts.MinN)
 	}
+	penalty := opts.Penalty
+	if penalty <= 0 {
+		// Upstream default cutN_nonN_penalty.
+		penalty = 10
+	}
 
 	br, isFastq := peekIsFastq(in)
 	bw := bufio.NewWriter(w)
 
-	emit := func(name string, seq []byte) error {
-		runs := findNRuns(seq, opts.MinN)
-		if opts.EmitGaps && opts.GapsW != nil {
-			for _, r := range runs {
-				if _, err := fmt.Fprintf(opts.GapsW, "%s\t%d\t%d\tN\n", name, r[0], r[1]); err != nil {
+	// writeFrag emits one retained fragment. For FASTQ input (qual != nil) it
+	// reproduces upstream print_seq's FASTQ layout byte-for-byte (including the
+	// leading blank line before the quality string); for FASTA it uses the
+	// plain FASTA layout.
+	writeFrag := func(header string, seqFrag, qualFrag []byte) error {
+		if qualFrag != nil {
+			return writeFastqRecord(bw, header, seqFrag, qualFrag, cutNLineWidth)
+		}
+		return writeFastaRecord(bw, header, seqFrag, cutNLineWidth)
+	}
+
+	// emitFrag writes seq[start:end] as one record named "name:start+1-end",
+	// reproducing upstream print_seq's begin>=end guard (empty fragments are
+	// skipped, matching print_seq's early return).
+	emitFrag := func(name string, seq, qual []byte, start, end int) error {
+		if start >= end {
+			return nil
+		}
+		header := fmt.Sprintf("%s:%d-%d", name, start+1, end)
+		var qf []byte
+		if qual != nil {
+			qf = qual[start:end]
+		}
+		return writeFrag(header, seq[start:end], qf)
+	}
+
+	emit := func(name string, seq, qual []byte) error {
+		// Reproduce upstream stk_cutN's main loop: walk the sequence cutting
+		// out each qualifying tract, emitting the intervening fragment (or, in
+		// gap-only mode, the tract coordinates), then emit the trailing
+		// fragment. A tract starting at position 0 (begin == 0) is skipped.
+		k := 0
+		for {
+			begin, end, found := cutNFindNextCut(seq, k, penalty, opts.MinN)
+			if !found {
+				break
+			}
+			if begin != 0 {
+				if opts.GapOnly {
+					if _, err := fmt.Fprintf(bw, "%s\t%d\t%d\n", name, begin, end); err != nil {
+						return err
+					}
+				} else if err := emitFrag(name, seq, qual, k, begin); err != nil {
 					return err
 				}
 			}
+			k = end
 		}
-		if len(runs) == 0 {
-			// No qualifying N-run: still emit the record with the
-			// upstream "name:1-len" suffix so downstream tooling sees a
-			// uniform header layout. Skip empty sequences entirely.
-			if len(seq) == 0 {
-				return nil
-			}
-			header := fmt.Sprintf("%s:1-%d", name, len(seq))
-			return writeFastaRecord(bw, header, seq, cutNLineWidth)
-		}
-		// Build fragment intervals between runs and emit non-empty ones.
-		prev := 0
-		for _, r := range runs {
-			if r[0] > prev {
-				header := fmt.Sprintf("%s:%d-%d", name, prev+1, r[0])
-				if err := writeFastaRecord(bw, header, seq[prev:r[0]], cutNLineWidth); err != nil {
-					return err
-				}
-			}
-			prev = r[1]
-		}
-		if prev < len(seq) {
-			header := fmt.Sprintf("%s:%d-%d", name, prev+1, len(seq))
-			if err := writeFastaRecord(bw, header, seq[prev:], cutNLineWidth); err != nil {
+		if !opts.GapOnly {
+			if err := emitFrag(name, seq, qual, k, len(seq)); err != nil {
 				return err
 			}
 		}
@@ -833,7 +907,7 @@ func CutN(in io.Reader, w io.Writer, opts CutNOptions) error {
 			if err != nil {
 				return err
 			}
-			if err := emit(rec.ID, rec.Sequence); err != nil {
+			if err := emit(rec.ID, rec.Sequence, rec.Quality); err != nil {
 				return err
 			}
 		}
@@ -847,7 +921,7 @@ func CutN(in io.Reader, w io.Writer, opts CutNOptions) error {
 			if err != nil {
 				return err
 			}
-			if err := emit(rec.ID, rec.Sequence); err != nil {
+			if err := emit(rec.ID, rec.Sequence, nil); err != nil {
 				return err
 			}
 		}
@@ -856,27 +930,67 @@ func CutN(in io.Reader, w io.Writer, opts CutNOptions) error {
 	return bw.Flush()
 }
 
-// findNRuns returns the [start, end) (0-based, half-open) positions of every
-// maximal run of 'N' or 'n' in seq whose length is >= minN. Runs are returned
-// in left-to-right order.
-func findNRuns(seq []byte, minN int) [][2]int {
-	var runs [][2]int
-	i := 0
-	for i < len(seq) {
-		if seq[i] == 'N' || seq[i] == 'n' {
-			j := i + 1
-			for j < len(seq) && (seq[j] == 'N' || seq[j] == 'n') {
-				j++
+// cutNIsN reports, for each byte value, whether upstream seqtk's
+// seq_nt16_table maps it to 15 — the "N-like" class cutN treats as tract
+// material. Every byte is N except the recognised IUPAC bases
+// A,B,C,D,G,H,K,M,R,S,T,V,W,X,Y (either case); note 'U'/'u' and gaps map to 15
+// (N) while 'X'/'x' maps to 0 (not N), exactly as in seqtk.c.
+var cutNIsN = func() [256]bool {
+	var t [256]bool
+	for i := range t {
+		t[i] = true
+	}
+	for _, b := range []byte("ABCDGHKMRSTVWXYabcdghkmrstvwxy") {
+		t[b] = false
+	}
+	return t
+}()
+
+// cutNFindNextCut reproduces upstream seqtk's find_next_cut. Starting at k it
+// scans forward for the first N-like base, grows a maximal-scoring tract
+// forward (+1 per N, -penalty per non-N) to find its best end e, then scans
+// backward from e for the best begin b. If the tract length e+1-b reaches
+// minTract it returns the 0-based half-open interval [begin,end) and found=true;
+// otherwise it advances past the failed candidate and keeps looking.
+func cutNFindNextCut(seq []byte, k, penalty, minTract int) (begin, end int, found bool) {
+	n := len(seq)
+	for k < n {
+		if cutNIsN[seq[k]] {
+			// Forward pass: best-scoring prefix end.
+			score, max, e := 0, -1, -1
+			for i := k; i < n && score >= 0; i++ {
+				if cutNIsN[seq[i]] {
+					score++
+				} else {
+					score -= penalty
+				}
+				if score > max {
+					max = score
+					e = i
+				}
 			}
-			if j-i >= minN {
-				runs = append(runs, [2]int{i, j})
+			// Backward pass from e: best-scoring suffix begin.
+			score, max, b := 0, -1, -1
+			for i := e; i >= 0 && score >= 0; i-- {
+				if cutNIsN[seq[i]] {
+					score++
+				} else {
+					score -= penalty
+				}
+				if score > max {
+					max = score
+					b = i
+				}
 			}
-			i = j
+			if e+1-b >= minTract {
+				return b, e + 1, true
+			}
+			k = e + 1
 		} else {
-			i++
+			k++
 		}
 	}
-	return runs
+	return 0, 0, false
 }
 
 // Sample randomly samples a fraction of sequences.

@@ -358,6 +358,30 @@ const (
 	streamDownstream
 )
 
+// chromDir classifies a B hit by its physical position relative to A on the
+// reference (independent of the -D strand flip), mirroring upstream's
+// chromDirType. It drives the moving-cache purge and the scan-stop decisions,
+// which are position- (not strand-) based.
+type chromDir int
+
+const (
+	chromOverlap chromDir = iota
+	chromLeft
+	chromRight
+)
+
+// purgeDir mirrors upstream's purgeDirectionType: which of the forward/reverse
+// cache purge points may be advanced to the query start when directional
+// ignore flags (-iu/-id) reject a whole side of hits.
+type purgeDir int
+
+const (
+	purgeNeither purgeDir = iota
+	purgeBoth
+	purgeForward
+	purgeReverse
+)
+
 // chromB holds one database's rows for a single chromosome, in input order.
 type chromB struct {
 	rows []*Row
@@ -459,11 +483,19 @@ func strandBad(a, b *Row, opts Options) bool {
 	return hasUnknown || a.StrandV == b.StrandV
 }
 
+// elemRec is one candidate B together with the physical direction (chromDir) it
+// was found in relative to A. The direction is retained so getMaxLeftEndPos can
+// reproduce upstream's LEFT-only cache purge point.
+type elemRec struct {
+	row *Row
+	dir chromDir
+}
+
 // distGroup holds all candidate B's tied at one absolute distance, in B input
 // order (push_back order in upstream's RecDistList).
 type distGroup struct {
 	dist  int64
-	elems []*Row
+	elems []elemRec
 }
 
 // recDistList accumulates candidate B's bucketed and sorted by absolute
@@ -478,67 +510,407 @@ func newRecDistList(k int) *recDistList { return &recDistList{k: k} }
 
 // addRec inserts a B at the given absolute distance, keeping at most k distinct
 // distances, mirroring RecDistList::addRec. A new distance larger than all kept
-// is dropped once k distinct distances are already held.
-func (l *recDistList) addRec(dist int64, rec *Row) {
+// is dropped once k distinct distances are already held. It returns whether the
+// record was added (false only when the distance exceeds all kept distances and
+// the list is already full — upstream's early "return false"), which the sweep
+// uses to decide when scanning to the right can stop.
+func (l *recDistList) addRec(dist int64, rec *Row, dir chromDir) bool {
 	// Find existing group or insertion point (groups sorted ascending).
 	idx := sort.Search(len(l.groups), func(i int) bool { return l.groups[i].dist >= dist })
 	if idx < len(l.groups) && l.groups[idx].dist == dist {
-		l.groups[idx].elems = append(l.groups[idx].elems, rec)
-		return
+		l.groups[idx].elems = append(l.groups[idx].elems, elemRec{row: rec, dir: dir})
+		return true
 	}
 	if len(l.groups) >= l.k {
 		// Already have k distinct distances. Only insert if smaller than max.
 		if idx >= len(l.groups) {
-			return
+			return false
 		}
 		// Insert and drop the largest.
 		l.groups = append(l.groups, distGroup{})
 		copy(l.groups[idx+1:], l.groups[idx:])
-		l.groups[idx] = distGroup{dist: dist, elems: []*Row{rec}}
+		l.groups[idx] = distGroup{dist: dist, elems: []elemRec{{row: rec, dir: dir}}}
 		l.groups = l.groups[:l.k]
-		return
+		return true
 	}
 	// Room to add a new distinct distance.
 	l.groups = append(l.groups, distGroup{})
 	copy(l.groups[idx+1:], l.groups[idx:])
-	l.groups[idx] = distGroup{dist: dist, elems: []*Row{rec}}
+	l.groups[idx] = distGroup{dist: dist, elems: []elemRec{{row: rec, dir: dir}}}
+	return true
+}
+
+// closedForDist reports whether no further record at absolute distance dist (or
+// larger) can enter the list: the list already holds k distinct distances and
+// dist is larger than all of them. Because B records to the right of A have a
+// monotonically non-decreasing distance as the scan advances, once this is true
+// for the current record it stays true, so the forward scan can stop.
+func (l *recDistList) closedForDist(dist int64) bool {
+	if len(l.groups) < l.k {
+		return false
+	}
+	return dist > l.groups[len(l.groups)-1].dist
+}
+
+// getMaxLeftEndPos mirrors RecDistList::getMaxLeftEndPos: if the group at the
+// largest distance contains any physically-LEFT record, return that distance;
+// otherwise return -1. It is used to derive the moving-cache purge point.
+func (l *recDistList) getMaxLeftEndPos() int64 {
+	if len(l.groups) == 0 {
+		return -1
+	}
+	g := l.groups[len(l.groups)-1]
+	for _, e := range g.elems {
+		if e.dir == chromLeft {
+			return g.dist
+		}
+	}
+	return -1
+}
+
+// chromDirOf classifies B's physical position relative to A on the reference,
+// matching the branch structure of classify (which computes the same three
+// cases before applying the -D strand flip to derive the stream direction).
+func chromDirOf(a, b *Row) chromDir {
+	if intersects(a, b) {
+		return chromOverlap
+	}
+	if b.Start >= a.End {
+		return chromRight
+	}
+	return chromLeft
+}
+
+// streamIgnored reports whether the stream direction is dropped by the active
+// directional-ignore flags (-io / -iu / -id), mirroring the badStream test in
+// CloseSweep::tryToAddRecord.
+func streamIgnored(stream streamDir, opts Options) bool {
+	switch stream {
+	case streamUpstream:
+		return opts.IgnoreUpstream
+	case streamDownstream:
+		return opts.IgnoreDownstream
+	default:
+		return opts.IgnoreOverlaps
+	}
+}
+
+// dbSweep is the per-database moving-cache state that lets hitsForA process A's
+// (which arrive in sorted order) without rescanning every B for each A. It
+// mirrors the relevant per-DB members of upstream's CloseSweep: a cache of
+// still-relevant left/overlap records, a stream cursor into the chromosome's
+// start-sorted B rows, and the forward/reverse cache purge points.
+type dbSweep struct {
+	d         *db
+	chrom     string
+	haveChrom bool
+	rows      []*Row // B rows for the current chromosome (start-sorted).
+	next      int    // index of the next unread B row in rows.
+	cache     []*Row // active left/overlap records, kept in start order.
+
+	// maxLeftEndFwd / maxLeftEndRev mirror _maxPrevLeftClosestEndPos and
+	// _maxPrevLeftClosestEndPosReverse: a cached LEFT record whose End is below
+	// the applicable purge point can never be a closest hit for the current or
+	// any later (further-right) query and is dropped from the cache.
+	maxLeftEndFwd int64
+	maxLeftEndRev int64
+}
+
+// newDBSweep creates a sweep bound to database d.
+func newDBSweep(d *db) *dbSweep { return &dbSweep{d: d} }
+
+// ensureChrom repositions the sweep onto the given chromosome, resetting the
+// stream cursor, cache, and purge points on a change. A's arrive in sorted
+// order, so each chromosome's B rows are processed left to right exactly once.
+func (s *dbSweep) ensureChrom(chrom string) {
+	if s.haveChrom && s.chrom == chrom {
+		return
+	}
+	s.chrom = chrom
+	s.haveChrom = true
+	if c := s.d.byChrom[chrom]; c != nil {
+		s.rows = c.rows
+	} else {
+		s.rows = nil
+	}
+	s.next = 0
+	s.cache = s.cache[:0]
+	s.maxLeftEndFwd = 0
+	s.maxLeftEndRev = 0
 }
 
 // hitsForA returns the closest hits for A in one database, applying the full
-// selection/ordering/k/tie/directional logic of CloseSweep.
-func hitsForA(a *Row, d *db, opts Options) []hit {
+// selection/ordering/k/tie/directional logic of CloseSweep. Instead of scanning
+// every B on A's chromosome, it walks a bounded window: the persistent cache of
+// still-relevant left/overlap records plus a forward stream advance that stops
+// once no further right-of-A record could change the result.
+func (s *dbSweep) hitsForA(a *Row, opts Options) []hit {
+	s.ensureChrom(a.Chrom)
 	k := opts.kVal()
 	up := newRecDistList(k)
 	down := newRecDistList(k)
 	over := newRecDistList(k)
 
-	if c := d.byChrom[a.Chrom]; c != nil {
-		for _, b := range c.rows {
-			stream, dist := classify(a, b, opts)
-			// Exclusion (badStrand / badNames / badStream).
-			bad := strandBad(a, b, opts) ||
-				(opts.DifferentNames && nameOf(a) == nameOf(b))
-			switch stream {
-			case streamOverlap:
-				if opts.IgnoreOverlaps || bad {
-					continue
-				}
-				over.addRec(0, b)
-			case streamUpstream:
-				if opts.IgnoreUpstream || bad {
-					continue
-				}
-				up.addRec(dist, b)
-			case streamDownstream:
-				if opts.IgnoreDownstream || bad {
-					continue
-				}
-				down.addRec(dist, b)
+	upActive, downActive := s.rightActive(opts, a)
+
+	// scanCache: reconsider every still-cached record for this query, dropping
+	// those the purge point has left behind. Cached records were pulled for
+	// earlier (further-left) queries, so for this query they are left/overlap
+	// and normally never trip the right-scan stop; the check is kept for
+	// faithfulness with upstream's scanCache.
+	kept := s.cache[:0]
+	stopped := false
+	i := 0
+	for ; i < len(s.cache); i++ {
+		b := s.cache[i]
+		del, cd, dist := s.considerRecord(a, b, up, down, over, opts)
+		if !del {
+			kept = append(kept, b)
+		}
+		if cd == chromRight && rightScanStop(up, down, dist, upActive, downActive) {
+			stopped = true
+			i++
+			break
+		}
+	}
+	if stopped {
+		for ; i < len(s.cache); i++ {
+			kept = append(kept, s.cache[i])
+		}
+	}
+	s.cache = kept
+
+	// Advance the shared stream cursor, caching non-deleted records, until a
+	// right-of-A record shows no further record can change up/down/over.
+	if !stopped {
+		for s.next < len(s.rows) {
+			b := s.rows[s.next]
+			del, cd, dist := s.considerRecord(a, b, up, down, over, opts)
+			if !del {
+				s.cache = append(s.cache, b)
+			}
+			s.next++
+			if cd == chromRight && rightScanStop(up, down, dist, upActive, downActive) {
+				break
 			}
 		}
 	}
 
+	// Update the purge point from the closest left records (upstream's
+	// setLeftClosestEndPos, which runs at the top of finalizeSelections), then
+	// perform the identical merge as before.
+	s.setLeftClosestEndPos(up, down, a, opts)
 	return finalize(up, down, over, opts)
+}
+
+// considerRecord classifies B relative to A and routes it into the up/down/over
+// candidate lists, mirroring CloseSweep::considerRecord + tryToAddRecord. It
+// returns whether the record must be deleted from the cache (a LEFT record
+// purged by the closest-end-pos point), B's physical direction, and its
+// absolute distance (used by the caller to decide when to stop scanning right).
+func (s *dbSweep) considerRecord(a, b *Row, up, down, over *recDistList, opts Options) (del bool, cd chromDir, dist int64) {
+	cd = chromDirOf(a, b)
+	var stream streamDir
+	stream, dist = classify(a, b, opts)
+	bad := strandBad(a, b, opts) || (opts.DifferentNames && nameOf(a) == nameOf(b))
+	shouldIgnore := bad || streamIgnored(stream, opts)
+
+	switch cd {
+	case chromOverlap:
+		if !shouldIgnore {
+			over.addRec(0, b, chromOverlap)
+		}
+	case chromLeft:
+		if s.beforeLeftClosestEndPos(b, opts) {
+			return true, cd, dist
+		}
+		if !shouldIgnore {
+			if stream == streamUpstream {
+				up.addRec(dist, b, chromLeft)
+			} else {
+				down.addRec(dist, b, chromLeft)
+			}
+		}
+	case chromRight:
+		if !shouldIgnore {
+			if stream == streamUpstream {
+				up.addRec(dist, b, chromRight)
+			} else {
+				down.addRec(dist, b, chromRight)
+			}
+		}
+	}
+	return false, cd, dist
+}
+
+// rightScanStop reports whether the forward scan of B records to the right of A
+// can stop after the current right record at absolute distance dist. Because
+// such records have monotonically non-decreasing distance, once every list they
+// could still be added to is closed at dist, no later record can change the
+// result. A list is "active" only when a right record can actually be added to
+// it (the direction it maps to is not ignored); inactive lists never block the
+// stop, so when neither side is active the scan stops at the first right record.
+func rightScanStop(up, down *recDistList, dist int64, upActive, downActive bool) bool {
+	if upActive && !up.closedForDist(dist) {
+		return false
+	}
+	if downActive && !down.closedForDist(dist) {
+		return false
+	}
+	return true
+}
+
+// rightActive reports which of the up/down lists a B record to the right of A
+// can still be added to for this query: the direction the right side maps to
+// under the active -D mode and query/DB strand, minus any direction dropped by
+// -iu/-id. For -D b the right side can map to either direction (it depends on
+// each B's strand), so both may be active.
+func (s *dbSweep) rightActive(opts Options, a *Row) (up, down bool) {
+	feedUp, feedDown := rightFeeds(opts, a)
+	return feedUp && !opts.IgnoreUpstream, feedDown && !opts.IgnoreDownstream
+}
+
+// rightFeeds reports which stream directions a B record physically to the right
+// of A can be classified as, mirroring the RIGHT branch of classify. Without a
+// -D sign mode (or with -D ref) the right side is always downstream; with -D a
+// it flips wholesale by the query strand; with -D b it depends on each B's
+// strand so both are possible.
+func rightFeeds(opts Options, a *Row) (up, down bool) {
+	if !opts.DistanceMode.signDistance() {
+		return false, true
+	}
+	switch opts.DistanceMode {
+	case DistanceA:
+		if a.StrandV == strandReverse {
+			return true, false
+		}
+		return false, true
+	case DistanceB:
+		return true, true
+	default: // DistanceSignedRef
+		return false, true
+	}
+}
+
+// beforeLeftClosestEndPos mirrors CloseSweep::beforeLeftClosestEndPos: a cached
+// record whose End is below the applicable (strand-selected) purge point can
+// never be a closest hit for the current or any later query and is dropped.
+func (s *dbSweep) beforeLeftClosestEndPos(b *Row, opts Options) bool {
+	recEnd := int64(b.End)
+	if !opts.SameStrand && !opts.OppositeStrand {
+		return recEnd < s.maxLeftEndFwd
+	}
+	if b.StrandV == strandForward {
+		return recEnd < s.maxLeftEndFwd
+	}
+	return recEnd < s.maxLeftEndRev
+}
+
+// setLeftClosestEndPos mirrors CloseSweep::setLeftClosestEndPos: it advances the
+// forward/reverse cache purge points from the farthest closest-left record (or,
+// when directional-ignore flags reject a whole left side, straight to the query
+// start), so the next (further-right) query can purge records that can no longer
+// be closest.
+func (s *dbSweep) setLeftClosestEndPos(up, down *recDistList, a *Row, opts Options) {
+	qStart := int64(a.Start)
+	pd := purgePointException(opts, a)
+	if pd == purgeBoth || pd == purgeForward {
+		if qStart > s.maxLeftEndFwd {
+			s.maxLeftEndFwd = qStart
+		}
+	}
+	if pd == purgeBoth || pd == purgeReverse {
+		if qStart > s.maxLeftEndRev {
+			s.maxLeftEndRev = qStart
+		}
+	}
+	if pd != purgeNeither {
+		return
+	}
+
+	upDist := up.getMaxLeftEndPos()
+	downDist := down.getMaxLeftEndPos()
+	if upDist == -1 && downDist == -1 {
+		return
+	}
+	maxDist := upDist
+	if downDist > maxDist {
+		maxDist = downDist
+	}
+	leftMostEndPos := (qStart - maxDist) + 1
+	qForward := a.StrandV == strandForward
+	qReverse := a.StrandV == strandReverse
+	if (!opts.SameStrand && !opts.OppositeStrand) ||
+		(opts.SameStrand && qForward) ||
+		(opts.OppositeStrand && qReverse) {
+		if leftMostEndPos > s.maxLeftEndFwd {
+			s.maxLeftEndFwd = leftMostEndPos
+		}
+	} else {
+		if leftMostEndPos > s.maxLeftEndRev {
+			s.maxLeftEndRev = leftMostEndPos
+		}
+	}
+}
+
+// purgePointException mirrors CloseSweep::purgePointException: it detects the
+// -iu/-id + -D-mode combinations that reject every left-side hit, so the cache
+// can be purged up to the query start (in the forward, reverse, or both cache
+// tracks) even though no left record was selected.
+func purgePointException(opts Options, a *Row) purgeDir {
+	qForward := a.StrandV == strandForward
+	qReverse := a.StrandV == strandReverse
+	refDist := opts.DistanceMode == DistanceSignedRef
+	aDist := opts.DistanceMode == DistanceA
+	bDist := opts.DistanceMode == DistanceB
+	iu := opts.IgnoreUpstream
+	id := opts.IgnoreDownstream
+	same := opts.SameStrand
+	diff := opts.OppositeStrand
+
+	if iu && id {
+		return purgeBoth
+	}
+	if iu {
+		switch {
+		case refDist:
+			return purgeBoth
+		case aDist && qForward:
+			if same {
+				return purgeForward
+			}
+			if diff {
+				return purgeReverse
+			}
+		case bDist:
+			if qForward && diff {
+				return purgeReverse
+			}
+			if qReverse && same {
+				return purgeReverse
+			}
+		}
+	} else if id {
+		switch {
+		case aDist:
+			if qReverse {
+				if same {
+					return purgeReverse
+				}
+				if diff {
+					return purgeForward
+				}
+			}
+		case bDist:
+			if qForward && same {
+				return purgeForward
+			}
+			if qReverse && diff {
+				return purgeForward
+			}
+		}
+	}
+	return purgeNeither
 }
 
 // finalize merges the upstream/downstream/overlap candidate lists into the
@@ -552,14 +924,14 @@ func finalize(up, down, over *recDistList, opts Options) []hit {
 		elems := g.elems
 		switch opts.TieBreak {
 		case TieFirst:
-			out = append(out, hit{b: elems[0], dist: signed})
+			out = append(out, hit{b: elems[0].row, dist: signed})
 			used++
 		case TieLast:
-			out = append(out, hit{b: elems[len(elems)-1], dist: signed})
+			out = append(out, hit{b: elems[len(elems)-1].row, dist: signed})
 			used++
 		default:
 			for _, e := range elems {
-				out = append(out, hit{b: e, dist: signed})
+				out = append(out, hit{b: e.row, dist: signed})
 				used++
 			}
 		}
@@ -755,9 +1127,16 @@ func ClosestMulti(readerA io.Reader, readersB []io.Reader, writer io.Writer, opt
 		return dbReachable == nil || dbReachable(dbIdx, chrom)
 	}
 
+	// One moving-cache sweep per database, reused across A's so consecutive
+	// (sorted) queries advance the shared stream cursor instead of rescanning.
+	sweeps := make([]*dbSweep, len(dbs))
+	for i, d := range dbs {
+		sweeps[i] = newDBSweep(d)
+	}
+
 	for _, a := range aRows[:emitLimit] {
 		if opts.MultiDBMode == MultiDBAll && len(dbs) > 1 {
-			if err := emitAllMode(a, dbs, opts, reachable, signedForOutput, emit, emitNull); err != nil {
+			if err := emitAllMode(a, sweeps, opts, reachable, signedForOutput, emit, emitNull); err != nil {
 				return count, err
 			}
 			continue
@@ -765,11 +1144,11 @@ func ClosestMulti(readerA io.Reader, readersB []io.Reader, writer io.Writer, opt
 		// MultiDBEach (or single db): accumulate hits across all databases.
 		// Only when no database yields any hit do we emit a single null row.
 		any := false
-		for dbIdx, d := range dbs {
+		for dbIdx, s := range sweeps {
 			if !reachable(dbIdx, a.Chrom) {
 				continue
 			}
-			for _, h := range hitsForA(a, d, opts) {
+			for _, h := range s.hitsForA(a, opts) {
 				any = true
 				if err := emit(a, label(dbIdx), h.b.Fields, signedForOutput(h.dist), opts.ReportDistance); err != nil {
 					return count, err
@@ -839,18 +1218,18 @@ type allCand struct {
 // absolute distance (ties broken by B's lessThan order), then take the k
 // closest, honouring the tie mode, mirroring CloseSweep::checkMultiDbs.
 func emitAllMode(
-	a *Row, dbs []*db, opts Options,
+	a *Row, sweeps []*dbSweep, opts Options,
 	reachable func(dbIdx int, chrom string) bool,
 	signedForOutput func(int64) int64,
 	emit func(a *Row, lbl string, bFields []string, dist int64, hasDist bool) error,
 	emitNull func(a *Row) error,
 ) error {
 	var cands []allCand
-	for dbIdx, d := range dbs {
+	for dbIdx, s := range sweeps {
 		if !reachable(dbIdx, a.Chrom) {
 			continue
 		}
-		for _, h := range hitsForA(a, d, opts) {
+		for _, h := range s.hitsForA(a, opts) {
 			abs := h.dist
 			neg := abs < 0
 			if abs < 0 {

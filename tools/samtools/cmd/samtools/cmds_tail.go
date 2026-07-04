@@ -159,7 +159,9 @@ Options:
   -a, --assembly NAME    Populate the @SQ AS: tag.
   -s, --species SPECIES  Populate the @SQ SP: tag.
   -u, --uri URI          Populate the @SQ UR: tag (default file://<path>).
-  -A, --alias            Emit AN: alias tags from header tokens.
+  -A, --alias            Add an AN: tag of alternate names by adding or
+                         removing a leading "chr" prefix (with chrM/chrMT/MT
+                         mitochondrial synonyms).
   -H                     Suppress the @HD header line.
   -o, --output PATH      Output path (default stdout).
   -h, --help             Show this help.
@@ -1484,6 +1486,8 @@ func runStats(args []string) int {
 		TrimQuality:    trimQuality,
 		CovThreshold:   covThresh,
 		Threads:        effThreads,
+		Argv:           os.Args,
+		Version:        fmt.Sprintf("%s+htslib-%s", version, version),
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools stats: %v\n", err)
 		return 1

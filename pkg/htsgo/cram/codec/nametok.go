@@ -547,7 +547,17 @@ func (ctx *nameContext) decodeName(arena *nametokArena) (name []byte, done bool,
 	}
 
 	out, outH := arena.get()
-	ctx.lc[cnum].last = make([]lastTok, nameMaxTokens)
+	// A name's per-token diff history is written and read only at token
+	// indices in [1, ctx.maxTok): the decode loop below is bounded by
+	// `ntok < ctx.maxTok`, the terminating reslice caps it at ntok+1 <=
+	// maxTok, and every cross-name read is guarded by `ntok < lastNtok`
+	// (lastNtok <= maxTok). Slots >= maxTok are never touched, so sizing to
+	// maxTok — rather than the 128-slot nameMaxTokens ceiling — allocates
+	// exactly what is used and produces byte-for-byte the same names, while
+	// removing the dominant per-name allocation of name-tokeniser decode
+	// (128 slots vs the ~8 a typical read name uses). maxTok is fixed by
+	// unpackDescriptors before this loop and is always >= 1.
+	ctx.lc[cnum].last = make([]lastTok, ctx.maxTok)
 
 	for ntok := 1; ntok < nameMaxTokens && ntok < ctx.maxTok; ntok++ {
 		tok, ok := ctx.readType(ntok)

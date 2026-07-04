@@ -1,6 +1,7 @@
 package bcftools
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"strings"
@@ -55,11 +56,21 @@ type ConvertOptions struct {
 // format to out. The (path, reader) pair is split from ConvertFile so the
 // streaming entry point can be used in tests without a sibling file.
 func Convert(in io.Reader, out io.Writer, opts ConvertOptions) (int, error) {
-	hdr, variants, err := readAllVariants(in)
+	// The default convert pipeline copies each record through the sample /
+	// region / expression filters and re-emits it, so it can stream one record
+	// at a time without ever buffering the whole input. Peak memory is O(1) in
+	// the record count. The emitted records, their order, and the output bytes
+	// are identical to the former readAllVariants slice loop.
+	br := bufio.NewReader(in)
+	head, err := br.Peek(5)
+	if err != nil && err != io.EOF {
+		return 0, err
+	}
+	src, hdr, err := openVariantSource(br, head)
 	if err != nil {
 		return 0, err
 	}
-	return writeConverted(hdr, variants, out, opts)
+	return writeConverted(hdr, src.next, out, opts)
 }
 
 // ConvertFile opens the named input through iohelper (transparent gzip
@@ -96,11 +107,12 @@ func ConvertFile(path string, out io.Writer, opts ConvertOptions) (int, error) {
 	return Convert(r, out, opts)
 }
 
-// writeConverted is shared between Convert (in-memory pipeline) and any
-// future streaming entry point. It applies the sample / region /
-// expression filters and emits the result via the unified openOutput
-// helper from view.go.
-func writeConverted(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts ConvertOptions) (int, error) {
+// writeConverted is the record-by-record core of the convert pipeline. It
+// applies the sample / region / expression filters and emits the result via
+// the unified openOutput helper from view.go. Records are pulled from next
+// until it returns io.EOF, so the caller streams straight from the reader
+// without materialising the whole input.
+func writeConverted(hdr *vcf.Header, next func() (*vcf.Variant, error), out io.Writer, opts ConvertOptions) (int, error) {
 	// 1) Sample restriction. We validate the requested samples against
 	//    the input header before narrowing it.
 	if len(opts.Samples) > 0 {
@@ -146,7 +158,14 @@ func writeConverted(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opt
 	}
 
 	count := 0
-	for _, v := range variants {
+	for {
+		v, err := next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return count, err
+		}
 		if len(parsedTargets) > 0 && !overlapsAny(v, parsedTargets) {
 			continue
 		}

@@ -23,8 +23,10 @@ type DictOptions struct {
 	// URI populates the @SQ UR: tag (`-u URI`). When empty and Path is a
 	// real file path, upstream uses "file://<absolute-path>".
 	URI string
-	// AliasFromHeader, when true (-A), emits an additional AN: alias for
-	// any whitespace-separated tokens in the FASTA header line.
+	// AliasFromHeader, when true (-A), emits an AN: alias tag derived by
+	// adding or removing a leading "chr" prefix on the sequence name,
+	// matching upstream `samtools dict -A` (including the chrM/chrMT
+	// mitochondrial synonyms).
 	AliasFromHeader bool
 	// NoHeader, when true (-H), suppresses the @HD line.
 	NoHeader bool
@@ -52,24 +54,50 @@ func (e DictEntry) FormatSAM() string {
 		sb.WriteString("\tM5:")
 		sb.WriteString(e.M5)
 	}
-	if e.Assembly != "" {
-		sb.WriteString("\tAS:")
-		sb.WriteString(e.Assembly)
+	// Field order matches upstream `samtools dict` exactly:
+	// SN, LN, M5, [AN], [UR], [AS], [SP]. (AH — for alt-locus
+	// sequences — is not yet supported.)
+	for _, al := range e.Aliases {
+		sb.WriteString("\tAN:")
+		sb.WriteString(al)
 	}
 	if e.URI != "" {
 		sb.WriteString("\tUR:")
 		sb.WriteString(e.URI)
 	}
+	if e.Assembly != "" {
+		sb.WriteString("\tAS:")
+		sb.WriteString(e.Assembly)
+	}
 	if e.Species != "" {
 		sb.WriteString("\tSP:")
 		sb.WriteString(e.Species)
 	}
-	for _, al := range e.Aliases {
-		sb.WriteString("\tAN:")
-		sb.WriteString(al)
-	}
 	sb.WriteByte('\n')
 	return sb.String()
+}
+
+// aliasName builds the AN: alias value for name, matching upstream
+// `samtools dict -A`: a leading "chr" prefix is stripped if present,
+// otherwise one is added. Mitochondrial names additionally gain their
+// well-known synonyms (M ↔ chrMT/MT and MT ↔ chrM/M) as comma-separated
+// values within the single AN tag.
+func aliasName(name string) string {
+	var an string
+	stripped := name
+	if strings.HasPrefix(name, "chr") {
+		stripped = name[3:]
+		an = stripped
+	} else {
+		an = "chr" + name
+	}
+	switch stripped {
+	case "M":
+		an += ",chrMT,MT"
+	case "MT":
+		an += ",chrM,M"
+	}
+	return an
 }
 
 // Dict streams a FASTA file and emits the corresponding sequence
@@ -127,8 +155,8 @@ func Dict(in io.Reader, w io.Writer, opts DictOptions) error {
 			}
 			if len(fields) > 0 {
 				entry.Name = fields[0]
-				if opts.AliasFromHeader && len(fields) > 1 {
-					entry.Aliases = append([]string(nil), fields[1:]...)
+				if opts.AliasFromHeader {
+					entry.Aliases = []string{aliasName(entry.Name)}
 				}
 			}
 			continue

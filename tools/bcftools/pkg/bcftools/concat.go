@@ -70,10 +70,18 @@ func Concat(inputs []NamedReader, out io.Writer, opts ConcatOptions) (int, error
 	if (opts.RemoveDuplicates || opts.RmDupMode != "") && !opts.AllowOverlaps {
 		return 0, fmt.Errorf("The -D option is supported only with -a")
 	}
-	// Read each input fully into memory: bcftools concat already requires
-	// inputs to be sorted, and we operate on the in-memory variants to
-	// implement sort-merge and de-duplication cleanly. For v1 this is the
-	// right trade-off; a streaming sort-merge can land later.
+
+	// The default (plain) concatenation copies records through unchanged, so
+	// it can stream one record at a time without ever materialising the whole
+	// input in memory. Only the AllowOverlaps (sort-merge/dedup) and Ligate
+	// branches need every record held at once for cross-record ordering; those
+	// keep the read-all buffering below.
+	if !opts.AllowOverlaps && !opts.Ligate {
+		return concatStream(inputs, out, opts)
+	}
+
+	// Read each input fully into memory: the sort-merge (-a) and ligate (-l)
+	// paths need all records held at once to reorder / reconcile them.
 	heads := make([]*vcf.Header, 0, len(inputs))
 	groups := make([][]*vcf.Variant, 0, len(inputs))
 	for _, in := range inputs {
@@ -114,10 +122,6 @@ func Concat(inputs []NamedReader, out io.Writer, opts ConcatOptions) (int, error
 			mode = "exact"
 		}
 		records = mergeSortedDedup(groups, order, mode)
-	default:
-		for _, g := range groups {
-			records = append(records, g...)
-		}
 	}
 
 	w, finish, err := openOutput(out, ViewOptions{
@@ -138,6 +142,66 @@ func Concat(inputs []NamedReader, out io.Writer, opts ConcatOptions) (int, error
 		}
 	}
 	return len(records), w.Flush()
+}
+
+// concatStream implements the default (order-preserving) concatenation without
+// buffering the records: it merges only the headers up front, writes the merged
+// header, then copies each input's records straight from reader to writer in
+// input order. The emitted records, their order, the merged header, and the
+// count are identical to the buffered path (which simply appended each group in
+// order) — only the peak memory differs.
+func concatStream(inputs []NamedReader, out io.Writer, opts ConcatOptions) (int, error) {
+	sources := make([]variantSource, 0, len(inputs))
+	heads := make([]*vcf.Header, 0, len(inputs))
+	for _, in := range inputs {
+		br := bufio.NewReader(in.Reader)
+		head, err := br.Peek(5)
+		if err != nil && err != io.EOF {
+			return 0, fmt.Errorf("bcftools concat: %s: %w", in.Name, err)
+		}
+		s, hdr, err := openVariantSource(br, head)
+		if err != nil {
+			return 0, fmt.Errorf("bcftools concat: %s: %w", in.Name, err)
+		}
+		sources = append(sources, s)
+		heads = append(heads, hdr)
+	}
+
+	merged, err := MergeHeaders(heads)
+	if err != nil {
+		return 0, err
+	}
+
+	w, finish, err := openOutput(out, ViewOptions{
+		OutputFormat:  opts.OutputFormat,
+		CompressLevel: opts.CompressLevel,
+		Threads:       opts.Threads,
+	}, merged)
+	if err != nil {
+		return 0, err
+	}
+	defer finish()
+	if err := w.WriteHeader(); err != nil {
+		return 0, err
+	}
+
+	count := 0
+	for si, s := range sources {
+		for {
+			v, err := s.next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return count, fmt.Errorf("bcftools concat: %s: %w", inputs[si].Name, err)
+			}
+			if err := w.Write(v); err != nil {
+				return count, err
+			}
+			count++
+		}
+	}
+	return count, w.Flush()
 }
 
 // NamedReader pairs an io.Reader with a human-friendly name used in error
