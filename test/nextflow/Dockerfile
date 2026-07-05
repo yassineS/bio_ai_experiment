@@ -127,7 +127,7 @@ RUN cd reference_code/sickle && make && cp sickle /opt/upstream/ \
 
 # --- skewer (old C++; try a permissive std, else skip) -----------------------
 RUN cd reference_code/skewer && \
-    { make || make CXXFLAGS='-O3 -std=gnu++98 -fpermissive'; } && cp skewer /opt/upstream/ \
+    { make || make CXXFLAGS='-c -O2 -std=gnu++98 -fpermissive'; } && cp skewer /opt/upstream/ \
     || echo "WARN: skewer upstream build failed; realbench skewer cells will SKIP"
 
 # --- fastp (needs libisal + libdeflate) --------------------------------------
