@@ -232,10 +232,14 @@ func bedCells() []CellSpec {
 		// tobam writes its BAM to stdout, so compare it framing-independently via
 		// `samtools view -h` (PostViewSAM + StdoutView), like bedtag.
 		{"bedtobam", "bedtobam", NeedBED | NeedBED4 | NeedRef, []string{"-i", phBED4, "-g", phFai}, false, false, true, ""},
-		// RNG-driven tools have no deterministic upstream pair: ours-only perf.
-		{"bedrandom", "random", NeedRef, []string{"-g", phFai, "-n", "100", "-seed", "1"}, true, false, false, ""},
-		{"bedshuffle", "shuffle", NeedBED | NeedRef, []string{"-i", phBED, "-g", phFai, "-seed", "1"}, true, false, false, ""},
-		{"bedsample", "sample", NeedBED, []string{"-i", phBED, "-n", "10", "-seed", "1"}, true, false, false, ""},
+		// RNG-driven tools ARE deterministic under a fixed -seed: bedtools
+		// random/shuffle/sample use C++11 std::mt19937_64 (the default non-USE_RAND
+		// build), which our ports replicate byte-exactly (tools/<tool>/pkg/<tool>/
+		// mt19937.go), so with a matching -seed they compare byte-for-byte vs
+		// upstream. The -g genome file is read from the .fai's first two columns.
+		{"bedrandom", "random", NeedRef, []string{"-g", phFai, "-n", "100", "-seed", "1"}, false, false, false, ""},
+		{"bedshuffle", "shuffle", NeedBED | NeedRef, []string{"-i", phBED, "-g", phFai, "-seed", "1"}, false, false, false, ""},
+		{"bedsample", "sample", NeedBED, []string{"-i", phBED, "-n", "10", "-seed", "1"}, false, false, false, ""},
 	}
 	cells := make([]CellSpec, 0, len(specs))
 	for _, s := range specs {
