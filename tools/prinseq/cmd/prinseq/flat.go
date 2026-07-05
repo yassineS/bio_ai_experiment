@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"io"
@@ -131,6 +132,19 @@ func runFlat(args []string) {
 	fs.IntVar(&seqNum, "seq_num", 0, "Keep only the first N passing records")
 	fs.IntVar(&outFormat, "out_format", 0, "1=FASTA, 2=FASTA+QUAL, 3=FASTQ, 4=FASTQ+FASTA, 5=FASTQ+FASTA+QUAL")
 
+	// Flat stats-reporting flags (upstream -stats_*). When ANY of these is
+	// set, prinseq emits the summary-statistics TSV to STDOUT and skips the
+	// filter/output path entirely (prinseq-lite.pl:676-752, 1944-2048).
+	var statsInfo, statsLen, statsDupl, statsTag, statsDinuc, statsNs, statsAssembly, statsAll bool
+	fs.BoolVar(&statsInfo, "stats_info", false, "Report read/base counts")
+	fs.BoolVar(&statsLen, "stats_len", false, "Report length-distribution statistics")
+	fs.BoolVar(&statsDupl, "stats_dupl", false, "Report duplicate-sequence statistics")
+	fs.BoolVar(&statsTag, "stats_tag", false, "Report tag-sequence probability statistics")
+	fs.BoolVar(&statsDinuc, "stats_dinuc", false, "Report dinucleotide-odds statistics")
+	fs.BoolVar(&statsNs, "stats_ns", false, "Report ambiguous-base (N) statistics")
+	fs.BoolVar(&statsAssembly, "stats_assembly", false, "Report assembly (Nx) statistics")
+	fs.BoolVar(&statsAll, "stats_all", false, "Report every -stats_* group")
+
 	// Switches we accept but treat as no-ops in the flat front end (they affect
 	// only the stats/graph reporting paths, not the filtered read stream).
 	var verbose bool
@@ -190,6 +204,45 @@ Misc:            -phred64 -seq_case -dna_rna -rm_header -no_qual_header
 		os.Exit(1)
 	}
 	isPaired := input2 != ""
+
+	// Flat stats-reporting path. When any -stats_* flag is set, emit the
+	// summary-statistics TSV to STDOUT and skip filtering entirely, matching
+	// upstream prinseq-lite.pl (lines 676-752, 1944-2048). -stats_all enables
+	// every group.
+	groups := prinseq.StatsGroups{
+		Info:     statsInfo,
+		Len:      statsLen,
+		Dupl:     statsDupl,
+		Tag:      statsTag,
+		Dinuc:    statsDinuc,
+		Ns:       statsNs,
+		Assembly: statsAssembly,
+	}
+	if statsAll {
+		groups = prinseq.StatsGroupsAll()
+	}
+	if groups.Any() {
+		reader, err := openInput(input1)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening file: %v\n", err)
+			os.Exit(1)
+		}
+		defer reader.Close()
+		lines, err := prinseq.CollectFlatStats(reader, isFastq, groups)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error collecting statistics: %v\n", err)
+			os.Exit(1)
+		}
+		w := bufio.NewWriter(os.Stdout)
+		for _, l := range lines {
+			fmt.Fprintln(w, l)
+		}
+		if err := w.Flush(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing statistics: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	// Default quality-trim window/step to 1 when quality trimming is active,
 	// mirroring upstream's lazy default-fill and our subcommand path.

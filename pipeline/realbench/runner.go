@@ -55,6 +55,13 @@ func Run(cfg Config) (*Report, error) {
 		Reps:      cfg.Reps,
 		Machine:   machineInfo(),
 	}
+	// Derive the synthetic bed* inputs (BED4/BEDPE/window) from the real BED so
+	// the cells that need more than BED3 run against an honest input. A synthesis
+	// failure is non-fatal: the dependent cells simply SKIP (their derived inputs
+	// stay empty), so a broken BED never aborts the whole run.
+	if derived, err := deriveInputs(cfg.Inputs, cfg.TmpDir); err == nil {
+		cfg.Inputs = derived
+	}
 	for _, spec := range Matrix(cfg.Tier) {
 		rep.Cells = append(rep.Cells, runCell(cfg, spec))
 	}
