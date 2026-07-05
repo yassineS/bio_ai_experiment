@@ -23,6 +23,41 @@ func TestStripProvenanceSAM(t *testing.T) {
 	}
 }
 
+// TestStripProvenanceDictUR checks that the machine-specific "UR:" reference-URI
+// field is stripped from @SQ lines (as "samtools dict" emits) while every other
+// @SQ field is preserved, so two dict outputs that differ ONLY by their local
+// file:// path compare equal but a genuine field difference still diverges.
+func TestStripProvenanceDictUR(t *testing.T) {
+	ours := "@HD\tVN:1.0\tSO:unsorted\n" +
+		"@SQ\tSN:chr1\tLN:100\tM5:abc\tUR:file:///home/ours/ref.fa\tAS:GRCh38\n"
+	up := "@HD\tVN:1.0\tSO:unsorted\n" +
+		"@SQ\tSN:chr1\tLN:100\tM5:abc\tUR:file:///opt/upstream/ref.fa\tAS:GRCh38\n"
+	if a, b := string(stripProvenance([]byte(ours))), string(stripProvenance([]byte(up))); a != b {
+		t.Errorf("UR-only diff should compare equal after strip:\n ours=%q\n  up =%q", a, b)
+	}
+	want := "@HD\tVN:1.0\tSO:unsorted\n@SQ\tSN:chr1\tLN:100\tM5:abc\tAS:GRCh38\n"
+	if got := string(stripProvenance([]byte(ours))); got != want {
+		t.Errorf("dict UR strip:\n got=%q\nwant=%q", got, want)
+	}
+	// A genuine field difference (different M5) must still diverge.
+	bad := "@HD\tVN:1.0\tSO:unsorted\n@SQ\tSN:chr1\tLN:100\tM5:DIFFERENT\tUR:file:///x\tAS:GRCh38\n"
+	if string(stripProvenance([]byte(ours))) == string(stripProvenance([]byte(bad))) {
+		t.Error("genuine M5 difference must not be masked by UR stripping")
+	}
+	// The streaming filter must match the batch path byte-for-byte.
+	var buf bytes.Buffer
+	pf := newProvenanceFilter(&buf)
+	if _, err := io.Copy(pf, bytes.NewReader([]byte(ours))); err != nil {
+		t.Fatal(err)
+	}
+	if err := pf.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := buf.String(); got != string(stripProvenance([]byte(ours))) {
+		t.Errorf("streaming vs batch drift:\n stream=%q\n  batch=%q", got, string(stripProvenance([]byte(ours))))
+	}
+}
+
 // TestStripProvenanceVCF checks command/version header removal.
 func TestStripProvenanceVCF(t *testing.T) {
 	in := "##fileformat=VCFv4.2\n##bcftools_viewCommand=view a.vcf; Date=...\n##contig=<ID=chr1>\nchr1\t1\t.\tA\tG\t60\tPASS\t.\n"
