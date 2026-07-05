@@ -1930,6 +1930,78 @@ func TestParity_Fixmate_T05_UnmappedMateGating(t *testing.T) {
 	}
 }
 
+// fixmate.t06 — strand-aware TLEN and singleton fix-up. Reproduces the real
+// chr20 divergence: TLEN must use bam_endpos-based strand-aware 5' ends (not a
+// positional "right-left+1" span), and a paired read whose mate is NOT present
+// in the collated stream (mate mapped off-region) must be rewritten to a clean
+// singleton — RNEXT="*", PNEXT=0, TLEN=0, with the mate-reverse (0x20) and
+// proper-pair (0x2) flags cleared. Expected values are byte-verified against
+// upstream `samtools fixmate` (r1/r2 TLEN 105/-105; the off-chr2-mate read
+// 'single' FLAG 97 -> 65).
+func TestParity_Fixmate_T06_TLENAndSingleton(t *testing.T) {
+	bamBytes := localSAMToBAM(t, "@HD\tVN:1.6\tSO:queryname\n@SQ\tSN:chr1\tLN:100000\n@SQ\tSN:chr2\tLN:100000\n"+
+		"r1\t99\tchr1\t100\t60\t5M\t*\t0\t0\tACGTA\tIIIII\n"+
+		"r1\t147\tchr1\t200\t60\t5M\t*\t0\t0\tTGCAT\tIIIII\n"+
+		"single\t97\tchr1\t500\t60\t5M\tchr2\t900\t0\tACGTA\tIIIII\n")
+	var out bytes.Buffer
+	if err := Fixmate(bytes.NewReader(bamBytes), &out, FixmateOptions{}); err != nil {
+		t.Fatalf("Fixmate: %v", err)
+	}
+	rd, err := newBAMReader(out.Bytes())
+	if err != nil {
+		t.Fatalf("re-read: %v", err)
+	}
+	var recs []*sam.Record
+	for {
+		rec, err := rd.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		recs = append(recs, rec)
+	}
+	if len(recs) != 3 {
+		t.Fatalf("expected 3 records, got %d", len(recs))
+	}
+	// Strand-aware TLEN: r1 (fwd, pos0 99) is pre; r2 (rev, endpos0 204) is cur.
+	// r1.TLen = cur5 - pre5 = 204 - 99 = 105; r2.TLen = -105.
+	if recs[0].TLen != 105 {
+		t.Errorf("r1 TLEN = %d, want 105 (strand-aware bam_endpos)", recs[0].TLen)
+	}
+	if recs[1].TLen != -105 {
+		t.Errorf("r2 TLEN = %d, want -105", recs[1].TLen)
+	}
+	// Singleton: its mate mapped to chr2 (off this stream), so upstream rewrites
+	// it to a clean singleton.
+	s := recs[2]
+	if s.QName != "single" {
+		t.Fatalf("expected third record to be 'single', got %q", s.QName)
+	}
+	// A no-mate RNEXT is "*" on the wire; the BAM round-trip may surface it as
+	// the empty string. Both mean mtid == -1.
+	if s.RNext != "*" && s.RNext != "" {
+		t.Errorf("singleton RNEXT = %q, want \"*\" (or empty)", s.RNext)
+	}
+	if s.PNext != 0 {
+		t.Errorf("singleton PNEXT = %d, want 0", s.PNext)
+	}
+	if s.TLen != 0 {
+		t.Errorf("singleton TLEN = %d, want 0", s.TLen)
+	}
+	if s.Flag&sam.FlagMateReverse != 0 {
+		t.Errorf("singleton retained MateReverse (0x20); flag = %d", s.Flag)
+	}
+	if s.Flag&sam.FlagProperPair != 0 {
+		t.Errorf("singleton retained ProperPair (0x2); flag = %d", s.Flag)
+	}
+	// FLAG 97 (0x61: paired|mate-reverse|read1) -> 65 (0x41: paired|read1).
+	if s.Flag != 65 {
+		t.Errorf("singleton FLAG = %d, want 65 (matches upstream fixmate)", s.Flag)
+	}
+}
+
 // =====================================================================
 // split: 3 cases
 // =====================================================================

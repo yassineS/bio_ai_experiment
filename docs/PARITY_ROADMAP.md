@@ -350,6 +350,12 @@ Correctness (byte-exact now) — DIFF cells closed by the same wave:
 `samtools consensus` base call still differs from upstream at ~46 depth-1
 STR/homopolymer loci (Go vs glibc libm last-ULP); `--mode simple` is byte-exact.
 Full characterisation in the consensus base-call residual note below.
+Re-measured on the real chr20 GIAB fixture (2026-07-05): over 61.2M consensus
+positions the default Bayesian mode produces ~10 base flips plus ~1521
+quality-only differences (all |dq| <= 12), while `--mode simple` remains
+byte-exact — consistent with the last-ULP libm characterisation above (the
+gap5 Bayesian caller amplifies libm rounding at low depth; simple mode has no
+such transcendental dependence).
 
 ### Performance & memory scalability follow-ups (2026-06-25, from the real-data + large-tier perf)
 

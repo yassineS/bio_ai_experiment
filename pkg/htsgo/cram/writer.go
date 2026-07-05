@@ -193,6 +193,13 @@ type RecordWriter struct {
 	// contig's MD5.
 	precomputedM5 map[string]string
 
+	// disableM5, when true, suppresses computed @SQ M5 injection for the ENTIRE
+	// header: upstream htslib disables M5 for all @SQ (embed_ref=2 fallback) as
+	// soon as any single M5-less @SQ contig is unresolvable in the reference. It
+	// is computed once in headerForEncode and read by augmentSQLine. Pre-existing
+	// M5 tags in the input header are unaffected.
+	disableM5 bool
+
 	// refIndex maps a reference name to its zero-based @SQ position, so a
 	// record's RName / RNext can be turned into the integer ids the CRAM
 	// data series store.
@@ -690,11 +697,25 @@ func (rw *RecordWriter) headerForEncode() *sam.Header {
 	if rw.refProvider == nil && rw.referencePath == "" {
 		return rw.header
 	}
+	// All-or-nothing M5: upstream htslib (cram_io.c cram_write_SAM_hdr) computes
+	// an M5 for every @SQ that lacks one, but if ANY M5-less @SQ contig cannot be
+	// resolved in the reference (absent, or its bases cannot be loaded) it falls
+	// back to embed_ref=2 and emits NO computed M5 tags at all — M5 injection is
+	// disabled for the WHOLE header, not per-contig. This matters for a partial
+	// reference (e.g. a ~2580-contig BAM against a chr20-only -T FASTA): chr20 is
+	// resolvable and would otherwise get an M5 the other 2579 lack, diverging from
+	// upstream, which leaves them all bare. Pre-existing M5 tags in the input
+	// header are left intact either way (upstream never overwrites them).
+	rw.disableM5 = rw.anyUnresolvableSQ()
+
 	// Compute every absent @SQ M5 up front, in parallel where possible; the
 	// per-contig hash is the writer's dominant header-write cost. augmentSQLine
 	// then reads the result by name (falling back to a serial hash for any
 	// contig the precompute did not cover), so the emitted bytes are unchanged.
-	rw.precomputedM5 = rw.precomputeContigM5s()
+	// Skipped entirely when M5 is disabled — no contig gets a computed M5.
+	if !rw.disableM5 {
+		rw.precomputedM5 = rw.precomputeContigM5s()
+	}
 	cp := *rw.header
 	cp.Lines = make([]sam.HeaderLine, len(rw.header.Lines))
 	for i, line := range rw.header.Lines {
@@ -705,6 +726,40 @@ func (rw *RecordWriter) headerForEncode() *sam.Header {
 		cp.Lines[i] = rw.augmentSQLine(line)
 	}
 	return &cp
+}
+
+// anyUnresolvableSQ reports whether any @SQ line WITHOUT a pre-existing M5 has a
+// contig that cannot be resolved in the reference (absent, or Length <= 0). It
+// is the all-or-nothing trigger that mirrors upstream htslib: one unresolvable
+// M5-less @SQ disables computed M5 injection for the entire header. An @SQ that
+// already carries its own M5 never triggers the fallback (upstream keeps it and
+// does not need to hash it). With no reference provider configured, no contig is
+// resolvable, so any M5-less @SQ trivially triggers the disable — which is
+// correct: without a reference the writer computes no M5 anyway.
+func (rw *RecordWriter) anyUnresolvableSQ() bool {
+	for _, line := range rw.header.Lines {
+		if line.Tag != "SQ" {
+			continue
+		}
+		var name string
+		haveM5 := false
+		for _, f := range line.Fields {
+			switch f.Tag {
+			case "SN":
+				name = f.Value
+			case "M5":
+				haveM5 = true
+			}
+		}
+		if haveM5 {
+			continue // pre-existing M5: never needs computing, never triggers.
+		}
+		resolvable := rw.refProvider != nil && name != "" && rw.refProvider.Length(name) > 0
+		if !resolvable {
+			return true
+		}
+	}
+	return false
 }
 
 // augmentSQLine returns a copy of an @SQ header line with the M5 and UR tags
@@ -738,7 +793,7 @@ func (rw *RecordWriter) augmentSQLine(line sam.HeaderLine) sam.HeaderLine {
 	// load, and the reference-based encode path surfaces a genuine I/O failure.
 	contigInRef := rw.refProvider != nil && rw.refProvider.Length(name) > 0
 	var m5 string
-	if !haveM5 && contigInRef {
+	if !haveM5 && contigInRef && !rw.disableM5 {
 		// Prefer the value precomputed (in parallel) by precomputeContigM5s;
 		// fall back to a serial hash for any name the precompute did not cover
 		// (e.g. it ran serial-from-augment, or a name was somehow missed) so no

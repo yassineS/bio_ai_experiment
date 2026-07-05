@@ -204,7 +204,7 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 		opts.ExcludeFlags = sam.FlagSecondary | sam.FlagSupplementary
 	}
 
-	// ---- Pass 1: collect keys --------------------------------------------
+	// ---- Pass 1: collect keys (coordinate-windowed, online resolution) ---
 	//
 	// Upstream maintains TWO hashes:
 	//   - pair_hash    (paired reads only, keyed on the full pair-key)
@@ -215,14 +215,18 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 	// with a paired read's coordinate gets marked as a duplicate. This is
 	// the "singleton-vs-pair" override that makes upstream output match
 	// for fixtures like 5_markdup.sam where one mate's mate is unmapped.
-	pairBuckets := make(map[markdupKey][]*markdupEntry)
-	// singleEntry tracks, per single-key, the currently best record. A
-	// list isn't needed because resolution is online: ties don't escalate
-	// beyond a single "winner".
-	type singleSlot struct {
-		entry *markdupEntry
-	}
-	singleSlots := make(map[markdupKey]*singleSlot)
+	//
+	// Memory: upstream keeps only a MOVING WINDOW of reads — once a buffered
+	// read's coordinate + max_length is behind the current read's coordinate
+	// (same tid), it can never match another read and is purged from both
+	// hashes. We reproduce that here: each hash slot holds only the CURRENT
+	// winner (resolution is fully online), and slots whose coordinate has
+	// fallen behind the window are evicted, so peak memory is O(active
+	// window) rather than O(whole file). The set of records flagged duplicate
+	// is identical to the accumulate-then-resolve approach because a beaten
+	// winner is re-marked in primaryDup the moment it loses.
+	pairSlots := make(map[markdupKey]*markdupSlot)
+	singleSlots := make(map[markdupKey]*markdupSlot)
 	primaryDup := make(map[string]*dupInfo) // qname -> dup classification
 
 	rc1, err := opener()
@@ -236,6 +240,48 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 	}
 	hdr := br1.Header()
 	res := MarkdupResult{}
+
+	// Sweep window state. curTid/curCoord track the current read's reference
+	// and (raw, unclipped-single-key) coordinate; slots on curTid whose coord
+	// falls more than MaxLen behind curCoord are purged. maxLen mirrors
+	// upstream's param->max_length (-l, default 300).
+	maxLen := int64(opts.MaxLen)
+	curTid := int32(-2)
+	curCoord := int64(0)
+
+	// evictBehind removes hash slots that can no longer match any future read.
+	// A slot on the current reference is dead once its coordinate is more than
+	// maxLen behind the sweep front; every slot on a previous reference is
+	// dead (a new reference resets the coordinate frame). Marking is already
+	// resolved online, so purging a slot loses no information.
+	evictBehind := func() {
+		for k, s := range pairSlots {
+			if s.tid != curTid || s.coord+maxLen <= curCoord {
+				delete(pairSlots, k)
+			}
+		}
+		for k, s := range singleSlots {
+			if s.tid != curTid || s.coord+maxLen <= curCoord {
+				delete(singleSlots, k)
+			}
+		}
+	}
+
+	// markPairDup records e as a pair duplicate of dupOf. When e was itself a
+	// former winner already recorded as an original, its accumulated supp link
+	// is OR-ed in (upstream registers a qname for -S marking when ANY of its
+	// reads carries SA/XA or an unmapped mate).
+	markPairDup := func(e *markdupEntry, dupOf string) {
+		if d, already := primaryDup[e.qname]; already && d.paired {
+			d.suppLink = d.suppLink || e.suppLink
+			return
+		}
+		primaryDup[e.qname] = &dupInfo{dupOf: dupOf, paired: true, suppLink: e.suppLink}
+	}
+	markSingleDup := func(e *markdupEntry, dupOf string) {
+		primaryDup[e.qname] = &dupInfo{dupOf: dupOf, paired: false, suppLink: e.suppLink}
+	}
+
 	for {
 		rec, err := br1.Read()
 		if err == io.EOF {
@@ -260,85 +306,85 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 			qname:    rec.QName,
 			flag:     rec.Flag,
 			score:    calcScore(rec),
-			paired:   rec.IsPaired() && !rec.IsMateUnmapped(),
+			paired:   hasMate(rec),
 			suppLink: hasSuppLink(rec),
 		}
 
-		// single_hash bookkeeping (every record gets a single-key).
+		// Advance the sweep front and purge slots that fell behind the window.
+		// The coordinate frame is the single-key's this_coord (the same value
+		// upstream stores in in_read->pos for the window test). A new reference
+		// resets the frame and drops every prior-reference slot.
 		sKey := singleKey(rec, hdr)
+		recTid := sKey.ThisRef
+		recCoord := sKey.ThisCoord
+		if recTid != curTid {
+			curTid = recTid
+			curCoord = recCoord
+		} else if recCoord > curCoord {
+			curCoord = recCoord
+		}
+		evictBehind()
+
+		// single_hash bookkeeping (every record gets a single-key).
 		if slot, ok := singleSlots[sKey]; ok {
-			// Pairing wins. If the incoming is paired and the slot's
-			// occupant is not (or vice versa), the unpaired side is
-			// marked as a duplicate. Same-paired-ness collisions are
-			// resolved later in the pair-hash phase.
-			if entry.paired != slot.entry.paired {
+			cur := slot.entry
+			// Pairing wins. If the incoming is paired and the slot's occupant is
+			// not (or vice versa), the unpaired side is marked as a duplicate.
+			if entry.paired != cur.paired {
 				if entry.paired {
-					// Incoming pair displaces the singleton.
-					if !slot.entry.paired {
-						primaryDup[slot.entry.qname] = &dupInfo{dupOf: entry.qname, paired: false, suppLink: slot.entry.suppLink}
+					// Incoming pair displaces the singleton occupant.
+					if !cur.paired {
+						markSingleDup(cur, entry.qname)
 					}
 					slot.entry = entry
 				} else {
 					// Slot is paired, incoming is singleton — mark incoming.
-					primaryDup[entry.qname] = &dupInfo{dupOf: slot.entry.qname, paired: false, suppLink: entry.suppLink}
+					markSingleDup(entry, cur.qname)
 				}
 			} else if !entry.paired {
-				// Two singletons at the same coord: keep highest score.
-				if betterEntry(entry, slot.entry) {
-					primaryDup[slot.entry.qname] = &dupInfo{dupOf: entry.qname, paired: false, suppLink: slot.entry.suppLink}
+				// Two singletons at the same coord: keep highest score. Upstream's
+				// single-hash swap is `if (new_score > old_score)` (bam_markdup.c
+				// ~1901) — a STRICT comparison with NO qname tie-break — so on an
+				// exact score tie the incumbent (the record encountered first in
+				// coordinate order) stays and the new arrival is the duplicate.
+				if betterSingle(entry, cur) {
+					markSingleDup(cur, entry.qname)
 					slot.entry = entry
 				} else {
-					primaryDup[entry.qname] = &dupInfo{dupOf: slot.entry.qname, paired: false, suppLink: entry.suppLink}
+					markSingleDup(entry, cur.qname)
 				}
 			}
-			// Two paired records at the same single-key: defer to pair_hash.
+			// Two paired records at the same single-key: resolved in pair_hash.
+			slot.tid, slot.coord = recTid, recCoord
 		} else {
-			singleSlots[sKey] = &singleSlot{entry: entry}
+			singleSlots[sKey] = &markdupSlot{entry: entry, tid: recTid, coord: recCoord}
 		}
 
-		// pair_hash bookkeeping (paired records only).
+		// pair_hash bookkeeping (paired records only), resolved ONLINE against
+		// the current winner so no whole-file bucket list is retained.
 		if entry.paired {
 			res.Paired++
 			pKey, single := buildKey(rec, opts.Mode, hdr)
 			if !single {
-				pairBuckets[pKey] = append(pairBuckets[pKey], entry)
+				if slot, ok := pairSlots[pKey]; ok {
+					// Collision: the higher score (pair tie-break: smaller qname)
+					// stays as the winner; the loser is flagged a pair duplicate.
+					if betterPair(entry, slot.entry) {
+						markPairDup(slot.entry, entry.qname)
+						slot.entry = entry
+					} else {
+						markPairDup(entry, slot.entry.qname)
+					}
+					slot.tid, slot.coord = recTid, recCoord
+				} else {
+					pairSlots[pKey] = &markdupSlot{entry: entry, tid: recTid, coord: recCoord}
+				}
 			}
 		} else {
 			res.Single++
 		}
 	}
 	_ = rc1.Close()
-
-	// Resolve each pair-bucket: keep best, mark rest. A pair duplicate
-	// overrides any earlier single classification for the same qname.
-	for _, entries := range pairBuckets {
-		if len(entries) < 2 {
-			continue
-		}
-		bestIdx := 0
-		for i := 1; i < len(entries); i++ {
-			if betterEntry(entries[i], entries[bestIdx]) {
-				bestIdx = i
-			}
-		}
-		bestName := entries[bestIdx].qname
-		for i, e := range entries {
-			if i == bestIdx {
-				continue
-			}
-			if d, already := primaryDup[e.qname]; already && d.paired {
-				// Already marked as a pair duplicate (e.g. the other mate's
-				// bucket resolved first). Don't clobber dupOf/paired, but OR in
-				// this mate's supp link: upstream registers the qname for -S
-				// marking when ANY of its reads carries SA/XA or an unmapped
-				// mate, so suppLink must accumulate across both mates rather
-				// than depend on map-iteration order.
-				d.suppLink = d.suppLink || e.suppLink
-				continue
-			}
-			primaryDup[e.qname] = &dupInfo{dupOf: bestName, paired: true, suppLink: e.suppLink}
-		}
-	}
 
 	// ---- Pass 2: re-stream and emit --------------------------------------
 	rc2, err := opener()
@@ -477,6 +523,15 @@ type markdupKey struct {
 	ReadGroup   int32
 }
 
+// markdupSlot is the current winner held in a coordinate-windowed hash. It
+// carries the winning entry plus the reference id and coordinate used to purge
+// the slot once the sweep front has moved more than MaxLen past it.
+type markdupSlot struct {
+	entry *markdupEntry
+	tid   int32
+	coord int64
+}
+
 type markdupEntry struct {
 	qname  string
 	flag   uint16
@@ -511,15 +566,24 @@ func singleKey(rec *sam.Record, hdr *sam.Header) markdupKey {
 	}
 }
 
-// betterEntry implements upstream's "highest score wins, ties broken by
-// qname lexicographic order" rule (matches what bam_markdup.c does when
-// scores are equal — it keeps the record encountered first, which under
-// our pass-1 order is the leftmost qname for the test fixtures we ship).
-func betterEntry(a, b *markdupEntry) bool {
+// betterPair reports whether a should replace incumbent b in a PAIR bucket.
+// It mirrors upstream's pair-hash swap (bam_markdup.c ~1795): the higher score
+// wins, and an exact score tie is broken by lexicographically smaller qname
+// (tie_add = +1 when qname(a) < qname(b), so a swaps in). a is the newer
+// arrival, b the incumbent.
+func betterPair(a, b *markdupEntry) bool {
 	if a.score != b.score {
 		return a.score > b.score
 	}
 	return a.qname < b.qname
+}
+
+// betterSingle reports whether a should replace incumbent b in the SINGLE hash.
+// Upstream's single-hash swap is a STRICT `new_score > old_score`
+// (bam_markdup.c ~1901) with NO qname tie-break, so an exact score tie leaves
+// the incumbent in place and marks the newcomer as the duplicate.
+func betterSingle(a, b *markdupEntry) bool {
+	return a.score > b.score
 }
 
 const (
@@ -562,7 +626,7 @@ func calcScore(rec *sam.Record) int64 {
 			s += int64(q)
 		}
 	}
-	if rec.IsPaired() && !rec.IsMateUnmapped() {
+	if hasMate(rec) {
 		if a, ok := rec.GetAux("ms"); ok {
 			if v, ok := a.Int(); ok {
 				s += v
@@ -570,6 +634,22 @@ func calcScore(rec *sam.Record) int64 {
 		}
 	}
 	return s
+}
+
+// hasMate mirrors upstream bam_markdup.c has_mate: a record counts as paired
+// (participates in the pair hash) only when it is PAIRED, its mate is NOT
+// flagged unmapped, and its mate has a real coordinate — i.e. NOT the
+// (mtid==-1, mpos==-1) sentinel a fixmate singleton fixup leaves behind. In
+// our record model mtid==-1 is RNext "*"/"" and mpos==-1 is PNext 0.
+func hasMate(rec *sam.Record) bool {
+	if !rec.IsPaired() || rec.IsMateUnmapped() {
+		return false
+	}
+	mateNoRef := rec.RNext == "" || rec.RNext == "*"
+	if mateNoRef && rec.PNext == 0 {
+		return false
+	}
+	return true
 }
 
 // buildKey returns the bucket key for rec. The second return is true when
@@ -580,7 +660,7 @@ func buildKey(rec *sam.Record, mode MarkdupMode, hdr *sam.Header) (markdupKey, b
 	thisEnd := unclippedEnd(rec)
 	rev := rec.Flag&sam.FlagReverse != 0
 
-	mateMapped := rec.IsPaired() && !rec.IsMateUnmapped() && rec.RNext != "" && rec.RNext != "*"
+	mateMapped := hasMate(rec)
 	if !mateMapped {
 		// Singleton key.
 		var coord int64
