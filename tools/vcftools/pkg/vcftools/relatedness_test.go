@@ -113,15 +113,34 @@ func TestRelatedness_SkipsMonomorphic(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	data, _ := os.ReadFile(prefix + ".relatedness")
+	want := platformNaNToken()
 	for _, ln := range strings.Split(strings.TrimSpace(string(data)), "\n")[1:] {
 		fields := strings.Split(ln, "\t")
 		if len(fields) != 3 {
 			continue
 		}
-		if fields[2] != "nan" {
-			t.Errorf("expected nan for monomorphic-only data, got %q in line %q", fields[2], ln)
+		if fields[2] != want {
+			t.Errorf("expected %q for monomorphic-only data, got %q in line %q", want, fields[2], ln)
 		}
 	}
+}
+
+//go:noinline
+func zeroFloat() float64 { return 0 }
+
+// platformNaNToken reports how a 0.0/0.0 NaN renders on the current hardware:
+// "-nan" on amd64 (the x86 "real indefinite" NaN produced by 0/0 has its sign
+// bit set) and "nan" on arm64 (sign bit clear). Both our formatters
+// (formatCppDefault via math.Signbit) and the upstream vcftools/bcftools C/C++
+// binaries print whatever sign the hardware yields, so byte-exact parity holds
+// per platform. These tests derive the expected token here instead of pinning
+// one platform's sign (the degenerate stats — monomorphic Hardy-Weinberg
+// chi-square, relatedness, and the empty-profile mean — are all 0.0/0.0).
+func platformNaNToken() string {
+	if math.Signbit(zeroFloat() / zeroFloat()) {
+		return "-nan"
+	}
+	return "nan"
 }
 
 // TestRelatedness_SkipsMultiAllelic confirms multi-allelic sites are ignored.

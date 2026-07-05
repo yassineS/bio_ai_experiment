@@ -1,6 +1,7 @@
 package bcftools
 
 import (
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -197,18 +198,28 @@ func TestUnitVrfsComputeProfileHC(t *testing.T) {
 }
 
 // TestUnitVrfsComputeProfileEmpty checks that an all-empty profile yields the
-// "nan" MEAN line: the mean is a positive 0.0/0.0 NaN (division by zero nval),
-// which glibc printf renders as "nan" (verified against the live upstream
-// +vrfs oracle). This previously asserted "-nan", encoding an earlier
-// hard-coded NaN sign rather than upstream's actual output.
+// MEAN line: the mean is a 0.0/0.0 NaN (division by a zero nval). glibc printf
+// renders it per the NaN's sign bit, which is hardware-defined — "nan" on
+// arm64 (sign clear), "-nan" on amd64 (the x86 "real indefinite" NaN has its
+// sign bit set) — and vrfsFormatE (via math.Signbit) reproduces the same sign,
+// so the port is byte-exact vs the upstream +vrfs oracle on the same platform.
+// This derives the expected token from the actual NaN's sign rather than
+// pinning one architecture's rendering.
 func TestUnitVrfsComputeProfileEmpty(t *testing.T) {
 	sites := []*vrfsSite{{dist: make([]uint32, 20)}} // nval==0, skipped
 	prof := computeVrfsProfile(sites, vrfsConfig{nbins: 20, recalc: "hc"})
 	if prof.nval != 0 {
 		t.Fatalf("nval=%d, want 0", prof.nval)
 	}
-	if got := vrfsFormatE(prof.mean[0]); got != "nan" {
-		t.Errorf("empty mean format = %q, want %q", got, "nan")
+	if !math.IsNaN(prof.mean[0]) {
+		t.Fatalf("empty-profile mean should be NaN, got %v", prof.mean[0])
+	}
+	want := "nan"
+	if math.Signbit(prof.mean[0]) {
+		want = "-nan"
+	}
+	if got := vrfsFormatE(prof.mean[0]); got != want {
+		t.Errorf("empty mean format = %q, want %q (0/0 NaN sign is hardware-defined)", got, want)
 	}
 }
 
