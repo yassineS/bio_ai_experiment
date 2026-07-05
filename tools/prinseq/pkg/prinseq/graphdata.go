@@ -1006,7 +1006,7 @@ func checkForDupl(seqs []dupSeq, types map[int]bool) checkForDuplResult {
 	// Phase 1: exact + prefix.
 	if types[0] || types[1] || types[2] {
 		sorted := append([]dupSeq(nil), seqs...)
-		sort.Slice(sorted, func(i, j int) bool { return sorted[i].seq < sorted[j].seq })
+		sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].seq < sorted[j].seq })
 		pretype, precount := -1, 0
 		for i := 0; i < len(sorted)-1; i++ {
 			a, b := sorted[i], sorted[i+1]
@@ -1056,7 +1056,7 @@ func checkForDupl(seqs []dupSeq, types map[int]bool) checkForDuplResult {
 			rev = append(rev, dupSeq{seq: reverseStr(s.seq), idx: s.idx, ln: s.ln})
 		}
 		if len(rev) > 1 {
-			sort.Slice(rev, func(i, j int) bool { return rev[i].seq < rev[j].seq })
+			sort.SliceStable(rev, func(i, j int) bool { return rev[i].seq < rev[j].seq })
 			pretype, precount := -1, 0
 			for i := 0; i < len(rev)-1; i++ {
 				a, b := rev[i], rev[i+1]
@@ -1099,7 +1099,7 @@ func checkForDupl(seqs []dupSeq, types map[int]bool) checkForDuplResult {
 			expanded = append(expanded, rcSeq{seq: revcompUC(s.seq), idx: s.idx, ln: s.ln, rc: 1})
 		}
 		if len(expanded) > 1 {
-			sort.Slice(expanded, func(i, j int) bool { return expanded[i].seq < expanded[j].seq })
+			sort.SliceStable(expanded, func(i, j int) bool { return expanded[i].seq < expanded[j].seq })
 			pretype, precount := -1, 0
 			for i := 0; i < len(expanded)-1; i++ {
 				a, b := expanded[i], expanded[i+1]
