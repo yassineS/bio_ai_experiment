@@ -428,7 +428,7 @@ process RUN_MATRIX {
     script:
     """
     set -euo pipefail
-    realbench \
+    ${params.realbench_bin} \
         -tier "${tier}" \
         -ref "${ref}" \
         -bam "${bam}" \
