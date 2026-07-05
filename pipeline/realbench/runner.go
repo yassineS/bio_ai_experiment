@@ -114,7 +114,7 @@ func runCell(cfg Config, spec CellSpec) CellRecord {
 	}
 
 	// Ours always runs (perf cell at minimum).
-	ourSum, ourMeas, ourErr := runSide(cfg, spec, ourBin, nil, false)
+	ourSum, ourMeas, ourErr := runSide(cfg, spec, ourBin, nil, false, false)
 	if ourMeas != nil {
 		res.Ours = measToSide(*ourMeas)
 	}
@@ -147,7 +147,7 @@ func runCell(cfg Config, spec CellSpec) CellRecord {
 		return res
 	}
 
-	upSum, upMeas, upErr := runSide(cfg, spec, up.Path, up.UpStub, up.IsPerl)
+	upSum, upMeas, upErr := runSide(cfg, spec, up.Path, up.UpStub, up.IsPerl, true)
 	if upMeas != nil {
 		res.Up = measToSide(*upMeas)
 	}
@@ -189,7 +189,9 @@ func runCell(cfg Config, spec CellSpec) CellRecord {
 // upStub is the leading upstream argv (e.g. the bedtools subcommand) prepended
 // before the cell's args; it is nil/empty for our binary and for upstream tools
 // that take no sub. perl=true runs the binary through `perl` (prinseq).
-func runSide(cfg Config, spec CellSpec, bin string, upStub []string, perl bool) (sum [16]byte, meas *Measurement, err error) {
+// isUpstream selects which side's samtools decodes a StdoutView cell's captured
+// BAM (ours for the ours side, upstream for the other).
+func runSide(cfg Config, spec CellSpec, bin string, upStub []string, perl, isUpstream bool) (sum [16]byte, meas *Measurement, err error) {
 	args, runBin, outPath, workDir, cleanup, berr := buildSide(cfg, spec, bin, upStub, perl)
 	if cleanup != nil {
 		defer cleanup()
@@ -238,6 +240,21 @@ func runSide(cfg Config, spec CellSpec, bin string, upStub []string, perl bool) 
 		return sum, &m, rerr
 
 	case PostViewSAM, PostBgzipD, PostFile:
+		// A StdoutView PostViewSAM cell (e.g. bedtag) writes its comparable BAM to
+		// STDOUT, not a file: the timed reps discard stdout, then one extra untimed
+		// rep captures stdout into a temp .bam that a resolved samtools re-decodes
+		// via `view -h`, so two BAMs with different BGZF framing compare by records.
+		if spec.Post == PostViewSAM && spec.StdoutView {
+			m, rerr := repeatRun(cfg.Reps, runBin, args, "", workDir, env, nil)
+			if rerr != nil {
+				return sum, &m, rerr
+			}
+			s, derr := decodeStdoutAlignment(cfg, spec, runBin, args, workDir, env, isUpstream)
+			if derr != nil {
+				return sum, &m, fmt.Errorf("post-processing %s stdout: %w", spec.Name, derr)
+			}
+			return s, &m, nil
+		}
 		// The command writes a file; stdout is not the comparison stream, so the
 		// timed reps discard it. The comparison stream is the re-decoded file
 		// (not timed).
@@ -347,6 +364,50 @@ func decodeAlignment(cfg Config, spec CellSpec, bin, file string) ([16]byte, err
 		return [16]byte{}, cerr
 	}
 	return dig.Sum(), nil
+}
+
+// decodeStdoutAlignment handles a StdoutView PostViewSAM cell: it runs the
+// command once (untimed), captures its BAM stdout into a temp .bam in cfg.TmpDir,
+// then re-decodes that file with the side's own samtools via `view -h` so the
+// comparison is by decoded records (framing-independent). The producing binary
+// (bedtag / bedtools) has no `view` subcommand of its own, so the decode samtools
+// is resolved per side: our samtools for the ours side, upstream's for the other.
+// The temp .bam is removed on return.
+func decodeStdoutAlignment(cfg Config, spec CellSpec, runBin string, args []string, workDir string, env []string, isUpstream bool) ([16]byte, error) {
+	sam := cfg.decodeSamtools(isUpstream)
+	if sam == "" {
+		return [16]byte{}, fmt.Errorf("no samtools binary to decode %s stdout BAM", spec.Name)
+	}
+	tmp, err := os.CreateTemp(cfg.TmpDir, "rb-stdout-*.bam")
+	if err != nil {
+		return [16]byte{}, err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	// Capture the command's BAM stdout into the temp file (untimed).
+	if _, rerr := runOnce(runBin, args, "", workDir, env, tmp); rerr != nil {
+		tmp.Close()
+		return [16]byte{}, rerr
+	}
+	if cerr := tmp.Close(); cerr != nil {
+		return [16]byte{}, cerr
+	}
+	return decodeAlignment(cfg, spec, sam, tmpPath)
+}
+
+// decodeSamtools resolves the samtools binary that decodes a StdoutView cell's
+// captured BAM. It picks the same side as the cell run (upstream samtools for the
+// upstream side, our samtools for the ours side) so neither side's decode can mask
+// a real difference. Returns "" when the resolver or the chosen samtools is
+// unavailable.
+func (cfg Config) decodeSamtools(isUpstream bool) string {
+	if cfg.resolver == nil {
+		return ""
+	}
+	if isUpstream {
+		return cfg.resolver.upstreamBinary("samtools").Path
+	}
+	return cfg.resolver.ourBinary("samtools")
 }
 
 // digestGzipStdout runs the command once (untimed), streaming its gzip/BGZF

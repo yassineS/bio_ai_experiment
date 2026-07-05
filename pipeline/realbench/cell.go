@@ -99,6 +99,15 @@ type CellSpec struct {
 	// Used by tools (fastp, mosdepth) that write fixed-named output files into
 	// cwd rather than to an -o path.
 	WorkDirOut bool
+	// StdoutView, when true, marks a PostViewSAM cell whose comparable alignment
+	// is written to STDOUT rather than to a file (WriteOut) or a work-dir file
+	// (WorkDirOut). The runner captures the timed run's stdout into a temp .bam
+	// and re-decodes it through `samtools view -h`, so two BAMs with different
+	// BGZF framing are compared by decoded records. Used by `bedtag`, which (like
+	// upstream `bedtools tag`) writes its tagged BAM only to stdout. The decode
+	// samtools is resolved per side (ours vs upstream) because the producing
+	// binary (bedtag/bedtools) has no `view` subcommand of its own.
+	StdoutView bool
 	// Compare, when WorkDirOut is set, names the output file (relative to the
 	// work dir) whose decoded bytes are compared; its decode follows Post.
 	Compare string
