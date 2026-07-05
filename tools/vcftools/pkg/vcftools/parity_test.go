@@ -1535,11 +1535,13 @@ func TestParity_MaxMissingCount_2(t *testing.T) {
 
 // TestUnitHardy_MonomorphicChiSqNaNSign verifies that the Hardy-Weinberg
 // output renders the chi-square for a fully-monomorphic site (all ALT
-// homozygous: hom1=0, het=0, hom2=1, freq=0) as "nan" (positive-sign NaN),
-// not "-nan". The chi-square sum contains 0.0/0.0 terms; on arm64 this
-// produces a positive NaN whose sign bit is clear, matching the upstream
-// binary built for arm64 Linux. formatCppDefault uses math.Signbit to pick
-// the correct rendering without hard-coding the sign.
+// homozygous: hom1=0, het=0, hom2=1, freq=0) as the platform's native NaN
+// token. The chi-square sum contains 0.0/0.0 terms; the resulting NaN's sign
+// is hardware-defined — clear on arm64 ("nan"), set on amd64 ("-nan") — and
+// matches the upstream binary on the same platform. formatCppDefault uses
+// math.Signbit to render the actual sign, so the port is byte-exact vs
+// upstream per platform; this test derives the expected token the same way
+// rather than pinning one architecture's sign.
 func TestUnitHardy_MonomorphicChiSqNaNSign(t *testing.T) {
 	// Build a VCF with a single sample whose genotype is 1|1 (all ALT).
 	// freq(REF) = 0 → expHom1 = 0, expHet = 0, expHom2 = 1.
@@ -1558,12 +1560,18 @@ func TestUnitHardy_MonomorphicChiSqNaNSign(t *testing.T) {
 		t.Fatalf("reading .hwe: %v", err)
 	}
 	content := string(data)
-	// The ChiSq_HWE column must be "nan" (positive NaN, no minus sign).
-	if strings.Contains(content, "-nan") {
-		t.Errorf(".hwe contains '-nan' but want 'nan' for positive NaN:\n%s", content)
+	// The ChiSq_HWE column is a 0.0/0.0 NaN. Its sign is hardware-defined
+	// (amd64 -> "-nan", arm64 -> "nan") and matches the upstream binary on the
+	// same platform, so assert the ChiSq field renders as the platform's NaN
+	// token rather than pinning one architecture's sign.
+	want := platformNaNToken()
+	lines := strings.Split(strings.TrimSpace(content), "\n")
+	last := strings.Split(lines[len(lines)-1], "\t")
+	if len(last) < 5 {
+		t.Fatalf(".hwe row has too few columns: %q", lines[len(lines)-1])
 	}
-	if !strings.Contains(content, "nan") {
-		t.Errorf(".hwe missing 'nan' for monomorphic ChiSq:\n%s", content)
+	if last[4] != want {
+		t.Errorf("ChiSq_HWE = %q, want %q (0/0 NaN sign is hardware-defined):\n%s", last[4], want, content)
 	}
 }
 
