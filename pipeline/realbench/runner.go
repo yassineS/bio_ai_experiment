@@ -44,6 +44,22 @@ func WithResolver(cfg Config, r *BinResolver) Config {
 	return cfg
 }
 
+// deriveSamtools resolves the samtools binary used for the prerequisite BAM
+// transforms (name-collate / fixmate-ready) in deriveInputs. It prefers the
+// UPSTREAM samtools (the oracle the derived inputs feed) so the transform can't
+// smuggle an ours-only quirk into both sides, and falls back to our samtools
+// when upstream is unavailable. Returns "" when neither resolves (or no resolver
+// is attached), in which case the BAM-dependent cells SKIP.
+func (cfg Config) deriveSamtools() string {
+	if cfg.resolver == nil {
+		return ""
+	}
+	if up := cfg.resolver.upstreamBinary("samtools"); up.Path != "" {
+		return up.Path
+	}
+	return cfg.resolver.ourBinary("samtools")
+}
+
 // Run executes the whole matrix for the configured tier and returns the report.
 // It never returns an error for an individual cell (those become
 // PASS/DIFF/SKIP/ERROR rows); it only errors on a setup problem that prevents
@@ -55,11 +71,15 @@ func Run(cfg Config) (*Report, error) {
 		Reps:      cfg.Reps,
 		Machine:   machineInfo(),
 	}
-	// Derive the synthetic bed* inputs (BED4/BEDPE/window) from the real BED so
-	// the cells that need more than BED3 run against an honest input. A synthesis
-	// failure is non-fatal: the dependent cells simply SKIP (their derived inputs
-	// stay empty), so a broken BED never aborts the whole run.
-	if derived, err := deriveInputs(cfg.Inputs, cfg.TmpDir); err == nil {
+	// Derive the synthetic bed* inputs (BED4/BEDPE/window/bedgraph), the
+	// prerequisite BAM transforms (name-collated / fixmate'd) and the
+	// sample-rename map from the real inputs so the cells that need more than
+	// the raw input run against an honest one. A synthesis failure is non-fatal:
+	// the dependent cells simply SKIP (their derived inputs stay empty), so a
+	// broken input never aborts the whole run. The BAM transforms are produced
+	// ONCE with a resolved samtools (upstream preferred, else ours) and fed to
+	// BOTH sides identically, keeping the comparison fair.
+	if derived, err := deriveInputs(cfg.Inputs, cfg.TmpDir, cfg.deriveSamtools()); err == nil {
 		cfg.Inputs = derived
 	}
 	for _, spec := range Matrix(cfg.Tier) {

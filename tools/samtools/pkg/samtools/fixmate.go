@@ -1,21 +1,25 @@
 package samtools
 
 import (
-	"fmt"
 	"io"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // FixmateOptions configures Fixmate. The defaults match `samtools fixmate`'s
-// minimal mode: just fix RNEXT/PNEXT/TLEN/0x8 flags. Optional knobs add
-// MQ/MC/ms tags and remove unmapped reads.
+// DEFAULT behaviour: fix RNEXT/PNEXT/TLEN/0x8 flags AND add the MC (mate CIGAR)
+// and MQ (mate MAPQ) aux tags. Upstream (bam_mate.c: sync_mate -> sync_mq_mc)
+// writes MC/MQ unconditionally on every pair, so this port does too. Optional
+// knobs add the `ms` mate-score tag and remove unmapped reads.
 type FixmateOptions struct {
 	// AddMateScore (-m) writes the `ms` aux tag (sum of base qualities of
-	// the mate's bases >= Q15).
+	// the mate's bases >= Q15). MQ (mate MAPQ) is written by default (upstream
+	// adds MQ unconditionally in sync_mq_mc, not only under -m).
 	AddMateScore bool
-	// AddMateCigar (-c) writes the `MC` aux tag (mate's CIGAR) and the
-	// `MQ` aux tag (mate's MAPQ).
+	// AddMateCigar (-c) is retained for CLI compatibility. Upstream's real -c
+	// adds the CT template-cigar tag; the MC (mate CIGAR) tag it is commonly
+	// associated with is now emitted BY DEFAULT (upstream writes MC in
+	// sync_mq_mc regardless of any flag), so this field no longer gates MC.
 	AddMateCigar bool
 	// RemoveUnmapped (-r) drops records where both this read and its
 	// mate are unmapped (and unpaired entirely-unmapped singletons).
@@ -119,16 +123,37 @@ func fixPair(a, b *sam.Record, opts FixmateOptions) {
 	a.TLen = tlen
 	b.TLen = -tlen
 
-	// Optional aux tags.
-	if opts.AddMateCigar {
-		setAuxString(a, "MC", b.Cigar.String())
-		setAuxString(b, "MC", a.Cigar.String())
-		setAuxInt(a, "MQ", int64(b.MapQ))
-		setAuxInt(b, "MQ", int64(a.MapQ))
-	}
+	// MQ (mate MAPQ) and MC (mate CIGAR) are written BY DEFAULT, matching
+	// upstream sync_mq_mc (called unconditionally from sync_mate for every
+	// pair). The gating mirrors bam_mate.c exactly:
+	//   - MQ is appended to dest only when the SOURCE (mate) is mapped.
+	//   - MC is appended to dest when either the source OR dest is mapped.
+	syncMQMC(a, b)
+	syncMQMC(b, a)
+
 	if opts.AddMateScore {
 		setAuxInt(a, "ms", int64(mateScore(b)))
 		setAuxInt(b, "ms", int64(mateScore(a)))
+	}
+}
+
+// syncMQMC writes dest's MQ (mate MAPQ) and MC (mate CIGAR) aux tags from src,
+// matching upstream bam_mate.c sync_mq_mc EXACTLY:
+//   - MQ: copied from src->core.qual, but only when src is mapped.
+//   - MC: src's CIGAR string, added when either src OR dest is mapped
+//     (an all-unmapped pair gets no MC, as upstream leaves it out).
+//
+// Existing MQ/MC tags on dest are replaced (setAuxInt/setAuxString overwrite).
+// An unmapped record's CIGAR renders as "*" (Cigar.String()), matching how
+// bam_format_cigar emits a 0-length CIGAR for an unmapped read.
+func syncMQMC(src, dest *sam.Record) {
+	srcMapped := !src.IsUnmapped()
+	destMapped := !dest.IsUnmapped()
+	if srcMapped {
+		setAuxInt(dest, "MQ", int64(src.MapQ))
+	}
+	if srcMapped || destMapped {
+		setAuxString(dest, "MC", src.Cigar.String())
 	}
 }
 
@@ -224,13 +249,4 @@ func setAuxInt(r *sam.Record, tag string, value int64) {
 		}
 	}
 	r.Aux = append(r.Aux, sam.Aux{Tag: tag, Type: 'i', Value: value})
-}
-
-// describe is unused but kept here as documentation of the BAM record
-// fields a fixmate run touches: it's a single-line cheat sheet for
-// readers of this file.
-//
-//nolint:unused
-func describe() string {
-	return fmt.Sprintf("Fixmate touches: Flag(0x8,0x20), RNext, PNext, TLen, +Aux(MQ,MC,ms)")
 }

@@ -4,7 +4,9 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -368,6 +370,90 @@ func TestBedCellArgWiring(t *testing.T) {
 			t.Errorf("bedtobam must not feed the bare BED3, got %v", c.OurArgs)
 		}
 	}
+
+	// 8: bedunionbedg must feed the derived 4-col BedGraph, not BED3 (upstream
+	// SIGABRTs on BED3), and require NeedBedGraph.
+	if c := byName["bedunionbedg"]; true {
+		if !contains(c.OurArgs, phBedGraph) {
+			t.Errorf("bedunionbedg must feed the derived bedgraph, got %v", c.OurArgs)
+		}
+		if c.Need&NeedBedGraph == 0 {
+			t.Errorf("bedunionbedg must require NeedBedGraph")
+		}
+		if contains(c.OurArgs, phBED) {
+			t.Errorf("bedunionbedg must not feed the bare BED3, got %v", c.OurArgs)
+		}
+	}
+
+	// 9: bedtag must NOT pass both -labels and -names (upstream rejects them as
+	// mutually exclusive); -names must be gone.
+	if c := byName["bedtag"]; true {
+		if contains(c.OurArgs, "-names") {
+			t.Errorf("bedtag must not pass -names alongside -labels, got %v", c.OurArgs)
+		}
+		if !contains(c.OurArgs, "-labels") {
+			t.Errorf("bedtag must still pass -labels, got %v", c.OurArgs)
+		}
+	}
+}
+
+// TestSamtoolsBcftoolsCellArgWiring locks in the harness fixes for the samtools
+// fixmate/markdup and bcftools reheader cells: each must consume the derived
+// prerequisite input (name-collated BAM, fixmate'd BAM, sample-rename map) and
+// require the matching Need bit, so the stricter upstream oracle gets an input
+// it accepts.
+func TestSamtoolsBcftoolsCellArgWiring(t *testing.T) {
+	byName := map[string]CellSpec{}
+	for _, c := range Matrix("chr20") {
+		byName[c.Name] = c
+	}
+	contains := func(args []string, want string) bool {
+		for _, a := range args {
+			if a == want {
+				return true
+			}
+		}
+		return false
+	}
+
+	// fixmate must feed the name-collated BAM and require NeedNameSortBAM, not
+	// the raw {bam}.
+	if c := byName["samtools_fixmate"]; true {
+		if !contains(c.OurArgs, phNameBAM) {
+			t.Errorf("samtools_fixmate must feed the name-collated BAM, got %v", c.OurArgs)
+		}
+		if c.Need&NeedNameSortBAM == 0 {
+			t.Errorf("samtools_fixmate must require NeedNameSortBAM")
+		}
+		if contains(c.OurArgs, phBAM) {
+			t.Errorf("samtools_fixmate must not feed the raw {bam}, got %v", c.OurArgs)
+		}
+	}
+
+	// markdup must feed the fixmate'd (markdup-ready) BAM and require
+	// NeedFixmateBAM, not the raw {bam}.
+	if c := byName["samtools_markdup"]; true {
+		if !contains(c.OurArgs, phFixmateBAM) {
+			t.Errorf("samtools_markdup must feed the fixmate'd BAM, got %v", c.OurArgs)
+		}
+		if c.Need&NeedFixmateBAM == 0 {
+			t.Errorf("samtools_markdup must require NeedFixmateBAM")
+		}
+		if contains(c.OurArgs, phBAM) {
+			t.Errorf("samtools_markdup must not feed the raw {bam}, got %v", c.OurArgs)
+		}
+	}
+
+	// reheader must supply a modification directive (-s <rename file>) and
+	// require NeedSampleRename.
+	if c := byName["bcftools_reheader"]; true {
+		if !contains(c.OurArgs, "-s") || !contains(c.OurArgs, phSampleRename) {
+			t.Errorf("bcftools_reheader must pass -s <sample-rename>, got %v", c.OurArgs)
+		}
+		if c.Need&NeedSampleRename == 0 {
+			t.Errorf("bcftools_reheader must require NeedSampleRename")
+		}
+	}
 }
 
 // TestDeriveInputs checks that the synthetic bed* inputs are derived
@@ -385,12 +471,31 @@ func TestDeriveInputs(t *testing.T) {
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got, err := deriveInputs(Inputs{BED: bed}, out)
+	got, err := deriveInputs(Inputs{BED: bed}, out, "")
 	if err != nil {
 		t.Fatalf("deriveInputs: %v", err)
 	}
 	if got.BED4 == "" || got.BEDPE == "" || got.Window == "" {
 		t.Fatalf("derived paths empty: %+v", got)
+	}
+	if got.BedGraph == "" {
+		t.Fatalf("derived bedgraph path empty: %+v", got)
+	}
+
+	bg := readAll(t, got.BedGraph)
+	// The 4-col bedgraph has chrom/start/end plus an integer value column.
+	for _, line := range nonEmptyLines(bg) {
+		f := strings.Split(line, "\t")
+		if len(f) != 4 {
+			t.Errorf("bedgraph line has %d fields, want 4: %q", len(f), line)
+		}
+		if _, err := strconv.Atoi(f[3]); err != nil {
+			t.Errorf("bedgraph value column %q is not an integer: %q", f[3], line)
+		}
+	}
+	// First record 100..200 ⇒ value = length 100.
+	if !strings.Contains(bg, "chr20\t100\t200\t100\n") {
+		t.Errorf("bedgraph missing expected length-valued row, got:\n%s", bg)
 	}
 
 	bed4 := readAll(t, got.BED4)
@@ -423,7 +528,7 @@ func TestDeriveInputs(t *testing.T) {
 	if err := os.MkdirAll(out2, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got2, err := deriveInputs(Inputs{BED: bed}, out2)
+	got2, err := deriveInputs(Inputs{BED: bed}, out2, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,12 +537,139 @@ func TestDeriveInputs(t *testing.T) {
 	}
 
 	// Empty BED derives nothing (dependent cells SKIP).
-	empty, err := deriveInputs(Inputs{}, out)
+	empty, err := deriveInputs(Inputs{}, out, "")
 	if err != nil {
 		t.Fatalf("deriveInputs(empty): %v", err)
 	}
 	if empty.BED4 != "" || empty.BEDPE != "" || empty.Window != "" {
 		t.Errorf("empty BED should derive nothing, got %+v", empty)
+	}
+}
+
+// TestDeriveInputs_SampleRename verifies the deterministic one-line sample-rename
+// map is written whenever a VCF is present (feeding `bcftools reheader -s`), and
+// that it is absent with no VCF.
+func TestDeriveInputs_SampleRename(t *testing.T) {
+	dir := t.TempDir()
+	// A non-existent VCF path is fine: deriveInputs only needs in.VCF to be
+	// non-empty to decide the rename map is relevant (it does not read the VCF).
+	got, err := deriveInputs(Inputs{VCF: filepath.Join(dir, "x.vcf.gz")}, dir, "")
+	if err != nil {
+		t.Fatalf("deriveInputs: %v", err)
+	}
+	if got.SampleRename == "" {
+		t.Fatalf("sample-rename map not derived from a present VCF")
+	}
+	if content := readAll(t, got.SampleRename); content != "RB_SAMPLE\n" {
+		t.Errorf("sample-rename content = %q, want %q", content, "RB_SAMPLE\n")
+	}
+
+	none, err := deriveInputs(Inputs{}, dir, "")
+	if err != nil {
+		t.Fatalf("deriveInputs(empty): %v", err)
+	}
+	if none.SampleRename != "" {
+		t.Errorf("no VCF should derive no sample-rename map, got %q", none.SampleRename)
+	}
+}
+
+// TestDeriveInputs_BAMTransforms verifies the prerequisite BAM transforms are
+// produced when a real samtools is available: a name-collated BAM (fixmate
+// input) and a name-sort|fixmate -m|coord-sort BAM (markdup input). Both must be
+// real BAMs the same samtools can decode. It SKIPs when no samtools is on PATH,
+// and asserts that an empty BAM (or empty samtools) derives neither.
+func TestDeriveInputs_BAMTransforms(t *testing.T) {
+	samtoolsBin := locateTestSamtools(t)
+	if samtoolsBin == "" {
+		t.Skip("no samtools binary found (PATH or bin/{upstream,ours}); skipping BAM-transform derivation test")
+	}
+	dir := t.TempDir()
+	// Build a small coord-sorted BAM from SAM via the same samtools.
+	sam := "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:chr1\tLN:1000\n" +
+		"r1\t99\tchr1\t100\t60\t5M\t=\t200\t105\tACGTA\tIIIII\n" +
+		"r1\t147\tchr1\t200\t40\t5M\t=\t100\t-105\tTGCAT\tIIIII\n" +
+		"r2\t99\tchr1\t300\t50\t4M\t=\t400\t104\tACGT\tIIII\n" +
+		"r2\t147\tchr1\t400\t55\t4M\t=\t300\t-104\tTGCA\tIIII\n"
+	samPath := filepath.Join(dir, "in.sam")
+	if err := os.WriteFile(samPath, []byte(sam), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bamPath := filepath.Join(dir, "in.bam")
+	if out, err := exec.Command(samtoolsBin, "view", "-b", "-o", bamPath, samPath).CombinedOutput(); err != nil {
+		t.Fatalf("building input BAM: %v\n%s", err, out)
+	}
+
+	work := filepath.Join(dir, "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := deriveInputs(Inputs{BAM: bamPath}, work, samtoolsBin)
+	if err != nil {
+		t.Fatalf("deriveInputs: %v", err)
+	}
+	if got.NameBAM == "" {
+		t.Fatalf("name-collated BAM not derived")
+	}
+	if got.FixmateBAM == "" {
+		t.Fatalf("markdup-ready (fixmate'd) BAM not derived")
+	}
+	// Both derived files must be real BAMs the same samtools can decode.
+	for _, p := range []string{got.NameBAM, got.FixmateBAM} {
+		if out, err := exec.Command(samtoolsBin, "quickcheck", p).CombinedOutput(); err != nil {
+			t.Errorf("derived BAM %s failed quickcheck: %v\n%s", p, err, out)
+		}
+	}
+	// The markdup-ready BAM must carry the ms tag that fixmate -m added.
+	out, err := exec.Command(samtoolsBin, "view", got.FixmateBAM).Output()
+	if err != nil {
+		t.Fatalf("view fixmate'd BAM: %v", err)
+	}
+	if !strings.Contains(string(out), "ms:i:") {
+		t.Errorf("markdup-ready BAM missing ms tag from `fixmate -m`:\n%s", out)
+	}
+
+	// An empty BAM (or empty samtools) derives neither transform.
+	none, err := deriveInputs(Inputs{}, work, samtoolsBin)
+	if err != nil {
+		t.Fatalf("deriveInputs(empty): %v", err)
+	}
+	if none.NameBAM != "" || none.FixmateBAM != "" {
+		t.Errorf("no BAM should derive no BAM transforms, got %+v", none)
+	}
+	noBin, err := deriveInputs(Inputs{BAM: bamPath}, work, "")
+	if err != nil {
+		t.Fatalf("deriveInputs(no samtools): %v", err)
+	}
+	if noBin.NameBAM != "" || noBin.FixmateBAM != "" {
+		t.Errorf("no samtools should derive no BAM transforms, got %+v", noBin)
+	}
+}
+
+// locateTestSamtools resolves a samtools binary for the BAM-transform test: it
+// tries PATH first, then walks up from the test's cwd looking for
+// bin/upstream/samtools then bin/ours/samtools (the repo's built binaries).
+// Returns "" when none is found, so the caller can SKIP.
+func locateTestSamtools(t *testing.T) string {
+	t.Helper()
+	if p, err := exec.LookPath("samtools"); err == nil {
+		return p
+	}
+	dir, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for {
+		for _, rel := range []string{"bin/upstream/samtools", "bin/ours/samtools"} {
+			cand := filepath.Join(dir, rel)
+			if fileExists(cand) {
+				return cand
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
 	}
 }
 
@@ -514,7 +746,7 @@ func TestDeriveInputs_FastqPlain(t *testing.T) {
 	if err := os.MkdirAll(work, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got, err := deriveInputs(Inputs{Fastq1: gzPath}, work)
+	got, err := deriveInputs(Inputs{Fastq1: gzPath}, work, "")
 	if err != nil {
 		t.Fatalf("deriveInputs: %v", err)
 	}
@@ -526,7 +758,7 @@ func TestDeriveInputs_FastqPlain(t *testing.T) {
 	}
 
 	// No Fastq1 -> no plain FASTQ (dependent cells SKIP).
-	none, err := deriveInputs(Inputs{}, work)
+	none, err := deriveInputs(Inputs{}, work, "")
 	if err != nil {
 		t.Fatalf("deriveInputs(empty): %v", err)
 	}

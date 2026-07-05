@@ -71,10 +71,14 @@ func samtoolsCells() []CellSpec {
 			OurArgs: []string{"index", phBAM}},
 
 		// markdup / fixmate / calmd — record-rewriting filters (re-decoded).
-		{Tool: t, Name: "samtools_fixmate", Subcommand: "fixmate", Need: NeedBAM, Post: PostViewSAM,
-			OurArgs: []string{"fixmate", phBAM, phOut}, WriteOut: ".bam"},
-		{Tool: t, Name: "samtools_markdup", Subcommand: "markdup", Need: NeedBAM, Post: PostViewSAM,
-			OurArgs: []string{"markdup", phBAM, phOut}, WriteOut: ".bam"},
+		// fixmate requires name-collated input (upstream errors on coord-sorted);
+		// feed the derived name-collated BAM to both sides.
+		{Tool: t, Name: "samtools_fixmate", Subcommand: "fixmate", Need: NeedNameSortBAM, Post: PostViewSAM,
+			OurArgs: []string{"fixmate", phNameBAM, phOut}, WriteOut: ".bam"},
+		// markdup requires input that was name-sorted, fixmate -m'd, then coord
+		// re-sorted; feed the derived markdup-ready BAM to both sides.
+		{Tool: t, Name: "samtools_markdup", Subcommand: "markdup", Need: NeedFixmateBAM, Post: PostViewSAM,
+			OurArgs: []string{"markdup", phFixmateBAM, phOut}, WriteOut: ".bam"},
 		{Tool: t, Name: "samtools_calmd", Subcommand: "calmd", Need: NeedBAM | NeedRef, Post: PostStdout,
 			OurArgs: []string{"calmd", phBAM, phRef}},
 
@@ -130,8 +134,11 @@ func bcftoolsCells() []CellSpec {
 			OurArgs: []string{"annotate", "-x", "INFO", "-O", "v", phVCF}},
 		{Tool: t, Name: "bcftools_head", Subcommand: "head", Need: NeedVCF, Post: PostStdout,
 			OurArgs: []string{"head", phVCF}},
-		{Tool: t, Name: "bcftools_reheader", Subcommand: "reheader", Need: NeedVCF, Post: PostBgzipD,
-			OurArgs: []string{"reheader", "-o", phOut, phVCF}, WriteOut: ".vcf.gz"},
+		// reheader needs a modification directive; a bare `reheader -o` errors on
+		// upstream with usage. Feed a deterministic one-line sample-rename map (-s)
+		// so both sides perform the same rename.
+		{Tool: t, Name: "bcftools_reheader", Subcommand: "reheader", Need: NeedVCF | NeedSampleRename, Post: PostBgzipD,
+			OurArgs: []string{"reheader", "-s", phSampleRename, "-o", phOut, phVCF}, WriteOut: ".vcf.gz"},
 		{Tool: t, Name: "bcftools_convert", Subcommand: "convert", Need: NeedVCF, Post: PostStdout,
 			OurArgs: []string{"convert", "-O", "v", phVCF}},
 		{Tool: t, Name: "bcftools_consensus", Subcommand: "consensus -f", Need: NeedVCF | NeedRef, Post: PostStdout,
@@ -191,11 +198,14 @@ func bedCells() []CellSpec {
 		// derived 8-field window BED with -cols 2,3,6,7 (a real ours-vs-upstream cell).
 		{"bedoverlap", "overlap", NeedBED | NeedWindow, []string{"-i", phWindow, "-cols", "2,3,6,7"}, false, false},
 		{"bedsummary", "summary", NeedBED | NeedRef, []string{"-i", phBED, "-g", phFai}, false, false},
-		{"bedunionbedg", "unionbedg", NeedBED, []string{"-i", phBED, phBED}, false, false},
+		// unionbedg needs 4-col BedGraph, not BED3 (upstream SIGABRTs on BED3);
+		// feed the derived 4-col bedgraph.
+		{"bedunionbedg", "unionbedg", NeedBED | NeedBedGraph, []string{"-i", phBedGraph, phBedGraph}, false, false},
 		{"bedcluster", "cluster", NeedBED, []string{"-i", phBED}, false, false},
 		{"bedlinks", "links", NeedBED, []string{"-i", phBED}, false, false},
 		{"bedigv", "igv", NeedBED, []string{"-i", phBED}, false, false},
-		{"bedtag", "tag", NeedBED | NeedBAM, []string{"-i", phBAM, "-files", phBED, "-labels", "x", "-names"}, false, false},
+		// -labels and -names are mutually exclusive upstream; pass only -labels.
+		{"bedtag", "tag", NeedBED | NeedBAM, []string{"-i", phBAM, "-files", phBED, "-labels", "x"}, false, false},
 		// pairtopair needs BEDPE (>=10 fields) on both sides; feed the derived BEDPE.
 		{"bedpairtopair", "pairtopair", NeedBED | NeedBEDPE, []string{"-a", phBEDPE, "-b", phBEDPE}, true, false},
 		// pairtobed needs a BEDPE -a and a BED -b; feed the derived BEDPE + the BED3.

@@ -553,8 +553,8 @@ Usage:
   samtools fixmate [options] <in.namesorted.bam> [<out.bam>]
 
 Options:
-  -m              Add MQ (mate MAPQ) and ms (mate score) tags.
-  -c              Add MC (mate CIGAR) tag.
+  -m              Add ms (mate score) tag (MQ and MC are added by default).
+  -c              Accepted for compatibility (MC is added by default).
   -r              Remove unmapped reads (and pairs entirely unmapped).
   -p, --no-PG     Accepted; v1 never injects @PG.
       --threads N Accepted; ignored.

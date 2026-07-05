@@ -1834,6 +1834,102 @@ func TestParity_Fixmate_T03_AddMateCigar(t *testing.T) {
 	}
 }
 
+// fixmate.t04 — MC (mate CIGAR) and MQ (mate MAPQ) are added BY DEFAULT,
+// matching upstream bam_mate.c (sync_mq_mc runs unconditionally). No flags
+// are passed here; both mates must still carry MC/MQ pointing at each other.
+func TestParity_Fixmate_T04_DefaultMCMQ(t *testing.T) {
+	// r1/r2 have distinct CIGARs (5M vs 6M) and MAPQs (60 vs 40) so the
+	// cross-copied MC/MQ values are unambiguous.
+	bamBytes := localSAMToBAM(t, "@HD\tVN:1.6\tSO:queryname\n@SQ\tSN:chr1\tLN:1000\nr1\t99\tchr1\t100\t60\t5M\t*\t0\t0\tACGTA\tIIIII\nr1\t147\tchr1\t200\t40\t6M\t*\t0\t0\tTGCATA\tIIIIII\n")
+	var out bytes.Buffer
+	if err := Fixmate(bytes.NewReader(bamBytes), &out, FixmateOptions{}); err != nil {
+		t.Fatalf("Fixmate (default): %v", err)
+	}
+	rd, err := newBAMReader(out.Bytes())
+	if err != nil {
+		t.Fatalf("re-read: %v", err)
+	}
+	var recs []*sam.Record
+	for {
+		rec, err := rd.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		recs = append(recs, rec)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(recs))
+	}
+	// rec0's MC/MQ describe its mate (rec1): CIGAR 6M, MAPQ 40.
+	if mc, _ := auxStringHelper(recs[0], "MC"); mc != "6M" {
+		t.Errorf("rec0 default MC = %q, want 6M (aux %v)", mc, recs[0].Aux)
+	}
+	if mq, ok := auxIntHelper(recs[0], "MQ"); !ok || mq != 40 {
+		t.Errorf("rec0 default MQ = %d (ok=%v), want 40 (aux %v)", mq, ok, recs[0].Aux)
+	}
+	// rec1's MC/MQ describe its mate (rec0): CIGAR 5M, MAPQ 60.
+	if mc, _ := auxStringHelper(recs[1], "MC"); mc != "5M" {
+		t.Errorf("rec1 default MC = %q, want 5M (aux %v)", mc, recs[1].Aux)
+	}
+	if mq, ok := auxIntHelper(recs[1], "MQ"); !ok || mq != 60 {
+		t.Errorf("rec1 default MQ = %d (ok=%v), want 60 (aux %v)", mq, ok, recs[1].Aux)
+	}
+	// No -m ⇒ no ms tag on either record.
+	if _, ok := auxIntHelper(recs[0], "ms"); ok {
+		t.Errorf("rec0 should not carry ms without -m, aux %v", recs[0].Aux)
+	}
+}
+
+// fixmate.t05 — an unmapped mate gates MQ off (upstream only appends MQ when
+// the SOURCE mate is mapped) while MC is still added because the other mate is
+// mapped. This locks the exact sync_mq_mc gating.
+func TestParity_Fixmate_T05_UnmappedMateGating(t *testing.T) {
+	// r1 mapped (5M, MAPQ 60); r2 unmapped (FLAG 0x8d = paired+munmap-ish);
+	// use FLAG 133 (0x85: paired, unmapped, read2) for the unmapped mate.
+	bamBytes := localSAMToBAM(t, "@HD\tVN:1.6\tSO:queryname\n@SQ\tSN:chr1\tLN:1000\nr1\t89\tchr1\t100\t60\t5M\t*\t0\t0\tACGTA\tIIIII\nr1\t165\tchr1\t100\t0\t*\t*\t0\t0\tTGCAT\tIIIII\n")
+	var out bytes.Buffer
+	if err := Fixmate(bytes.NewReader(bamBytes), &out, FixmateOptions{}); err != nil {
+		t.Fatalf("Fixmate (default): %v", err)
+	}
+	rd, err := newBAMReader(out.Bytes())
+	if err != nil {
+		t.Fatalf("re-read: %v", err)
+	}
+	var recs []*sam.Record
+	for {
+		rec, err := rd.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		recs = append(recs, rec)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(recs))
+	}
+	// recs[0] is the mapped read; its mate (recs[1]) is unmapped, so recs[0]
+	// gets NO MQ (src unmapped) but DOES get MC ("*", since dest is mapped).
+	if _, ok := auxIntHelper(recs[0], "MQ"); ok {
+		t.Errorf("mapped read should get no MQ when its mate is unmapped, aux %v", recs[0].Aux)
+	}
+	if mc, ok := auxStringHelper(recs[0], "MC"); !ok || mc != "*" {
+		t.Errorf("mapped read MC = %q (ok=%v), want \"*\" from unmapped mate (aux %v)", mc, ok, recs[0].Aux)
+	}
+	// recs[1] is the unmapped read; its mate (recs[0]) is mapped, so it gets
+	// MQ=60 and MC=5M.
+	if mq, ok := auxIntHelper(recs[1], "MQ"); !ok || mq != 60 {
+		t.Errorf("unmapped read MQ = %d (ok=%v), want 60 (aux %v)", mq, ok, recs[1].Aux)
+	}
+	if mc, _ := auxStringHelper(recs[1], "MC"); mc != "5M" {
+		t.Errorf("unmapped read MC = %q, want 5M (aux %v)", mc, recs[1].Aux)
+	}
+}
+
 // =====================================================================
 // split: 3 cases
 // =====================================================================

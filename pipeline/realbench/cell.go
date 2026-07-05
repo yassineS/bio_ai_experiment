@@ -12,18 +12,22 @@ import (
 type InputKind uint32
 
 const (
-	NeedBAM        InputKind = 1 << iota // the tier BAM (.bam + .bai)
-	NeedCRAM                             // the tier CRAM (.cram + .crai)
-	NeedRef                              // the indexed reference FASTA (.fa + .fai)
-	NeedVCF                              // the bgzipped + indexed VCF (.vcf.gz + .tbi)
-	NeedFastq1                           // read-1 FASTQ (R1.fq.gz)
-	NeedFastq2                           // read-2 FASTQ (R2.fq.gz)
-	NeedBED                              // the intervals BED
-	NeedGFF                              // the genes GFF (.gff.gz)
-	NeedBED4                             // a BED4 (named) derived from the intervals BED
-	NeedBEDPE                            // a BEDPE (>=10 field) derived from the intervals BED
-	NeedWindow                           // an 8-field paired/windowed BED derived from the BED
-	NeedFastqPlain                       // a decompressed plain FASTQ derived from Fastq1
+	NeedBAM          InputKind = 1 << iota // the tier BAM (.bam + .bai)
+	NeedCRAM                               // the tier CRAM (.cram + .crai)
+	NeedRef                                // the indexed reference FASTA (.fa + .fai)
+	NeedVCF                                // the bgzipped + indexed VCF (.vcf.gz + .tbi)
+	NeedFastq1                             // read-1 FASTQ (R1.fq.gz)
+	NeedFastq2                             // read-2 FASTQ (R2.fq.gz)
+	NeedBED                                // the intervals BED
+	NeedGFF                                // the genes GFF (.gff.gz)
+	NeedBED4                               // a BED4 (named) derived from the intervals BED
+	NeedBEDPE                              // a BEDPE (>=10 field) derived from the intervals BED
+	NeedWindow                             // an 8-field paired/windowed BED derived from the BED
+	NeedFastqPlain                         // a decompressed plain FASTQ derived from Fastq1
+	NeedNameSortBAM                        // a name-collated BAM derived from BAM (fixmate input)
+	NeedFixmateBAM                         // a name-sort|fixmate -m|coord-sort BAM (markdup input)
+	NeedBedGraph                           // a 4-col BedGraph derived from the intervals BED (unionbedg)
+	NeedSampleRename                       // a one-line sample-rename file (bcftools reheader -s)
 )
 
 // PostKind names how a cell's primary output is turned into a comparable text
@@ -103,21 +107,25 @@ type CellSpec struct {
 // placeholders the Args may contain. {out}/{outdir} are per-side temp paths
 // allocated by the runner.
 const (
-	phBAM        = "{bam}"
-	phCRAM       = "{cram}"
-	phRef        = "{ref}"
-	phFai        = "{fai}"
-	phVCF        = "{vcf}"
-	phFastq1     = "{fastq1}"
-	phFastq2     = "{fastq2}"
-	phFastqPlain = "{fastqplain}"
-	phBED        = "{bed}"
-	phGFF        = "{gff}"
-	phBED4       = "{bed4}"
-	phBEDPE      = "{bedpe}"
-	phWindow     = "{window}"
-	phOut        = "{out}"
-	phOutdir     = "{outdir}"
+	phBAM          = "{bam}"
+	phCRAM         = "{cram}"
+	phRef          = "{ref}"
+	phFai          = "{fai}"
+	phVCF          = "{vcf}"
+	phFastq1       = "{fastq1}"
+	phFastq2       = "{fastq2}"
+	phFastqPlain   = "{fastqplain}"
+	phBED          = "{bed}"
+	phGFF          = "{gff}"
+	phBED4         = "{bed4}"
+	phBEDPE        = "{bedpe}"
+	phWindow       = "{window}"
+	phNameBAM      = "{namebam}"
+	phFixmateBAM   = "{fixmatebam}"
+	phBedGraph     = "{bedgraph}"
+	phSampleRename = "{samplerename}"
+	phOut          = "{out}"
+	phOutdir       = "{outdir}"
 )
 
 // Inputs holds the resolved input file paths (empty when not provided) for the
@@ -145,6 +153,23 @@ type Inputs struct {
 	// bin/ours/prinseq and bin/upstream/prinseq read a format both support and
 	// produce a real, comparable result.
 	FastqPlain string
+	// NameBAM/FixmateBAM/BedGraph/SampleRename are deterministic prerequisite
+	// transforms derived at run start (see deriveInputs) so the cells whose
+	// UPSTREAM oracle is stricter than ours get an input the oracle accepts,
+	// and BOTH sides see byte-identical inputs:
+	//   - NameBAM: a name-collated (queryname-grouped) BAM — the input
+	//     upstream `samtools fixmate` requires (it errors on coord-sorted).
+	//   - FixmateBAM: name-sort | fixmate -m | coord-sort — the input
+	//     upstream `samtools markdup` requires (needs ms + MC + coord order).
+	//   - BedGraph: a 4-column BedGraph (chrom start end value) — upstream
+	//     `bedtools unionbedg` SIGABRTs on a bare BED3.
+	//   - SampleRename: a one-line sample-rename map for `bcftools reheader
+	//     -s` (a bare `reheader -o` gives no modification directive and
+	//     upstream errors with usage).
+	NameBAM      string
+	FixmateBAM   string
+	BedGraph     string
+	SampleRename string
 }
 
 // have reports whether a single InputKind bit's file is present.
@@ -174,6 +199,14 @@ func (in Inputs) have(bit InputKind) bool {
 		return in.Window != ""
 	case NeedFastqPlain:
 		return in.FastqPlain != ""
+	case NeedNameSortBAM:
+		return in.NameBAM != ""
+	case NeedFixmateBAM:
+		return in.FixmateBAM != ""
+	case NeedBedGraph:
+		return in.BedGraph != ""
+	case NeedSampleRename:
+		return in.SampleRename != ""
 	}
 	return true
 }
@@ -182,18 +215,22 @@ func (in Inputs) have(bit InputKind) bool {
 // required inputs are present.
 func (in Inputs) missing(need InputKind) string {
 	for bit, name := range map[InputKind]string{
-		NeedBAM:        "-bam",
-		NeedCRAM:       "-cram",
-		NeedRef:        "-ref",
-		NeedVCF:        "-vcf",
-		NeedFastq1:     "-fastq1",
-		NeedFastq2:     "-fastq2",
-		NeedBED:        "-bed",
-		NeedGFF:        "-gff",
-		NeedBED4:       "-bed (bed4)",
-		NeedBEDPE:      "-bed (bedpe)",
-		NeedWindow:     "-bed (window)",
-		NeedFastqPlain: "-fastq1 (plain)",
+		NeedBAM:          "-bam",
+		NeedCRAM:         "-cram",
+		NeedRef:          "-ref",
+		NeedVCF:          "-vcf",
+		NeedFastq1:       "-fastq1",
+		NeedFastq2:       "-fastq2",
+		NeedBED:          "-bed",
+		NeedGFF:          "-gff",
+		NeedBED4:         "-bed (bed4)",
+		NeedBEDPE:        "-bed (bedpe)",
+		NeedWindow:       "-bed (window)",
+		NeedFastqPlain:   "-fastq1 (plain)",
+		NeedNameSortBAM:  "-bam (name-collated)",
+		NeedFixmateBAM:   "-bam (fixmate'd)",
+		NeedBedGraph:     "-bed (bedgraph)",
+		NeedSampleRename: "-vcf (sample-rename)",
 	} {
 		if need&bit != 0 && !in.have(bit) {
 			return name
@@ -223,6 +260,10 @@ func substituteArgs(args []string, in Inputs, out, outDir string) []string {
 		phBED4, in.BED4,
 		phBEDPE, in.BEDPE,
 		phWindow, in.Window,
+		phNameBAM, in.NameBAM,
+		phFixmateBAM, in.FixmateBAM,
+		phBedGraph, in.BedGraph,
+		phSampleRename, in.SampleRename,
 		phOut, out,
 		phOutdir, outDir,
 	)
