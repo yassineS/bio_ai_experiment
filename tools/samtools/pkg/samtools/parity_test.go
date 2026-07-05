@@ -33,6 +33,7 @@ package samtools
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -41,6 +42,7 @@ import (
 	"testing"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bam"
+	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -1381,6 +1383,67 @@ func TestParity_Coverage_T03_Region(t *testing.T) {
 	}
 }
 
+// coverage.t04 — multi-contig header where only some contigs carry reads.
+// Upstream coverage.c floats every covered reference to the top (in the
+// coordinate-sorted pileup's encounter order == header order for sorted
+// input), then lists the uncovered references in header order. Here chrB and
+// chrD carry reads while chrA and chrC do not, so the expected row order is
+// chrB, chrD (covered, header order) followed by chrA, chrC (uncovered, header
+// order) — NOT strict header order (which would put chrA first).
+func TestParity_Coverage_T04_FloatCoveredFirst(t *testing.T) {
+	sam := "@HD\tVN:1.6\tSO:coordinate\n" +
+		"@SQ\tSN:chrA\tLN:1000\n" +
+		"@SQ\tSN:chrB\tLN:1000\n" +
+		"@SQ\tSN:chrC\tLN:1000\n" +
+		"@SQ\tSN:chrD\tLN:1000\n" +
+		"rB1\t0\tchrB\t100\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII\n" +
+		"rD1\t0\tchrD\t200\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII\n"
+	var out bytes.Buffer
+	if err := Coverage(strings.NewReader(sam), &out, CoverageOptions{}); err != nil {
+		t.Fatalf("Coverage: %v", err)
+	}
+	var rnames []string
+	for _, line := range strings.Split(strings.TrimRight(out.String(), "\n"), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		rnames = append(rnames, strings.SplitN(line, "\t", 2)[0])
+	}
+	want := []string{"chrB", "chrD", "chrA", "chrC"}
+	if len(rnames) != len(want) {
+		t.Fatalf("expected %d rows, got %d:\n%s", len(want), len(rnames), out.String())
+	}
+	for i := range want {
+		if rnames[i] != want[i] {
+			t.Fatalf("row order mismatch: got %v, want %v\n%s", rnames, want, out.String())
+		}
+	}
+}
+
+// coverage.t05 — a region query keeps the requested order and is unaffected by
+// the covered-first floating (upstream's reorder loop is guarded by !opt_reg).
+func TestParity_Coverage_T05_RegionOrderUnchanged(t *testing.T) {
+	sam := "@HD\tVN:1.6\tSO:coordinate\n" +
+		"@SQ\tSN:chrA\tLN:1000\n" +
+		"@SQ\tSN:chrB\tLN:1000\n" +
+		"rB1\t0\tchrB\t100\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII\n"
+	var out bytes.Buffer
+	if err := Coverage(strings.NewReader(sam), &out, CoverageOptions{Regions: []string{"chrA", "chrB"}}); err != nil {
+		t.Fatalf("Coverage region: %v", err)
+	}
+	var rnames []string
+	for _, line := range strings.Split(strings.TrimRight(out.String(), "\n"), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		rnames = append(rnames, strings.SplitN(line, "\t", 2)[0])
+	}
+	want := []string{"chrA", "chrB"}
+	if len(rnames) != len(want) || rnames[0] != want[0] || rnames[1] != want[1] {
+		t.Fatalf("region order should follow request %v, got %v\n%s", want, rnames, out.String())
+	}
+}
+
 // =====================================================================
 // merge (samtools merge): 3 cases
 // =====================================================================
@@ -1513,6 +1576,51 @@ func TestParity_Cat_T03_DivergingSQRejected(t *testing.T) {
 	var out bytes.Buffer
 	if err := Cat([]io.Reader{bytes.NewReader(a), bytes.NewReader(b)}, &out, CatOptions{}); err == nil {
 		t.Errorf("expected error on @SQ-table divergence")
+	}
+}
+
+// cat.t04 — the raw-block fast path: concatenating two copies of a
+// multi-record BAM doubles the record count, every record decodes cleanly, and
+// the joined stream terminates with a single BGZF EOF block (no premature EOF
+// from an un-trimmed intermediate EOF marker).
+func TestParity_Cat_T04_FastPathTwoCopiesEOFTrim(t *testing.T) {
+	hdr := "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:chr1\tLN:1000\n"
+	body := ""
+	for i := 0; i < 50; i++ {
+		body += fmt.Sprintf("r%d\t0\tchr1\t%d\t60\t5M\t*\t0\t0\tACGTA\tIIIII\n", i, 100+i)
+	}
+	a := localSAMToBAM(t, hdr+body)
+	var out bytes.Buffer
+	if err := Cat([]io.Reader{bytes.NewReader(a), bytes.NewReader(a)}, &out, CatOptions{}); err != nil {
+		t.Fatalf("Cat: %v", err)
+	}
+	rd, err := newBAMReader(out.Bytes())
+	if err != nil {
+		t.Fatalf("re-read cat BAM: %v", err)
+	}
+	n := 0
+	for {
+		_, err := rd.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Read record %d: %v", n, err)
+		}
+		n++
+	}
+	if n != 100 {
+		t.Errorf("record count = %d, want 100 (50 doubled)", n)
+	}
+	// Exactly one trailing EOF block: the concatenated bytes must end with the
+	// canonical 28-byte marker and contain no earlier one that would truncate a
+	// reader at the first input's boundary.
+	ob := out.Bytes()
+	if len(ob) < len(bgzip.EOFBlock) || !bytes.Equal(ob[len(ob)-len(bgzip.EOFBlock):], bgzip.EOFBlock) {
+		t.Errorf("output does not end with the canonical BGZF EOF block")
+	}
+	if idx := bytes.Index(ob[:len(ob)-len(bgzip.EOFBlock)], bgzip.EOFBlock); idx >= 0 {
+		t.Errorf("found an un-trimmed intermediate EOF block at offset %d", idx)
 	}
 }
 
@@ -1723,6 +1831,102 @@ func TestParity_Fixmate_T03_AddMateCigar(t *testing.T) {
 	mc, _ := auxStringHelper(rec, "MC")
 	if mc != "6M" {
 		t.Errorf("expected MC=6M, got %q (aux %v)", mc, rec.Aux)
+	}
+}
+
+// fixmate.t04 — MC (mate CIGAR) and MQ (mate MAPQ) are added BY DEFAULT,
+// matching upstream bam_mate.c (sync_mq_mc runs unconditionally). No flags
+// are passed here; both mates must still carry MC/MQ pointing at each other.
+func TestParity_Fixmate_T04_DefaultMCMQ(t *testing.T) {
+	// r1/r2 have distinct CIGARs (5M vs 6M) and MAPQs (60 vs 40) so the
+	// cross-copied MC/MQ values are unambiguous.
+	bamBytes := localSAMToBAM(t, "@HD\tVN:1.6\tSO:queryname\n@SQ\tSN:chr1\tLN:1000\nr1\t99\tchr1\t100\t60\t5M\t*\t0\t0\tACGTA\tIIIII\nr1\t147\tchr1\t200\t40\t6M\t*\t0\t0\tTGCATA\tIIIIII\n")
+	var out bytes.Buffer
+	if err := Fixmate(bytes.NewReader(bamBytes), &out, FixmateOptions{}); err != nil {
+		t.Fatalf("Fixmate (default): %v", err)
+	}
+	rd, err := newBAMReader(out.Bytes())
+	if err != nil {
+		t.Fatalf("re-read: %v", err)
+	}
+	var recs []*sam.Record
+	for {
+		rec, err := rd.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		recs = append(recs, rec)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(recs))
+	}
+	// rec0's MC/MQ describe its mate (rec1): CIGAR 6M, MAPQ 40.
+	if mc, _ := auxStringHelper(recs[0], "MC"); mc != "6M" {
+		t.Errorf("rec0 default MC = %q, want 6M (aux %v)", mc, recs[0].Aux)
+	}
+	if mq, ok := auxIntHelper(recs[0], "MQ"); !ok || mq != 40 {
+		t.Errorf("rec0 default MQ = %d (ok=%v), want 40 (aux %v)", mq, ok, recs[0].Aux)
+	}
+	// rec1's MC/MQ describe its mate (rec0): CIGAR 5M, MAPQ 60.
+	if mc, _ := auxStringHelper(recs[1], "MC"); mc != "5M" {
+		t.Errorf("rec1 default MC = %q, want 5M (aux %v)", mc, recs[1].Aux)
+	}
+	if mq, ok := auxIntHelper(recs[1], "MQ"); !ok || mq != 60 {
+		t.Errorf("rec1 default MQ = %d (ok=%v), want 60 (aux %v)", mq, ok, recs[1].Aux)
+	}
+	// No -m ⇒ no ms tag on either record.
+	if _, ok := auxIntHelper(recs[0], "ms"); ok {
+		t.Errorf("rec0 should not carry ms without -m, aux %v", recs[0].Aux)
+	}
+}
+
+// fixmate.t05 — an unmapped mate gates MQ off (upstream only appends MQ when
+// the SOURCE mate is mapped) while MC is still added because the other mate is
+// mapped. This locks the exact sync_mq_mc gating.
+func TestParity_Fixmate_T05_UnmappedMateGating(t *testing.T) {
+	// r1 mapped (5M, MAPQ 60); r2 unmapped (FLAG 0x8d = paired+munmap-ish);
+	// use FLAG 133 (0x85: paired, unmapped, read2) for the unmapped mate.
+	bamBytes := localSAMToBAM(t, "@HD\tVN:1.6\tSO:queryname\n@SQ\tSN:chr1\tLN:1000\nr1\t89\tchr1\t100\t60\t5M\t*\t0\t0\tACGTA\tIIIII\nr1\t165\tchr1\t100\t0\t*\t*\t0\t0\tTGCAT\tIIIII\n")
+	var out bytes.Buffer
+	if err := Fixmate(bytes.NewReader(bamBytes), &out, FixmateOptions{}); err != nil {
+		t.Fatalf("Fixmate (default): %v", err)
+	}
+	rd, err := newBAMReader(out.Bytes())
+	if err != nil {
+		t.Fatalf("re-read: %v", err)
+	}
+	var recs []*sam.Record
+	for {
+		rec, err := rd.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		recs = append(recs, rec)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(recs))
+	}
+	// recs[0] is the mapped read; its mate (recs[1]) is unmapped, so recs[0]
+	// gets NO MQ (src unmapped) but DOES get MC ("*", since dest is mapped).
+	if _, ok := auxIntHelper(recs[0], "MQ"); ok {
+		t.Errorf("mapped read should get no MQ when its mate is unmapped, aux %v", recs[0].Aux)
+	}
+	if mc, ok := auxStringHelper(recs[0], "MC"); !ok || mc != "*" {
+		t.Errorf("mapped read MC = %q (ok=%v), want \"*\" from unmapped mate (aux %v)", mc, ok, recs[0].Aux)
+	}
+	// recs[1] is the unmapped read; its mate (recs[0]) is mapped, so it gets
+	// MQ=60 and MC=5M.
+	if mq, ok := auxIntHelper(recs[1], "MQ"); !ok || mq != 60 {
+		t.Errorf("unmapped read MQ = %d (ok=%v), want 60 (aux %v)", mq, ok, recs[1].Aux)
+	}
+	if mc, _ := auxStringHelper(recs[1], "MC"); mc != "5M" {
+		t.Errorf("unmapped read MC = %q, want 5M (aux %v)", mc, recs[1].Aux)
 	}
 }
 

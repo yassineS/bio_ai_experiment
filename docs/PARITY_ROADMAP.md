@@ -226,6 +226,131 @@ A skimmable per-tool completion table lives in the top-level
   through **slice 4**, and `convert`'s GEN/HAP/TSV/gVCF modes are all
   implemented and live-oracle validated.
 
+### Real-data chr20 realbench ERROR-cell wave (2026-07-05)
+
+The full-chr20 GIAB realbench run also left a set of cells in **ERROR** (one side
+exited non-zero) that the wall/RSS/DIFF wave (commit f6ac505 / PR #455) did not
+cover. All are now resolved — each verified **byte-exact against the vendored
+upstream binary** on prepared inputs, with the whole-module `go test -race ./...`
+gate green. Most were **harness** bugs (our tools were already correct, often
+*stricter* than upstream): the realbench matrix reused a cell's `OurArgs`
+verbatim for the upstream side and fed the single real BED3 / coordinate-sorted
+BAM / plain-VCF placeholder to operations that need more.
+
+- **bed cells (`bedmap`, `bedexpand`, `bedoverlap`, `bedpairtopair`,
+  `bedpairtobed`, `bedsplit`, `bedtobam`) — HARNESS.** The real `{bed}` is the
+  NIST high-confidence **BED3**; these ops need a 4th column / 4 position columns
+  / a BEDPE / a name column / an output prefix. Added
+  `pipeline/realbench/derive.go` to synthesise a BED4, an 8-column windowed BED,
+  a 10-column BEDPE, and a plain FASTQ from the real inputs at run start, and
+  wired `bedsplit`'s `WorkDirOut`. `bedmap`/`bedexpand`/`bedoverlap` now compare
+  byte-exact; the four ours-only cells run clean.
+- **`bcftools csq` — HARNESS.** Added `-p a`: the GIAB VCF is single-sample
+  **unphased**, and both upstream and our port hard-error on unphased hets
+  without `--phase`. Both sides now exit 0; BCSQ byte-identical.
+- **`bcftools gtcheck` — OURS.** A single-sample cross-check now emits the
+  upstream-identical DCv2 header + INFO block + empty table (exit 0) instead of
+  erroring; the error path is preserved for explicit `-p/-P/-g` that resolve to
+  zero pairs. Parity test added.
+- **`prinseq` (`-stats`, filter) — OURS.** `openInput` now routes through
+  `pkg/htsgo/iohelper` for transparent gzip (matching `fastp`/`sickle`); added a
+  flat `-stats_*` reporter emitting the upstream TSV byte-for-byte. The stats
+  cell uses the **deterministic** `-stats_*` subset — it excludes `stats_tag`,
+  whose upstream `midseq` value is an unsorted Perl-hash `join` and so differs
+  run-to-run. The harness derives a decompressed plain FASTQ because upstream
+  `prinseq-lite.pl` 0.20.4 cannot read gzip.
+- **`skewer_pe` — stale binary (no source change).** The recorded container
+  carried a `bin/ours/skewer` built before commit 44b7f95 (which added the
+  upstream positional CLI). The in-branch source is correct and byte-identical to
+  upstream; the AWS container must be rebuilt from HEAD.
+- **`samtools fixmate` — HARNESS + fix-on-port.** The harness now derives a
+  name-collated BAM (upstream fixmate rejects coordinate-sorted input). **Our
+  `fixmate` now emits `MC` (mate CIGAR) and `MQ` (mate MAPQ) tags by default**,
+  matching upstream `bam_mate.c` (`MQ` only when the source mate is mapped; `MC`
+  when either mate is mapped; unmapped-mate CIGAR renders `*`). This is a
+  deliberate default-output behaviour change to reach upstream parity, not a
+  regression; `-m` still additionally adds `ms`. Byte-identical to upstream incl.
+  the unmapped-mate edge case.
+- **`samtools markdup`, `bcftools reheader`, `bedtools unionbedg`,
+  `bedtools tag` — HARNESS/DATA.** markdup gets a derived
+  `sort -n | fixmate -m | sort` BAM; reheader gets a derived `-s` rename file (a
+  bare `reheader` has no directive and upstream errors); unionbedg gets a derived
+  4-column BedGraph (upstream **SIGABRTs** on BED3); the `tag` cell drops the
+  mutually-exclusive `-names` (kept `-labels`). All byte-exact vs upstream.
+
+### Real-data chr20 realbench wall/RSS wave (2026-07-04, commit f6ac505)
+
+The full-chr20 GIAB realbench run (ours vs the vendored upstream binaries)
+flagged a further set of wall-time and peak-RSS offenders. All fixes below are
+**byte-exact vs upstream on full chr20** (whole-module `go test -race ./...`
+green) and each carries a parity test.
+
+Wall offenders (byte-exact, now faster):
+
+- **`samtools cat` — FIXED.** Was decode + recompress of every input BGZF block;
+  now a raw BGZF block passthrough. **37× → 1.55×** upstream.
+- **`samtools view` CRAM decode-in (single-threaded) — FIXED.** Per-base map
+  lookups were hoisted and the name-tokeniser output buffer sized to `maxTok`
+  (`decodeName` allocation 3.4 GB → 560 MB; total decode allocation −36 %):
+  **17.6× → 6.6×** single-threaded. A byte-exact `-@` parallel CRAM input path
+  exists (~2.2× with `-@`) but is **deliberately NOT auto-enabled**, to keep the
+  benchmark fair against upstream's single-threaded default. (This is a wall /
+  allocation win on the decode path; the `view -b -T` decode **peak RSS** stays
+  at the task-#68 floor of 1.85× chr20 / 2.07× up_small documented below.)
+- **`bedclosest` — FIXED.** Replaced the O(n·m) full scan with the bedtools-style
+  moving-cache sweep. **135× → 2×**.
+
+Peak-RSS offenders — bounded-window streaming, byte-exact. These cells held
+O(file) state where upstream streams; they are now streamed:
+
+- **`samtools consensus` (pileup / FASTA) — FIXED.** `SO:unsorted` / missing-`SO`
+  inputs are now streamed with a monotonic-POS guard (and the FASTA path skips
+  the unused `qualBuf`); the pileup builder shares the stateful running-min
+  insertion-pad quality. Peak RSS: pileup **4147 MB → 346 MB**, FASTA
+  **4083 MB → 443 MB**. (Distinct from the indexed `-r <region>` consensus OOM
+  fix — task #45 below.)
+- **`samtools coverage` — FIXED.** A streaming interval sweep replaces the
+  per-contig `posDelta` map; row ordering now emits covered contigs first. Peak
+  RSS **326 MB → 20 MB**.
+- **`bedmulticov` — FIXED.** Flow inverted: an interval tree over the query
+  intervals with the BAM streamed past it. Peak RSS **888 MB → 26 MB**.
+- **`bcftools concat` / `filter` / `annotate` / `convert` / `roh` — FIXED.**
+  Stream the input instead of `readAllVariants` (~200 MB → ~20 MB). **Exceptions
+  still buffered BY DESIGN (NOT claimed fixed):** `convert --gvcf2vcf` (needs a
+  forward look-ahead) and `convert --hapsample` / `--haplegend` (the matrix
+  writer). The `roh` residual **~145 MB is the per-chromosome HMM working set**,
+  not an input buffer.
+
+Correctness (byte-exact now) — DIFF cells closed by the same wave:
+
+- **`samtools view -L` / `bedmulticov` placed-unmapped reads — FIXED.** Both now
+  count placed-unmapped reads (a `bam_endpos` 1 bp span), matching upstream's
+  "regardless of FLAG" region semantics.
+- **CRAM encode/decode — FIXED.** `sliceSpan` now includes placed-unmapped reads
+  (this fixes a real htslib decode failure past record ~290k — a severe
+  encoder-corruption bug in our writer), and the equal-POS `TLEN` sign is matched
+  on both encode (`linkMates` / `computeTLenOverrides`) and decode; byte-exact
+  roundtrip.
+- **`samtools stats` — FIXED.** Emit the header block; error rate now in
+  `float32` to match upstream.
+- **`samtools fastq` — FIXED.** Collate consecutive same-`QNAME` records, R1
+  before R2; route lone mates to R1/R2 (or `-s`) in the `-1`/`-2` path (they were
+  previously dropped).
+- **`samtools dict` — FIXED.** `@SQ` optional-field order corrected to upstream
+  AN/UR/AS/SP (was AS/UR/SP/AN, which DIFFed whenever `-a` was passed);
+  chr-prefix `-A` aliases fixed.
+- **`bcftools consensus` — FIXED.** Preserve the prior variant's anchor base on
+  overlapping anchored deletions.
+- **`bed12tobed6` — FIXED.** Normalise non-BED12 records to BED6; error
+  byte-for-byte like bedtools on mixed field counts.
+- **`seqtk cutN` — FIXED.** Emit FASTQ for FASTQ input; add the `-p` penalty
+  flag; fix the `-g` gap output format.
+
+**Accepted residual (NOT claimed fixed):** the DEFAULT (gap5 Bayesian)
+`samtools consensus` base call still differs from upstream at ~46 depth-1
+STR/homopolymer loci (Go vs glibc libm last-ULP); `--mode simple` is byte-exact.
+Full characterisation in the consensus base-call residual note below.
+
 ### Performance & memory scalability follow-ups (2026-06-25, from the real-data + large-tier perf)
 
 The H2a real-data GIAB run and the large-tier bench (all **byte-exact** vs
@@ -689,6 +814,24 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
     tandem-repeat off-by-one tracked under #56 — now precisely localized to these
     coordinates. It is **not claimed as fixed**; tracked here for a future
     deletion-row / low-depth-`N` pass.
+  - **`consensus --mode simple` byte-exact; default gap5 Bayesian base-call
+    residual re-characterised as libm last-ULP — ACCEPTED.** With the #55/#56/#58
+    fixes in place, a whole-chr20 re-measurement pins the current state:
+    `consensus --mode simple` (all formats) is **byte-identical to htslib** on the
+    full contig-20 GIAB stream (md5 `64279379` == `64279379`) — the guarantee is
+    now locked in by `TestConsensus_SimpleMode_Deterministic` in
+    `consensus_bayesian_test.go`. The DEFAULT gap5 Bayesian caller
+    (`--mode simple` NOT set) differs from upstream at only **~46 ultra-low-coverage
+    (depth 1-5) homopolymer/STR loci — 13 net differing bases over the 64.27 Mb
+    contig**. Like the `cq` residual (#67/#69), these are **Go `math.Log`/`math.Exp`/
+    `math.Pow` vs glibc libm last-ULP** divergences: the sub-ULP double noise lands
+    the borderline depth-1 insertion posterior on the other side of a call at these
+    STR/homopolymer sites, flipping the indel call. This is the **same
+    transcendental last-ULP class the project already accepts as proximity parity**
+    (consensus `cq` #67/#69, bcftools `trio-dnm3`); closing it would require a
+    bit-for-bit libm `exp`/`log`/`pow` reimplementation, which is out of scope.
+    **Accepted.** Documented at the `calculateConsensusGap5`/`fastExp` header in
+    `consensus_bayesian.go`.
 - **`samtools sort` wall — FIXED (task #39 then #42, now ≈ parity).** `sort -@4`
   was ~3x upstream at matched memory. Profiling showed `sort.SliceStable`/heap/
   comparator are negligible (<4%); the costs were excessive spilling (57 vs 4

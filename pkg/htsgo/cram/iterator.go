@@ -446,6 +446,24 @@ func (rr *RecordReader) decodeSlice(h *CompressionHeader, sl *Slice, containerId
 			rr.arena = &recordArena{}
 		}
 		dec.arena = rr.arena
+	} else {
+		// Eager (SAM text / struct-aux []sam.Aux) path: a FRESH per-slice
+		// record-field arena. It collapses the per-record make()s for the record
+		// structs, QUAL, CIGAR and the SEQ reconstruction scratch into a handful of
+		// per-slice slab growths — the dominant object-count churn, and thus the
+		// concurrent-GC CPU, of CRAM decode — while producing byte-for-byte the same
+		// records. Unlike the rawAuxBAMSink arena above it is per-slice, NOT the
+		// persistent cross-slice rr.arena: an eager consumer may RETAIN records past
+		// their slice (samtools sort buffers the whole file, ReadAll accumulates,
+		// mpileup holds a window), so the arena must never be reset or reused. Each
+		// slice's records reference only their OWN slice's buffers through capped
+		// 3-index sub-slices, and the GC keeps a slice's buffers alive exactly as
+		// long as any of its records — so retention is safe and steady-state RSS
+		// stays bounded to the live slices. SEQ is still emitted as rec.Seq (a string
+		// copied out of the reused scratch) and aux as rec.Aux ([]sam.Aux), because
+		// storeSeq and decodeRecord gate the packed RawSeq/RawAux form on
+		// rawAuxBAMSink, which is false here.
+		dec.arena = &recordArena{}
 	}
 	recs, suppress, err := dec.decodeSliceRecords(sl.Header.NumRecords)
 	if err != nil {
@@ -560,7 +578,12 @@ func regenerateMDNM(recs []*sam.Record, suppress []mdnmSuppress, refBases []byte
 			continue
 		}
 		md, nm := mdnm.Compute(rec, refBases, refOffset)
-		var add []sam.Aux
+		// A fixed two-slot backing (MD, NM) kept on the stack: insertBeforeTrailingRG
+		// only copies from add, never retains it, so this never escapes — replacing
+		// the per-record append-grown scratch slice that allocated once for every
+		// regenerated mapped record.
+		var addArr [2]sam.Aux
+		add := addArr[:0]
 		if wantMD {
 			add = append(add, sam.Aux{Tag: "MD", Type: 'Z', Value: md})
 		}

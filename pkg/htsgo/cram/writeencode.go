@@ -175,14 +175,21 @@ func recordRefID(rec *sam.Record, refIndex map[string]int32) int32 {
 }
 
 // sliceSpan computes the alignment start and reference span a slice
-// covers from its mapped records. An all-unmapped slice spans nothing
-// and starts at position 0.
+// covers from its placed records. A record counts as placed when it
+// carries a valid reference position (Pos > 0), regardless of its
+// FlagUnmapped bit: a placed-unmapped read (unmapped flag but a real
+// ref_id/POS) still contributes to the slice span, exactly as htslib's
+// ref_id != -1 span accounting does. Excluding such reads would leave
+// alignmentStart above a placed-unmapped read's POS, so a stored absolute
+// AP would fall before ref_seq_start and htslib would reject the slice
+// with "Failure to decode slice". A record with no position (Pos <= 0) is
+// skipped. A slice with no placed record spans nothing and starts at 0.
 func sliceSpan(records []*sam.Record) (start, span int32) {
 	minPos := int32(0)
 	maxEnd := int32(0)
 	any := false
 	for _, rec := range records {
-		if rec.Flag&sam.FlagUnmapped != 0 || rec.Pos <= 0 {
+		if rec.Pos <= 0 {
 			continue
 		}
 		end := int32(rec.EndPosition())
@@ -383,6 +390,14 @@ type recordEncoder struct {
 	// container header.
 	numBases int64
 
+	// tlenOverride holds the template length to store for the records of the
+	// small subset of within-slice mate pairs whose decoded TLEN sign htslib
+	// re-derives rather than preserving verbatim. It is keyed by record
+	// pointer and populated once per slice by computeTLenOverrides; a record
+	// absent from the map stores its input TLEN unchanged. See
+	// computeTLenOverrides for the exact (equal-position) case this covers.
+	tlenOverride map[*sam.Record]int64
+
 	// tagCombos lists each distinct ordered tag-key combination in first-
 	// seen order; comboIndex maps a combination's string form to its
 	// index. A record's TL value is its combination's index.
@@ -397,6 +412,7 @@ type recordEncoder struct {
 func (e *recordEncoder) encodeAll(records []*sam.Record) error {
 	e.comboIndex = make(map[string]int32)
 	e.tagKeySet = make(map[tagKey]bool)
+	e.computeTLenOverrides(records)
 	for i, rec := range records {
 		if err := e.encodeRecord(rec); err != nil {
 			return fmt.Errorf("cram: encoding record %d (%q): %w", i, rec.QName, err)
@@ -576,8 +592,163 @@ func (e *recordEncoder) encodeMate(rec *sam.Record) error {
 	// signed series (VARINT_SIGNED in v4); NP (mate position) is non-negative.
 	b.ns = e.putS(b.ns, nsID)
 	b.np = e.putU(b.np, int32(rec.PNext))
-	b.ts = e.putS(b.ts, int32(rec.TLen))
+	tlen := rec.TLen
+	if ov, ok := e.tlenOverride[rec]; ok {
+		tlen = ov
+	}
+	b.ts = e.putS(b.ts, int32(tlen))
 	return nil
+}
+
+// computeTLenOverrides fills e.tlenOverride for the within-slice mate pairs
+// whose decoded TLEN sign upstream htslib re-derives rather than storing
+// verbatim. The simple writer stores every record detached, so its TS series
+// is emitted verbatim on decode — but htslib keeps an equal-alignment-start
+// same-reference primary pair ATTACHED and, on decode, recomputes each mate's
+// TLEN sign from the pair's coordinates (cram_decode.c's mate cross-reference
+// pass). That re-derivation disagrees with the input BAM's stored sign for the
+// tie-broken equal-start case, so a verbatim copy would decode differently
+// from an htslib-written CRAM. To stay byte-exact with upstream's decoded
+// output, this pass reproduces htslib's decision:
+//
+//   - It considers only exactly-two-record groups sharing a QNAME within the
+//     slice, both primary (not secondary/supplementary) and mapped, one READ1
+//     and one READ2, on the same reference, with matching mate flags and
+//     mate-position cross-references — the records htslib keeps attached.
+//   - It restricts the override to EQUAL alignment start (apos), the only case
+//     whose re-derived sign differs from the standard leftmost-positive /
+//     rightmost-negative convention the input already carries. A pair with
+//     distinct start positions decodes to the same signs it was stored with,
+//     so it is left untouched (no risk of perturbing the common case).
+//   - It applies htslib's attach gate: the pair is only re-signed when the
+//     input TLENs already match htslib's encode-time sign (cr READ1 → +, else
+//     −, times the span). When they do not, htslib stores the pair detached
+//     and verbatim, so our verbatim copy already matches and must be left as is.
+//
+// For a qualifying pair it assigns each record the value htslib's decoder
+// would reconstruct (see the tie-break at cram_decode.c ~2217-2238).
+func (e *recordEncoder) computeTLenOverrides(records []*sam.Record) {
+	// Group primary mapped records by read name, remembering slice order.
+	byName := make(map[string][]int)
+	for i, rec := range records {
+		if rec.Flag&(sam.FlagSecondary|sam.FlagSupplementary) != 0 {
+			continue
+		}
+		if rec.Flag&sam.FlagUnmapped != 0 || rec.Pos <= 0 {
+			continue
+		}
+		byName[rec.QName] = append(byName[rec.QName], i)
+	}
+	for _, idxs := range byName {
+		if len(idxs) != 2 {
+			continue // htslib detaches names with secondaries/odd multiplicity.
+		}
+		// p is the earlier (lower-index) record — htslib's upstream mate, the
+		// one it marks MATE_DOWNSTREAM and processes first on decode — and cr
+		// the later record.
+		p, cr := records[idxs[0]], records[idxs[1]]
+		if !equalStartAttachedPair(p, cr) {
+			continue
+		}
+		aleft := p.Pos // equal for both records.
+		aright := p.EndPosition()
+		if cr.EndPosition() > aright {
+			aright = cr.EndPosition()
+		}
+		span := aright - aleft + 1
+
+		// htslib's encode-time sign for the later record cr (equal apos ⇒ the
+		// READ1/READ2 tie-break). The pair is only kept attached when the input
+		// TLENs already match this sign; otherwise it is stored verbatim.
+		sign := int64(-1)
+		if cr.Flag&sam.FlagRead1 != 0 {
+			sign = 1
+		}
+		if cr.TLen != sign*span || p.TLen != -sign*span {
+			continue
+		}
+
+		// htslib's decode tie-break (cram_decode.c) applied to p, the record it
+		// starts the cross-reference walk from. left_cnt is 2 (both share the
+		// leftmost start); the branch turns on whether p is the sole rightmost.
+		var pTLen, crTLen int64
+		switch {
+		case p.EndPosition() < aright:
+			// p leftmost but not rightmost: it takes the positive span.
+			pTLen, crTLen = span, -span
+		case cr.EndPosition() == aright:
+			// Both leftmost and rightmost (equal ends): resolve via READ1 so the
+			// sign is independent of record order.
+			if p.Flag&sam.FlagRead1 != 0 {
+				pTLen, crTLen = span, -span
+			} else {
+				pTLen, crTLen = -span, span
+			}
+		default:
+			// p is the sole rightmost (its mate ends earlier): p takes the
+			// negative span.
+			pTLen, crTLen = -span, span
+		}
+		if pTLen == p.TLen && crTLen == cr.TLen {
+			continue // already matches; no override needed.
+		}
+		if e.tlenOverride == nil {
+			e.tlenOverride = make(map[*sam.Record]int64)
+		}
+		e.tlenOverride[p] = pTLen
+		e.tlenOverride[cr] = crTLen
+	}
+}
+
+// equalStartAttachedPair reports whether p (the earlier record) and cr (the
+// later record) form the equal-alignment-start, same-reference primary mate
+// pair that htslib keeps attached and re-signs on decode. Both records are
+// already known to be primary and mapped. The two must be reciprocal mates
+// (one READ1, one READ2, cross-referencing each other's position) on the same
+// reference at the same start position, with consistent mate flag bits.
+func equalStartAttachedPair(p, cr *sam.Record) bool {
+	if p.Pos != cr.Pos {
+		return false // only the equal-start case is re-signed.
+	}
+	if p.RName == "" || p.RName != cr.RName {
+		return false // must share a reference.
+	}
+	// Exactly one READ1 and one READ2.
+	if (p.Flag&sam.FlagRead1 != 0) == (cr.Flag&sam.FlagRead1 != 0) {
+		return false
+	}
+	if (p.Flag&sam.FlagRead2 != 0) == (cr.Flag&sam.FlagRead2 != 0) {
+		return false
+	}
+	// Reciprocal mate positions (RNEXT "=" or the shared contig, PNEXT at the
+	// mate's start).
+	if !mateRefsSelf(p) || !mateRefsSelf(cr) {
+		return false
+	}
+	if p.PNext != cr.Pos || cr.PNext != p.Pos {
+		return false
+	}
+	// Mate flag bits must agree with the mate's actual strand/mapped state,
+	// exactly as htslib requires before keeping the pair attached.
+	if (p.Flag&sam.FlagMateReverse != 0) != (cr.Flag&sam.FlagReverse != 0) {
+		return false
+	}
+	if (cr.Flag&sam.FlagMateReverse != 0) != (p.Flag&sam.FlagReverse != 0) {
+		return false
+	}
+	if (p.Flag&sam.FlagMateUnmapped != 0) != (cr.Flag&sam.FlagUnmapped != 0) {
+		return false
+	}
+	if (cr.Flag&sam.FlagMateUnmapped != 0) != (p.Flag&sam.FlagUnmapped != 0) {
+		return false
+	}
+	return true
+}
+
+// mateRefsSelf reports whether a record's RNEXT names its own reference, i.e.
+// its mate is on the same contig ("=" or the record's own RName).
+func mateRefsSelf(rec *sam.Record) bool {
+	return rec.RNext == "=" || rec.RNext == rec.RName
 }
 
 // tagLine returns the TL data-series value for a record: the index of

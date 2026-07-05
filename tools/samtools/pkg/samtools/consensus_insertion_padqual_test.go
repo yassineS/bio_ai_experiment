@@ -115,3 +115,95 @@ func TestConsensus_Bayesian_InsertionPadQual_RunningMin(t *testing.T) {
 			"at '.' == Q13).\nseq=%q qual=%q", string(insQ), int(insQ)-33, seqLine, qualLine)
 	}
 }
+
+// insDelMultiNthSAM exercises the STATEFUL running-min pre-pass across a
+// MULTI-nth insertion column with a DELETION-spanning read (task #58, bayesian
+// port). Three reads insert two bases ("TT") after reference position 3
+// (CIGAR 3M2I3M), producing two insertion columns (nth==1 and nth==2). A
+// fourth read deletes reference position 3 (CIGAR 2M1D3M) and therefore
+// contributes a '*' pad to BOTH insertion columns.
+//
+// The deletion read's pad quality must follow upstream's stateful engine
+// (consensus_pileup.c:180-228): entering the insertion it is already inside a
+// deletion run, so seq_offset is PINNED at the PRE-gap base (query index 1,
+// the 'C' at reference position 2) and p->qual already holds the deletion
+// running minimum MIN(pre-gap, post-gap). Its per-base quals are "I5III", so
+// the pre-gap 'C' is Q20 ('5') while the post-gap 'G' (query index 2) is Q40
+// ('I'). The running minimum against b_qual[seq_offset+1] (== the post-gap
+// Q40) keeps the pad at Q20 ('5'), CARRIED unchanged across BOTH nth columns.
+//
+// The pre-fix bayesian builder seeded each pad independently from the raw
+// post-gap quality (seq_offset = readBP-1, the POST-gap index) and applied a
+// single non-carried MIN, so it would have emitted Q40 ('I') — matching
+// neither the simple builder nor upstream. This fixture pins the fix: the
+// bayesian pad qual must be Q20 ('5') at both nth columns and equal to the
+// simple builder byte-for-byte.
+const insDelMultiNthSAM = "@HD\tVN:1.6\tSO:coordinate\n" +
+	"@SQ\tSN:chr1\tLN:20\n" +
+	"ins1\t0\tchr1\t1\t60\t3M2I3M\t*\t0\t0\tACGTTTAC\tIIIIIIII\n" +
+	"ins2\t0\tchr1\t1\t60\t3M2I3M\t*\t0\t0\tACGTTTAC\tIIIIIIII\n" +
+	"ins3\t0\tchr1\t1\t60\t3M2I3M\t*\t0\t0\tACGTTTAC\tIIIIIIII\n" +
+	"del1\t0\tchr1\t1\t60\t2M1D3M\t*\t0\t0\tACGTA\tI5III\n"
+
+// insertionColumnLine returns the pileup row for reference position pos with
+// insertion index nth (both as decimal strings), or "" if absent.
+func insertionColumnLine(pile, pos, nth string) string {
+	for _, ln := range strings.Split(strings.TrimRight(pile, "\n"), "\n") {
+		f := strings.Split(ln, "\t")
+		if len(f) >= 8 && f[1] == pos && f[2] == nth {
+			return ln
+		}
+	}
+	return ""
+}
+
+// TestConsensus_Bayesian_InsertionPadQual_StatefulMultiNth asserts the bayesian
+// insertion builder replays the SAME stateful running-min pre-pass as the simple
+// builder / upstream across a multi-nth insertion column that a deletion read
+// pads: (1) the deletion-spanning pad qual is Q20 ('5', the PRE-gap base pulled
+// in via the deletion running-min + pinned pre-gap seq_offset) at BOTH nth
+// columns, and (2) the bayesian per-read seq/qual bytes equal the simple
+// builder's byte-for-byte, confirming both consume the shared pre-pass.
+func TestConsensus_Bayesian_InsertionPadQual_StatefulMultiNth(t *testing.T) {
+	simple := runConsensusOnSAM(t, insDelMultiNthSAM, ConsensusOptions{
+		Format: ConsensusPileup,
+		Mode:   ConsensusModeSimple,
+	})
+	bayes := runConsensusOnSAM(t, insDelMultiNthSAM, ConsensusOptions{
+		Format: ConsensusPileup,
+		Mode:   ConsensusModeBayesian,
+	})
+
+	for _, nth := range []string{"1", "2"} {
+		sLine := insertionColumnLine(simple, "3", nth)
+		bLine := insertionColumnLine(bayes, "3", nth)
+		if sLine == "" || bLine == "" {
+			t.Fatalf("missing pos 3 nth %s insertion column\nsimple:\n%s\nbayes:\n%s",
+				nth, simple, bayes)
+		}
+		sf := strings.Split(sLine, "\t")
+		bf := strings.Split(bLine, "\t")
+		sSeq, sQual := sf[6], sf[7]
+		bSeq, bQual := bf[6], bf[7]
+
+		// The deletion read is the 4th (last) in sorted order: seq "TTT*".
+		if !strings.HasSuffix(bSeq, "*") {
+			t.Fatalf("nth %s bayesian seq = %q, want a trailing '*' pad", nth, bSeq)
+		}
+		// (1) The pad qual must be the pre-gap Q20 ('5'), carried across nth.
+		if got := bQual[len(bQual)-1]; got != '5' {
+			t.Errorf("nth %s bayesian pad qual = %q (Q%d), want '5' (Q20). The "+
+				"deletion-spanning pad must use the stateful running-min seeded "+
+				"from the PRE-gap base (delPileupQual, seq_offset=readBP-2) and "+
+				"carried across nth columns, not the raw post-gap quality.\n"+
+				"line: %s", nth, string(got), int(got)-33, bLine)
+		}
+		// (2) Bayesian per-read seq/qual must equal the simple builder's — both
+		// now consume buildInsertionColumnCells, so they cannot diverge.
+		if bSeq != sSeq || bQual != sQual {
+			t.Errorf("nth %s bayesian per-read columns differ from simple:\n"+
+				"  bayes seq=%q qual=%q\n  simple seq=%q qual=%q", nth,
+				bSeq, bQual, sSeq, sQual)
+		}
+	}
+}

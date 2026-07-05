@@ -67,7 +67,13 @@ func openBAMRegionReader(path string, regionStrs []string) (*bamRegionReader, er
 		return nil, nil
 	}
 	hdr := hr.Header()
-	if !headerIsCoordinateSorted(hdr) {
+	// A present .csi/.bai index implies the file is physically coordinate-sorted
+	// (samtools index refuses to index anything else), and the index yields the
+	// region's records in coordinate order regardless of the @HD SO tag. So we
+	// accept a mis-tagged SO:unsorted (or missing SO) BAM here too — the common
+	// real-world case — rather than falling back to a whole-file linear drain.
+	// SO:queryname (and other non-coordinate values) are still rejected.
+	if !headerConsensusCanStream(hdr) {
 		_ = f.Close()
 		return nil, nil
 	}

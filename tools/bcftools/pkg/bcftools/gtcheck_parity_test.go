@@ -449,3 +449,68 @@ func TestParityGtcheck_OutputTypeRejects(t *testing.T) {
 		})
 	}
 }
+
+// singleSampleFixtureVCF is a 1-sample biallelic VCF. A plain cross-check
+// over it resolves to zero sample pairs: upstream exits 0 and emits only the
+// DCv2 header and the INFO stats block with an empty data table, so the port
+// must do the same rather than erroring with "no sample pairs to compare".
+const singleSampleFixtureVCF = `##fileformat=VCFv4.2
+##contig=<ID=chr1,length=1000000>
+##INFO=<ID=AC,Number=A,Type=Integer,Description="Allele count">
+##INFO=<ID=AN,Number=1,Type=Integer,Description="Allele number">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=PL,Number=G,Type=Integer,Description="Phred likelihoods">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1
+chr1	1000	.	A	T	.	.	AC=1;AN=2	GT:PL	0/1:30,0,30
+chr1	2000	.	C	G	.	.	AC=2;AN=2	GT:PL	1/1:255,30,0
+chr1	3000	.	G	A	.	.	AC=0;AN=2	GT:PL	0/0:0,30,255
+`
+
+// writeSingleSampleFixture writes the 1-sample fixture into a temp dir.
+func writeSingleSampleFixture(t *testing.T) (dir, path string) {
+	t.Helper()
+	dir = t.TempDir()
+	path = filepath.Join(dir, "single.vcf")
+	if err := os.WriteFile(path, []byte(singleSampleFixtureVCF), 0o644); err != nil {
+		t.Fatalf("write single-sample fixture: %v", err)
+	}
+	return dir, path
+}
+
+// TestParityGtcheck_SingleSample checks that a plain cross-check over a
+// single-sample VCF exits 0 and matches upstream's header + INFO block with
+// an empty data table byte-for-byte (the >=2-sample cases are covered
+// elsewhere; this guards the single-sample edge that used to error).
+func TestParityGtcheck_SingleSample(t *testing.T) {
+	bin := upstreamBcftoolsGtcheck(t)
+	dir, path := writeSingleSampleFixture(t)
+
+	up := stripNonReproducible(runUpstreamGtcheck(t, bin, []string{path}, dir))
+	got := stripNonReproducible(runGoGtcheck(t, path, GtcheckOptions{OutputType: "t"}))
+	if up != got {
+		t.Fatalf("single-sample parity mismatch\n--- upstream ---\n%s\n--- go ---\n%s", up, got)
+	}
+	// Sanity: the empty table means no DCv2 data rows are emitted.
+	for _, line := range strings.Split(got, "\n") {
+		if strings.HasPrefix(line, "DCv2\t") {
+			t.Fatalf("unexpected DCv2 data row on single-sample cross-check: %q", line)
+		}
+	}
+}
+
+// TestGtcheck_SingleSampleExitsZero asserts the port itself (independent of
+// the live upstream binary) does not error on a single-sample cross-check.
+func TestGtcheck_SingleSampleExitsZero(t *testing.T) {
+	_, path := writeSingleSampleFixture(t)
+	var out bytes.Buffer
+	if _, err := GtcheckFile(path, &out, GtcheckOptions{OutputType: "t"}); err != nil {
+		t.Fatalf("single-sample gtcheck errored, want exit 0: %v", err)
+	}
+	s := out.String()
+	if !strings.Contains(s, "INFO\tsites-compared\t") {
+		t.Fatalf("single-sample output missing INFO stats block:\n%s", s)
+	}
+	if !strings.Contains(s, "#DCv2\t") {
+		t.Fatalf("single-sample output missing #DCv2 header:\n%s", s)
+	}
+}

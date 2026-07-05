@@ -1,6 +1,7 @@
 package samtools
 
 import (
+	"container/heap"
 	"fmt"
 	"io"
 	"math"
@@ -97,6 +98,21 @@ type coverageRefState struct {
 	// perPosBaseQ records whether the per-position baseQ maps are populated.
 	perPosBaseQ bool
 	mapQSum     uint64
+	// regionRestricted, regBeg and regEnd mirror upstream's BAI-iterator
+	// behaviour under `-r`: only reads OVERLAPPING the requested window
+	// [regBeg, regEnd) (0-based, half-open) are returned by sam_itr_next, so
+	// only they count toward n_reads / n_selected_reads / summed_mapQ. When
+	// regionRestricted is false (whole-reference tabular/histogram output) every
+	// record with this tid is counted, matching upstream's plain sam_read1 loop.
+	regionRestricted bool
+	regBeg, regEnd   int
+	// streamed reports that the covered-base / summed-coverage aggregates were
+	// produced by the streaming interval sweep (the common tabular path) rather
+	// than by resolving posDelta. When set, posDelta is never populated and
+	// streamCovBases / streamSummedCov below carry the totals.
+	streamed        bool
+	streamCovBases  uint64
+	streamSummedCov uint64
 }
 
 // defaultCoverageNBins is the histogram column count used when no terminal
@@ -129,18 +145,86 @@ func Coverage(in io.Reader, w io.Writer, opts CoverageOptions) error {
 	// UNcovered position (mindepth > 1) or the output is region-restricted; the
 	// common whole-contig, mindepth<=1 case uses the global sums instead.
 	perPosBaseQ := minDepth > 1 || len(opts.Regions) > 0
+	// The common tabular path (no histogram, mindepth<=1, whole references)
+	// streams a sorted interval sweep instead of materialising a per-position
+	// delta map for the entire contig — the whole-contig posDelta map was the
+	// last O(reference length) structure and dominated resident memory on deep,
+	// coordinate-sorted BAMs. The other output modes keep the delta map because
+	// they need per-position depth (histogram) or per-position baseQ (mindepth>1
+	// / region restriction) that the streaming totals do not retain.
+	streaming := !opts.Histogram && minDepth <= 1 && len(opts.Regions) == 0
 	states := make([]*coverageRefState, len(hdr.Refs))
 	for i, ref := range hdr.Refs {
 		st := &coverageRefState{
 			length:      ref.Length,
-			posDelta:    map[int]int{},
 			perPosBaseQ: perPosBaseQ,
+			streamed:    streaming,
+		}
+		if !streaming {
+			st.posDelta = map[int]int{}
 		}
 		if perPosBaseQ {
 			st.baseQSumAtPos = map[int]uint64{}
 			st.baseQCntAtPos = map[int]uint64{}
 		}
 		states[i] = st
+	}
+
+	// Resolve regions list — when empty, every @SQ counts as the full
+	// reference. Resolved up-front (before the read loop) so region windows can
+	// be stamped onto the per-reference states: under `-r` upstream fetches
+	// reads through a BAI iterator, so only reads overlapping the window are
+	// counted, and we reproduce that by gating the read counters below.
+	type spec struct {
+		name     string
+		idx      int
+		startPos int32
+		endPos   int32
+	}
+	var specs []spec
+	if len(opts.Regions) == 0 {
+		for i, ref := range hdr.Refs {
+			specs = append(specs, spec{name: ref.Name, idx: i, startPos: 1, endPos: ref.Length})
+		}
+	} else {
+		for _, rr := range opts.Regions {
+			rg, perr := region.ParseRegion(rr)
+			if perr != nil {
+				return perr
+			}
+			i := hdr.RefIndex(rg.Chrom)
+			if i < 0 {
+				return fmt.Errorf("samtools coverage: unknown ref %q", rg.Chrom)
+			}
+			startPos := int32(1)
+			endPos := hdr.Refs[i].Length
+			if rg.Beg > 0 {
+				startPos = int32(rg.Beg)
+			}
+			if rg.End > 0 {
+				endPos = int32(rg.End)
+			}
+			specs = append(specs, spec{name: rg.Chrom, idx: i, startPos: startPos, endPos: endPos})
+			// Stamp the window onto the state so the read loop only counts reads
+			// overlapping it. Upstream supports a single -r region; when several
+			// specs share a reference the last window wins (an over-fetch our
+			// multi-region extension accepts — upstream never hits this case).
+			states[i].regionRestricted = true
+			states[i].regBeg = int(startPos) - 1
+			states[i].regEnd = int(endPos)
+		}
+	}
+
+	// Streaming interval sweep state (common path only). sw is the sweep for
+	// the currently active reference; activeIdx is its tid, and finalised marks
+	// references whose sweep has already been drained so a coordinate-sort
+	// violation (a reference re-appearing after we moved past it, or a record
+	// preceding the sweep cursor) is caught rather than silently miscounted.
+	var sw *coverageSweep
+	activeIdx := -1
+	var finalised []bool
+	if streaming {
+		finalised = make([]bool, len(states))
 	}
 
 	for {
@@ -159,6 +243,20 @@ func Coverage(in io.Reader, w io.Writer, opts CoverageOptions) error {
 			continue
 		}
 		st := states[idx]
+		// Under `-r`, upstream's BAI iterator only yields reads overlapping the
+		// requested window, so reads falling entirely outside it are counted
+		// toward NOTHING (neither n_reads nor n_selected_reads nor the depth
+		// stats). Depth/baseQ are additionally clipped to the window at summary
+		// time, so gating them here is not strictly required, but the read
+		// counters (n_reads / n_selected_reads / summed_mapQ) are NOT window-
+		// clipped later and must be restricted here to match upstream.
+		if st.regionRestricted {
+			recStart := int(rec.Pos) - 1
+			recEnd := recStart + cigarRefLen(rec.Cigar)
+			if recStart >= st.regEnd || recEnd <= st.regBeg {
+				continue // no overlap with the region window
+			}
+		}
 		// n_reads counts every record with a valid tid, before any filter
 		// (upstream read_bam increments n_reads first).
 		st.nReads++
@@ -177,6 +275,30 @@ func Coverage(in io.Reader, w io.Writer, opts CoverageOptions) error {
 		st.nSelectedReads++
 		st.mapQSum += uint64(rec.MapQ)
 
+		if streaming {
+			recStart := int(rec.Pos) - 1
+			if idx != activeIdx {
+				if sw != nil {
+					sw.advanceTo(math.MaxInt)
+					states[activeIdx].streamCovBases = sw.covBases
+					states[activeIdx].streamSummedCov = sw.summedCov
+					finalised[activeIdx] = true
+				}
+				if finalised[idx] {
+					return fmt.Errorf("samtools coverage: input is not coordinate-sorted (reference %q re-appears); sort the input first", rec.RName)
+				}
+				sw = newCoverageSweep(0, int(st.length), minDepth)
+				activeIdx = idx
+			}
+			if recStart < sw.cursor {
+				return fmt.Errorf("samtools coverage: input is not coordinate-sorted (record at %s:%d precedes cursor); sort the input first", rec.RName, recStart+1)
+			}
+			// Finalise every segment strictly before this record's leftmost
+			// reference position: coordinate order guarantees no later record
+			// (or run) contributes there.
+			sw.advanceTo(recStart)
+		}
+
 		// Walk CIGAR, accumulating per-base depth and baseQ stats. Bases
 		// below MinBaseQ contribute neither to depth nor baseq sums
 		// (matches upstream).
@@ -192,8 +314,12 @@ func Coverage(in io.Reader, w io.Writer, opts CoverageOptions) error {
 					// instead of a posDelta entry per reference position (the
 					// telescoping intermediate entries are net-zero — same sweep,
 					// O(1) instead of O(length)).
-					st.posDelta[refPos]++
-					st.posDelta[refPos+length]--
+					if streaming {
+						sw.pushInterval(refPos, refPos+length)
+					} else {
+						st.posDelta[refPos]++
+						st.posDelta[refPos+length]--
+					}
 					for i := 0; i < length; i++ {
 						var q uint8 = 0xff
 						if queryPos+i < len(rec.Qual) {
@@ -226,8 +352,12 @@ func Coverage(in io.Reader, w io.Writer, opts CoverageOptions) error {
 								st.baseQCntAtPos[pos]++
 							}
 						}
-						st.posDelta[pos]++
-						st.posDelta[pos+1]--
+						if streaming {
+							sw.pushInterval(pos, pos+1)
+						} else {
+							st.posDelta[pos]++
+							st.posDelta[pos+1]--
+						}
 					}
 				}
 				refPos += length
@@ -242,39 +372,11 @@ func Coverage(in io.Reader, w io.Writer, opts CoverageOptions) error {
 		}
 	}
 
-	// Resolve regions list — when empty, every @SQ counts as the full
-	// reference.
-	type spec struct {
-		name     string
-		idx      int
-		startPos int32
-		endPos   int32
-	}
-	var specs []spec
-	if len(opts.Regions) == 0 {
-		for i, ref := range hdr.Refs {
-			specs = append(specs, spec{name: ref.Name, idx: i, startPos: 1, endPos: ref.Length})
-		}
-	} else {
-		for _, r := range opts.Regions {
-			rg, perr := region.ParseRegion(r)
-			if perr != nil {
-				return perr
-			}
-			i := hdr.RefIndex(rg.Chrom)
-			if i < 0 {
-				return fmt.Errorf("samtools coverage: unknown ref %q", rg.Chrom)
-			}
-			startPos := int32(1)
-			endPos := hdr.Refs[i].Length
-			if rg.Beg > 0 {
-				startPos = int32(rg.Beg)
-			}
-			if rg.End > 0 {
-				endPos = int32(rg.End)
-			}
-			specs = append(specs, spec{name: rg.Chrom, idx: i, startPos: startPos, endPos: endPos})
-		}
+	// Drain the last active reference's sweep into its totals.
+	if streaming && sw != nil {
+		sw.advanceTo(math.MaxInt)
+		states[activeIdx].streamCovBases = sw.covBases
+		states[activeIdx].streamSummedCov = sw.summedCov
 	}
 
 	if opts.Histogram {
@@ -302,7 +404,38 @@ func Coverage(in io.Reader, w io.Writer, opts CoverageOptions) error {
 	if !opts.HeaderOff {
 		fmt.Fprintln(w, "#rname\tstartpos\tendpos\tnumreads\tcovbases\tcoverage\tmeandepth\tmeanbaseq\tmeanmapq")
 	}
-	for _, s := range specs {
+	// Emission order matches upstream coverage.c exactly. In whole-reference
+	// (non-region) tabular mode upstream prints every reference the pileup
+	// visits FIRST — in the order the coordinate-sorted pileup encounters them,
+	// which is header/@SQ order for sorted input (print_tabular_line is called
+	// on each tid transition, coverage.c:597/676) — and only then walks the
+	// remaining, never-covered references in header order (the trailing
+	// `if (!opt_reg)` loop, coverage.c:681-688). A reference is "covered" iff at
+	// least one selected read reached the pileup (nSelectedReads > 0), the same
+	// criterion the histogram path uses. Region-restricted output (`-r`) keeps
+	// the requested order: upstream never runs its reorder loop under opt_reg,
+	// so specs are emitted as given. Only the O(#references) summary rows are
+	// buffered/reordered here; the per-position streaming accumulators are
+	// untouched, preserving the bounded-memory RSS fix.
+	order := make([]int, 0, len(specs))
+	if len(opts.Regions) == 0 {
+		for i, s := range specs {
+			if states[s.idx].nSelectedReads > 0 {
+				order = append(order, i)
+			}
+		}
+		for i, s := range specs {
+			if states[s.idx].nSelectedReads == 0 {
+				order = append(order, i)
+			}
+		}
+	} else {
+		for i := range specs {
+			order = append(order, i)
+		}
+	}
+	for _, oi := range order {
+		s := specs[oi]
 		row := summariseCoverage(s.name, s.startPos, s.endPos, states[s.idx], minDepth)
 		// Match upstream coverage.c print_tabular_line exactly: %g for the
 		// coverage percentage and mean depth, %.3g for mean baseQ / mapQ.
@@ -314,6 +447,117 @@ func Coverage(in io.Reader, w io.Writer, opts CoverageOptions) error {
 	return nil
 }
 
+// coverageSweep computes the covered-base and summed-coverage aggregates for a
+// single reference by sweeping half-open depth intervals in coordinate order,
+// without ever materialising a per-position map. It reproduces exactly the
+// segment arithmetic of computeCoverageStats (same [lo,hi) clip and depth >=
+// minDepth gate), fed incrementally: pushInterval adds a read's covered run(s),
+// and advanceTo resolves every segment strictly before a frontier once the
+// coordinate-sorted stream guarantees nothing earlier remains.
+type coverageSweep struct {
+	lo, hi    int // half-open clip window [lo, hi) (0-based)
+	minDepth  int
+	cursor    int // next reference position not yet accounted
+	curDepth  int
+	starts    covStartHeap // pending intervals whose start >= cursor
+	ends      covEndHeap   // end positions of currently-open intervals
+	covBases  uint64
+	summedCov uint64
+}
+
+// newCoverageSweep returns a sweep clipped to the half-open window [lo, hi).
+func newCoverageSweep(lo, hi, minDepth int) *coverageSweep {
+	return &coverageSweep{lo: lo, hi: hi, minDepth: minDepth, cursor: lo}
+}
+
+// pushInterval queues the half-open covered interval [start, end). The caller
+// guarantees start >= cursor (coordinate order), so the interval waits in the
+// start heap until the sweep reaches it.
+func (s *coverageSweep) pushInterval(start, end int) {
+	if end <= start {
+		return
+	}
+	heap.Push(&s.starts, covInterval{start: start, end: end})
+}
+
+// advanceTo resolves all segments and events strictly before frontier, folding
+// each covered segment (depth >= minDepth) into covBases / summedCov with the
+// same [lo,hi) clipping computeCoverageStats applies. Passing math.MaxInt drains
+// every remaining interval.
+func (s *coverageSweep) advanceTo(frontier int) {
+	for {
+		next := frontier
+		if s.starts.Len() > 0 && s.starts[0].start < next {
+			next = s.starts[0].start
+		}
+		if s.ends.Len() > 0 && s.ends[0] < next {
+			next = s.ends[0]
+		}
+		if s.curDepth >= s.minDepth {
+			from, to := s.cursor, next
+			if from < s.lo {
+				from = s.lo
+			}
+			if to > s.hi {
+				to = s.hi
+			}
+			if to > from {
+				n := uint64(to - from)
+				s.covBases += n
+				s.summedCov += uint64(s.curDepth) * n
+			}
+		}
+		s.cursor = next
+		if next == frontier {
+			return
+		}
+		// Apply every event coincident with `next`. Start/end ordering at a
+		// shared position does not affect any segment or the final depth.
+		for s.starts.Len() > 0 && s.starts[0].start == next {
+			iv := heap.Pop(&s.starts).(covInterval)
+			heap.Push(&s.ends, iv.end)
+			s.curDepth++
+		}
+		for s.ends.Len() > 0 && s.ends[0] == next {
+			heap.Pop(&s.ends)
+			s.curDepth--
+		}
+	}
+}
+
+// covInterval is a half-open covered interval awaiting the sweep cursor.
+type covInterval struct{ start, end int }
+
+// covStartHeap is a min-heap of pending intervals ordered by start position.
+type covStartHeap []covInterval
+
+func (h covStartHeap) Len() int           { return len(h) }
+func (h covStartHeap) Less(i, j int) bool { return h[i].start < h[j].start }
+func (h covStartHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *covStartHeap) Push(x any)        { *h = append(*h, x.(covInterval)) }
+func (h *covStartHeap) Pop() any {
+	old := *h
+	n := len(old)
+	v := old[n-1]
+	*h = old[:n-1]
+	return v
+}
+
+// covEndHeap is a min-heap of open-interval end positions.
+type covEndHeap []int
+
+func (h covEndHeap) Len() int           { return len(h) }
+func (h covEndHeap) Less(i, j int) bool { return h[i] < h[j] }
+func (h covEndHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *covEndHeap) Push(x any)        { *h = append(*h, x.(int)) }
+func (h *covEndHeap) Pop() any {
+	old := *h
+	n := len(old)
+	v := old[n-1]
+	*h = old[:n-1]
+	return v
+}
+
 // cigarQueryLen returns the number of query bases consumed by cig (M/I/S/=/X),
 // matching htslib's bam_cigar2qlen used by coverage's -l filter.
 func cigarQueryLen(cig []sam.CigarOp) int {
@@ -321,6 +565,20 @@ func cigarQueryLen(cig []sam.CigarOp) int {
 	for _, op := range cig {
 		switch op.Op() {
 		case sam.CigarMatch, sam.CigarInsertion, sam.CigarSoftClip, sam.CigarEqual, sam.CigarMismatch:
+			n += int(op.Length())
+		}
+	}
+	return n
+}
+
+// cigarRefLen returns the number of reference bases spanned by cig
+// (M/D/N/=/X), matching htslib's bam_cigar2rlen. It gives the read's reference
+// end offset used to test overlap with a `-r` region window.
+func cigarRefLen(cig []sam.CigarOp) int {
+	n := 0
+	for _, op := range cig {
+		switch op.Op() {
+		case sam.CigarMatch, sam.CigarDeletion, sam.CigarSkipped, sam.CigarEqual, sam.CigarMismatch:
 			n += int(op.Length())
 		}
 	}
@@ -449,7 +707,20 @@ func summariseCoverage(name string, start, end int32, st *coverageRefState, minD
 	if st.nSelectedReads > 0 {
 		row.MeanMapQ = float64(st.mapQSum) / float64(st.nSelectedReads)
 	}
-	cs := computeCoverageStats(start, end, st, minDepth, false)
+	var cs coverageStats
+	if st.streamed {
+		// Common path: covered-base / summed-coverage totals were produced by
+		// the streaming interval sweep, and (perPosBaseQ being false there)
+		// baseQ comes from the global running sums.
+		cs = coverageStats{
+			covBases:       st.streamCovBases,
+			summedCoverage: st.streamSummedCov,
+			baseQSum:       st.baseQSumGlobal,
+			baseQCnt:       st.baseQCntGlobal,
+		}
+	} else {
+		cs = computeCoverageStats(start, end, st, minDepth, false)
+	}
 	if cs.baseQCnt > 0 {
 		row.MeanBaseQ = float64(cs.baseQSum) / float64(cs.baseQCnt)
 	}

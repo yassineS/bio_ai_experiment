@@ -624,6 +624,28 @@ func headerIsCoordinateSorted(hdr *sam.Header) bool {
 	return false
 }
 
+// headerConsensusCanStream reports whether the memory-bounded consensus
+// streaming engine (consensusFromSortedReader) may be used for hdr. That engine
+// needs records in coordinate (tid-then-Pos) order but does NOT trust the @HD
+// SO tag blindly: real-world BAMs are frequently physically coordinate-sorted
+// yet mis-tagged SO:unsorted (or carry no @HD SO line at all), and the buffered
+// fallback slurps every read of a contig into one map — the source of the
+// consensus RSS blowup. We therefore stream for SO:coordinate, SO:unsorted and a
+// missing SO tag, and rely on the monotonic-POS guard in the streaming source
+// (streamRecSource.prime / drainConsensusContig / consensusFromSortedReader's
+// per-contig loop) to fail LOUDLY on a genuinely-unsorted input instead of
+// silently mis-emitting. An explicit SO:queryname (or any other non-coordinate
+// value such as "unknown") is definitely not in coordinate order, so it stays on
+// the buffered path, which sorts each contig before emitting.
+func headerConsensusCanStream(hdr *sam.Header) bool {
+	for _, f := range hdr.HDFields {
+		if f.Tag == "SO" {
+			return f.Value == "coordinate" || f.Value == "unsorted"
+		}
+	}
+	return true
+}
+
 // pruneEndedBefore drops records whose alignment ends at or before tBeg (0-based
 // half-open end), i.e. reads that no longer overlap the upcoming tile. It
 // compacts in place, preserving the coordinate order of the survivors.

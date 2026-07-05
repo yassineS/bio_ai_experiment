@@ -939,6 +939,56 @@ func TestView_BedFilter_TableDriven(t *testing.T) {
 	}
 }
 
+// TestView_BedFilter_PlacedUnmappedKept verifies that a placed-but-unmapped
+// read (FUNMAP set, but with a valid RNAME/POS) overlapping a BED interval is
+// KEPT by `view -L`, matching upstream sam_view.c: htslib bam_endpos clamps
+// such a record's span to [pos0, pos0+1) rather than dropping it. Only a truly
+// unplaced read (RNAME "*", tid<0) is dropped. This is the byte-exact fix for
+// the real-data DIFF where ours previously dropped ~17k placed-unmapped reads
+// that upstream retained.
+func TestView_BedFilter_PlacedUnmappedKept(t *testing.T) {
+	dir := t.TempDir()
+	bedPath := filepath.Join(dir, "regions.bed")
+	// chr1 [99,105) overlaps a read placed at 1-based POS 100 (0-based 99),
+	// even when that read is unmapped and carries no CIGAR footprint.
+	if err := os.WriteFile(bedPath, []byte("chr1\t99\t105\n"), 0o644); err != nil {
+		t.Fatalf("write bed: %v", err)
+	}
+
+	// r_placed_unmapped: FLAG 4 (unmapped) with a valid RNAME chr1 and POS 100
+	//   and CIGAR "*" — a placed-but-unmapped read; must be kept.
+	// r_placed_unmapped_miss: same but placed at POS 300, outside every
+	//   interval; must be dropped.
+	// r_unplaced: FLAG 4 with RNAME "*" (tid<0); must be dropped.
+	const sam = `@HD	VN:1.6	SO:coordinate
+@SQ	SN:chr1	LN:1000
+r_mapped_in	0	chr1	100	60	5M	*	0	0	ACGTA	IIIII
+r_placed_unmapped	4	chr1	100	0	*	*	0	0	ACGTA	IIIII
+r_placed_unmapped_miss	4	chr1	300	0	*	*	0	0	ACGTA	IIIII
+r_unplaced	4	*	0	0	*	*	0	0	*	*
+`
+
+	var out bytes.Buffer
+	n, err := View(strings.NewReader(sam), &out, ViewOptions{BedPath: bedPath, WithHeader: false})
+	if err != nil {
+		t.Fatalf("View: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"r_mapped_in", "r_placed_unmapped"} {
+		if !strings.Contains(got, want+"\t") {
+			t.Errorf("output missing read %q:\n%s", want, got)
+		}
+	}
+	for _, omit := range []string{"r_placed_unmapped_miss", "r_unplaced"} {
+		if strings.Contains(got, omit+"\t") {
+			t.Errorf("output unexpectedly contains read %q:\n%s", omit, got)
+		}
+	}
+	if n != 2 {
+		t.Errorf("count: got %d, want 2; output:\n%s", n, got)
+	}
+}
+
 func TestView_BedFilter_MissingFileErrors(t *testing.T) {
 	var out bytes.Buffer
 	_, err := View(strings.NewReader(bedFilterSAM), &out, ViewOptions{BedPath: "/no/such/path.bed"})

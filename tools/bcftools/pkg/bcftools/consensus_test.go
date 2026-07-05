@@ -403,6 +403,54 @@ func TestConsensusOverlappingFirstWins(t *testing.T) {
 	}
 }
 
+// TestConsensusOverlappingAnchoredDeletions pins the anchor-preservation
+// behaviour for two overlapping anchored deletions in a tandem repeat.
+// Upstream consensus.c writes a deletion's alt starting at i=trim_beg
+// (consensus.c:1014), so an anchored deletion never rewrites its leading
+// anchor base — it keeps whatever is already in the buffer. When a second
+// anchored deletion overlaps the first exactly on the base the first
+// deletion preserved, the first variant's anchor must survive.
+//
+// Reference:      AAGTCTCTGTGAAAA (1-based positions)
+//
+//	var1 POS=3 GTC>G : keeps G at pos3, deletes T(4),C(5). frz_pos = pos5.
+//	var2 POS=5 CTCTGTG>C : anchored deletion landing exactly on frz_pos
+//	  (last base var1 consumed). Its anchor (C) must NOT overwrite the G
+//	  that var1 preserved.
+//
+// Verified byte-for-byte against `bcftools consensus` (upstream): AAGAAAA.
+// Before the fix ours emitted AACAAAA (var2's C clobbered var1's G).
+func TestConsensusOverlappingAnchoredDeletions(t *testing.T) {
+	ref := []*fasta.Record{
+		{ID: "chr1", Sequence: []byte("AAGTCTCTGTGAAAA")},
+	}
+	vcf := "##fileformat=VCFv4.2\n" +
+		"##contig=<ID=chr1,length=15>\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n" +
+		// First anchored deletion: GTC -> G (keeps G at pos 3).
+		"chr1\t3\t.\tGTC\tG\t.\tPASS\t.\n" +
+		// Second anchored deletion overlaps exactly on the frozen base and
+		// is applied (clean anchored indel landing on frz_pos).
+		"chr1\t5\t.\tCTCTGTG\tC\t.\tPASS\t.\n"
+	var out bytes.Buffer
+	n, err := Consensus(strings.NewReader(vcf), &out, ConsensusOptions{
+		Reference: ref,
+		LineWidth: 80,
+	})
+	if err != nil {
+		t.Fatalf("Consensus: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("applied %d, want 2 (both anchored deletions applied)", n)
+	}
+	// AA + G (var1 anchor, preserved) + tail AAAA = AAGAAAA. The var2 anchor
+	// 'C' must not overwrite the preserved G.
+	want := ">chr1\nAAGAAAA\n"
+	if out.String() != want {
+		t.Errorf("anchor not preserved:\n got %q\n want %q", out.String(), want)
+	}
+}
+
 // TestParseHaplotypeAliases pins the upstream consensus.c:1312-1313
 // shortcuts: "L" === "LR", "S" === "SR".
 func TestParseHaplotypeAliases(t *testing.T) {

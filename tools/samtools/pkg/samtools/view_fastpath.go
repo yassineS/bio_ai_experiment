@@ -174,7 +174,11 @@ func fastBedFilter(path string) (func(*sam.FastFields) bool, error) {
 		trees[chrom] = bed.NewIntervalTree(recs)
 	}
 	return func(ff *sam.FastFields) bool {
-		if ff.Flag&sam.FlagUnmapped != 0 || ff.RName == "" || ff.RName == "*" {
+		// Match loadBedFilter / upstream sam_view.c: drop only when tid<0
+		// (RName unset or "*"). A placed-but-unmapped read (FUNMAP with a
+		// valid RName) is retained and clamped, so we must NOT test
+		// FlagUnmapped here.
+		if ff.RName == "" || ff.RName == "*" {
 			return false
 		}
 		t, ok := trees[ff.RName]
@@ -185,9 +189,15 @@ func fastBedFilter(path string) (func(*sam.FastFields) bool, error) {
 		if pos0 < 0 {
 			pos0 = 0
 		}
+		// Mirror htslib bam_endpos: an unmapped read has no CIGAR footprint
+		// (span forced to zero), and any zero-length footprint is widened to
+		// a single base so the record spans at least [pos0, pos0+1).
 		refLen := ff.RefSpan
+		if ff.Flag&sam.FlagUnmapped != 0 {
+			refLen = 0
+		}
 		if refLen <= 0 {
-			return false
+			refLen = 1
 		}
 		q := &bed.Record{Chrom: ff.RName, ChromStart: pos0, ChromEnd: pos0 + refLen}
 		return len(t.Query(q)) > 0

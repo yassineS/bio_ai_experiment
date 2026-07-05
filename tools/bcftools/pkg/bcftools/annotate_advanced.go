@@ -432,10 +432,15 @@ func splitTypePrefix(s string) (typ, rest string, ok bool) {
 	}
 }
 
-// applyRenameAnnots renames INFO/FORMAT/FILTER tags in the header and in every
-// record, mirroring rename_annots. The header line for the old tag has its
-// ID= rewritten to the new name (the rest of the line is preserved).
-func applyRenameAnnots(recs []*vcf.Variant, hdr *vcf.Header, maps []renameTag) {
+// prepRenameAnnots renames INFO/FORMAT/FILTER tags, mirroring rename_annots.
+// The header rewrite (each matching ##TYPE=<ID=old,...> line has its ID=
+// rewritten to the new name, the rest of the line preserved) is
+// record-independent and runs immediately; the per-record renamers are
+// collected and returned as a single applier. The applier runs the renamers in
+// the map order, which for any given record is identical to the former nested
+// (maps-then-records) slice loop.
+func prepRenameAnnots(hdr *vcf.Header, maps []renameTag) func(*vcf.Variant) {
+	var ops []func(*vcf.Variant)
 	for _, m := range maps {
 		if m.Old == m.New {
 			continue
@@ -447,19 +452,19 @@ func applyRenameAnnots(recs []*vcf.Variant, hdr *vcf.Header, maps []renameTag) {
 				hdr.MetaInfo[i] = replaceMetaID(line, m.Old, m.New)
 			}
 		}
+		oldTag, newTag := m.Old, m.New
 		switch m.Type {
 		case "INFO":
-			for _, v := range recs {
-				renameInfoKey(v, m.Old, m.New)
-			}
+			ops = append(ops, func(v *vcf.Variant) { renameInfoKey(v, oldTag, newTag) })
 		case "FORMAT":
-			for _, v := range recs {
-				renameFormatKey(v, m.Old, m.New)
-			}
+			ops = append(ops, func(v *vcf.Variant) { renameFormatKey(v, oldTag, newTag) })
 		case "FILTER":
-			for _, v := range recs {
-				renameFilterName(v, m.Old, m.New)
-			}
+			ops = append(ops, func(v *vcf.Variant) { renameFilterName(v, oldTag, newTag) })
+		}
+	}
+	return func(v *vcf.Variant) {
+		for _, op := range ops {
+			op(v)
 		}
 	}
 }

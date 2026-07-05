@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 	"github.com/yassineS/bio_ai_experiment/tools/prinseq/pkg/prinseq"
 )
 
@@ -20,12 +21,13 @@ var nowFunc = time.Now
 
 const version = "1.0.0"
 
-// openInput opens the input file or returns stdin if filename is "-"
+// openInput opens the input file for reading. It routes through
+// pkg/htsgo/iohelper so that gzip/bgzip-compressed inputs are
+// transparently decompressed and "-" is treated as stdin, matching the
+// sibling QC tools (fastp, sickle). Upstream prinseq-lite.pl cannot read
+// gzip, so this is a deliberate fix-on-port improvement.
 func openInput(filename string) (io.ReadCloser, error) {
-	if filename == "-" {
-		return io.NopCloser(os.Stdin), nil
-	}
-	return os.Open(filename)
+	return iohelper.OpenReader(filename)
 }
 
 func main() {

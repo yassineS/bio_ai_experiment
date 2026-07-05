@@ -508,7 +508,19 @@ func runGtcheck(
 		return GtcheckResult{}, err
 	}
 	if len(pairs) == 0 {
-		return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: no sample pairs to compare")
+		// A plain cross-check over a single query sample resolves to zero
+		// output pairs: upstream's report loop uses `ngt = cross_check ? i`,
+		// which is 0 for the sole sample, so no DCv2 data row is written.
+		// Upstream still exits 0 and still scores every site into the INFO
+		// stats block (process_line increments ncmp/nused per site,
+		// independent of the pair count), so we must NOT bail out here —
+		// fall through to the normal site-scoring loop and emit the empty
+		// data table. The error path is preserved only when -p/-P explicit
+		// pairs or -g genotypes were requested but resolved to zero pairs;
+		// that remains a genuine user error.
+		if usePairs || !crossCheck {
+			return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: no sample pairs to compare")
+		}
 	}
 
 	// Validate the resolved --distinctive-sites threshold, mirroring
@@ -671,11 +683,23 @@ func runGtcheck(
 		}
 	}
 
-	// -O z wraps the identical report bytes in a BGZF stream, exactly as
-	// upstream opens its single output handle via bgzf_open(.., "wg")
-	// (vcfgtcheck.c:445) and writes the same text through it. -O t writes
-	// plain bytes (upstream's "wu" handle, an uncompressed passthrough).
-	// The framed result decodes byte-identically to the text output.
+	if err := emitGtcheckOutput(out, result, stats, st, opts, crossCheck, qSamples, gSamples, ds); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+// emitGtcheckOutput writes the gtcheck report to out, honouring -O z / -O t.
+//
+// -O z wraps the identical report bytes in a BGZF stream, exactly as upstream
+// opens its single output handle via bgzf_open(.., "wg") (vcfgtcheck.c:445) and
+// writes the same text through it. -O t writes plain bytes (upstream's "wu"
+// handle, an uncompressed passthrough). The framed result decodes
+// byte-identically to the text output.
+func emitGtcheckOutput(
+	out io.Writer, result GtcheckResult, stats *gtcheckStats, st *gtcheckState,
+	opts GtcheckOptions, crossCheck bool, qSamples, gSamples []string, ds *distinctiveCollector,
+) error {
 	if opts.OutputType == "z" {
 		level := opts.CompressLevel
 		if level < 0 {
@@ -683,22 +707,15 @@ func runGtcheck(
 		}
 		bz, berr := bgzf.NewWriterLevel(out, level)
 		if berr != nil {
-			return result, berr
+			return berr
 		}
 		if werr := writeGtcheckBody(bz, result, stats, st, opts, crossCheck, qSamples, gSamples, ds); werr != nil {
 			bz.Close()
-			return result, werr
+			return werr
 		}
-		if cerr := bz.Close(); cerr != nil {
-			return result, cerr
-		}
-		return result, nil
+		return bz.Close()
 	}
-
-	if err := writeGtcheckBody(out, result, stats, st, opts, crossCheck, qSamples, gSamples, ds); err != nil {
-		return result, err
-	}
-	return result, nil
+	return writeGtcheckBody(out, result, stats, st, opts, crossCheck, qSamples, gSamples, ds)
 }
 
 // writeGtcheckBody writes the gtcheck report, the optional distinctive-sites

@@ -195,9 +195,22 @@ func Fastq(in io.Reader, opts FastqOptions) (FastqCounts, error) {
 		return counts, nil
 	}
 
-	// In coordinate-sorted paired mode we fall back to interleaved output:
-	// if Output is open, write everything there; if not, write paired
-	// records into Singleton; final fallback is to drop them.
+	// Default (non -1/-2) path — also the coordinate-sorted paired fallback
+	// (Output open → interleaved; else Singleton for unpaired; else drop).
+	// Upstream bam2fq groups CONSECUTIVE records sharing a QNAME and flushes
+	// them in a fixed order — READ1-only first, then READ2-only, then any
+	// neither/both (single-end) record — regardless of the order the mates
+	// appear in the file (bam_fastq.c bam2fq_mainloop + flush_rec). We
+	// reproduce that grouping so the interleaved output byte-matches upstream:
+	// an adjacent R2-then-R1 pair emits R1 before R2. Grouping is only over
+	// CONSECUTIVE same-QNAME records, so mates that are not adjacent (e.g. far
+	// apart in a coordinate-sorted file) are never joined and each emits in
+	// its own file position.
+	var group []*sam.Record
+	flushDefault := func() {
+		flushFastqDefaultGroup(group, output, singleton, &counts, opts)
+		group = group[:0]
+	}
 	for {
 		rec, rerr := rd.Read()
 		if rerr == io.EOF {
@@ -211,60 +224,43 @@ func Fastq(in io.Reader, opts FastqOptions) (FastqCounts, error) {
 			counts.Dropped++
 			continue
 		}
-		seq, qual := orientReadForFastq(rec, opts)
-		header := buildFastqHeader(rec, opts)
-		line := formatFastq(header, seq, qual)
+		if len(group) > 0 && rec.QName != group[0].QName {
+			flushDefault()
+		}
+		group = append(group, rec)
+	}
+	flushDefault()
+	if err := closeAll(); err != nil {
+		return counts, err
+	}
+	return counts, nil
+}
 
+// fastqReadpart classifies a record the way upstream bam2fq which_readpart
+// does: READ1-only → 1, READ2-only → 2, otherwise (neither or both of
+// 0x40/0x80) → 0. It intentionally does not consult 0x1, matching upstream.
+func fastqReadpart(rec *sam.Record) int {
+	switch {
+	case rec.IsRead1() && !rec.IsRead2():
+		return 1
+	case rec.IsRead2() && !rec.IsRead1():
+		return 2
+	default:
+		return 0
+	}
+}
+
+// flushFastqDefaultGroup writes one consecutive-QNAME group for the default
+// (non -1/-2) path in upstream bam2fq flush order: READ1-only records first,
+// then READ2-only, then neither/both (single-end). Each record keeps the
+// default routing — the interleaved output sink when open, otherwise the
+// singleton sink for unpaired reads, otherwise dropped. Ordering within a
+// readpart class preserves file order.
+func flushFastqDefaultGroup(group []*sam.Record, output, singleton *sink, counts *FastqCounts, opts FastqOptions) {
+	emit := func(rec *sam.Record) {
+		seq, qual := orientReadForFastq(rec, opts)
+		line := formatFastq(buildFastqHeader(rec, opts), seq, qual)
 		switch {
-		case pairedMode && !counts.PairedCoordinateWarn:
-			// Categorise per upstream samtools fastq:
-			//   - Paired + only-0x40 set → Read1
-			//   - Paired + only-0x80 set → Read2
-			//   - Not paired (no 0x1) → singleton
-			//   - Paired + neither/both of 0x40/0x80 set → orphan
-			switch {
-			case rec.IsPaired() && rec.IsRead1() && !rec.IsRead2():
-				if read1 != nil {
-					_, _ = read1.bw.WriteString(line)
-					counts.Read1++
-				} else if output != nil {
-					_, _ = output.bw.WriteString(line)
-					counts.Output++
-				} else {
-					counts.Dropped++
-				}
-			case rec.IsPaired() && rec.IsRead2() && !rec.IsRead1():
-				if read2 != nil {
-					_, _ = read2.bw.WriteString(line)
-					counts.Read2++
-				} else if output != nil {
-					_, _ = output.bw.WriteString(line)
-					counts.Output++
-				} else {
-					counts.Dropped++
-				}
-			case !rec.IsPaired():
-				if singleton != nil {
-					_, _ = singleton.bw.WriteString(line)
-					counts.Singleton++
-				} else if output != nil {
-					_, _ = output.bw.WriteString(line)
-					counts.Output++
-				} else {
-					counts.Dropped++
-				}
-			default:
-				// Paired but 0x40/0x80 are both set or both unset.
-				if orphan != nil {
-					_, _ = orphan.bw.WriteString(line)
-					counts.Orphan++
-				} else if output != nil {
-					_, _ = output.bw.WriteString(line)
-					counts.Output++
-				} else {
-					counts.Dropped++
-				}
-			}
 		case output != nil:
 			_, _ = output.bw.WriteString(line)
 			counts.Output++
@@ -275,10 +271,13 @@ func Fastq(in io.Reader, opts FastqOptions) (FastqCounts, error) {
 			counts.Dropped++
 		}
 	}
-	if err := closeAll(); err != nil {
-		return counts, err
+	for _, part := range [3]int{1, 2, 0} {
+		for _, rec := range group {
+			if fastqReadpart(rec) == part {
+				emit(rec)
+			}
+		}
 	}
-	return counts, nil
 }
 
 // sink is one opened fastq output: a closer (which also writes-through during
@@ -292,9 +291,11 @@ type sink struct {
 // routePairedGroup routes one QNAME group (all records sharing a read name,
 // adjacent on name-sorted input) to the configured fastq sinks. A complete
 // pair — exactly one Read1 (0x40 only) and one Read2 (0x80 only) — emits to
-// read1/read2. Any other paired record (a lone mate whose partner is absent)
-// goes to singletons, matching upstream bam2fq; non-paired records also go to
-// singletons, and a record with both/neither of 0x40/0x80 goes to the orphan
+// read1/read2. A lone mate (a paired read whose partner is absent from the
+// group) follows upstream bam2fq flush_rec: it is written to the singleton
+// (-s) file when one is configured, otherwise to its own R1/R2 file (upstream
+// defaults fpr[1]/fpr[2] to those handles). Non-paired records go to
+// singletons and a record with both/neither of 0x40/0x80 goes to the orphan
 // sink. When a sink is nil the record falls back to output, then is dropped.
 func routePairedGroup(group []*sam.Record, read1, read2, singleton, orphan, output *sink, counts *FastqCounts, opts FastqOptions) {
 	emit := func(s *sink, fallback *sink, rec *sam.Record, n *int) {
@@ -326,7 +327,7 @@ func routePairedGroup(group []*sam.Record, read1, read2, singleton, orphan, outp
 	}
 	completePair := r1Count == 1 && r2Count == 1
 
-	for _, rec := range group {
+	emitRec := func(rec *sam.Record) {
 		switch {
 		case completePair && rec == r1:
 			emit(read1, output, rec, &counts.Read1)
@@ -335,15 +336,40 @@ func routePairedGroup(group []*sam.Record, read1, read2, singleton, orphan, outp
 		case !rec.IsPaired():
 			emit(singleton, output, rec, &counts.Singleton)
 		case rec.IsPaired() && rec.IsRead1() && !rec.IsRead2():
-			// Lone first mate (partner absent) → singleton.
-			emit(singleton, output, rec, &counts.Singleton)
+			// Lone first mate (partner absent). Upstream bam2fq writes it to
+			// the singleton (-s) file when one is given, otherwise to the R1
+			// file — never dropped.
+			if singleton != nil {
+				emit(singleton, output, rec, &counts.Singleton)
+			} else {
+				emit(read1, output, rec, &counts.Read1)
+			}
 		case rec.IsPaired() && rec.IsRead2() && !rec.IsRead1():
-			// Lone second mate (partner absent) → singleton.
-			emit(singleton, output, rec, &counts.Singleton)
+			// Lone second mate (partner absent). Singleton (-s) file when
+			// given, otherwise the R2 file.
+			if singleton != nil {
+				emit(singleton, output, rec, &counts.Singleton)
+			} else {
+				emit(read2, output, rec, &counts.Read2)
+			}
 		default:
 			// Paired but 0x40/0x80 both set or both unset → orphan.
 			emit(orphan, output, rec, &counts.Orphan)
 		}
+	}
+
+	// Emit in upstream flush_rec order: the paired R1 then R2 first (so a
+	// shared fallback sink interleaves them R1-before-R2), then the remaining
+	// records in file order.
+	if completePair {
+		emitRec(r1)
+		emitRec(r2)
+	}
+	for _, rec := range group {
+		if completePair && (rec == r1 || rec == r2) {
+			continue
+		}
+		emitRec(rec)
 	}
 }
 

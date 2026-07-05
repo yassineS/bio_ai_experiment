@@ -44,9 +44,43 @@ func stripProvenance(b []byte) []byte {
 		if isProvenanceLine(ln) {
 			continue
 		}
-		out = append(out, ln)
+		out = append(out, normaliseLine(ln))
 	}
 	return bytes.Join(out, []byte("\n"))
+}
+
+// normaliseLine rewrites a kept line to strip non-reproducible FIELDS that live
+// inside an otherwise-data-bearing line (as opposed to isProvenanceLine, which
+// drops whole lines). It is the SINGLE source of truth for the per-line rewrite,
+// shared by the batch stripProvenance and the streaming provenanceFilter so the
+// two paths can never drift.
+//
+// Today it strips the "UR:" tag from SAM "@SQ" header lines (as emitted by
+// "samtools dict" and "samtools view -H"). UR is the reference URI —
+// "UR:file://<absolute-path>" — which is inherently machine- and
+// working-directory-dependent (and its file:// encoding can differ between our
+// port and upstream for the same logical path), so it is provenance, not data.
+// Every other @SQ field (SN, LN, M5, AN, AS, SP) is preserved, so a genuine
+// dict/header divergence (a wrong checksum, length, or field order) still fails
+// the comparison. Non-@SQ lines are returned unchanged.
+func normaliseLine(ln []byte) []byte {
+	if !bytes.HasPrefix(ln, []byte("@SQ\t")) {
+		return ln
+	}
+	fields := bytes.Split(ln, []byte("\t"))
+	kept := fields[:0]
+	dropped := false
+	for _, f := range fields {
+		if bytes.HasPrefix(f, []byte("UR:")) {
+			dropped = true
+			continue
+		}
+		kept = append(kept, f)
+	}
+	if !dropped {
+		return ln
+	}
+	return bytes.Join(kept, []byte("\t"))
 }
 
 // isProvenanceLine reports whether a single line is a non-reproducible
@@ -209,7 +243,7 @@ func (f *provenanceFilter) flushLine(terminated bool) error {
 				return err
 			}
 		}
-		if err := f.writeInner(f.line); err != nil {
+		if err := f.writeInner(normaliseLine(f.line)); err != nil {
 			return err
 		}
 		f.emitted = true

@@ -321,12 +321,15 @@ func (rr *RecordReader) decodeSliceParallel(h *CompressionHeader, sl *Slice, con
 	}
 	dec.namePrefix = rr.namePrefix
 	dec.rawAuxBAMSink = rr.rawAuxBAMSink
-	if dec.rawAuxBAMSink {
-		// Each worker decodes a whole slice single-threaded, so a fresh per-slice
-		// record-field arena is safe here exactly as on the sequential path: it is
-		// scoped to this slice and never shared across slices or workers.
-		dec.arena = &recordArena{}
-	}
+	// A FRESH per-slice record-field arena for BOTH the rawAuxBAMSink and the eager
+	// path. Each worker decodes a whole slice single-threaded, so the arena is
+	// scoped to this slice and never shared across slices or workers. It is never
+	// reset/reused, so — as on the sequential eager path — records that a consumer
+	// retains past their slice keep their own slice's buffers alive through capped
+	// sub-slices, and the emitted bytes are identical to the per-record-make path.
+	// On the eager path SEQ/aux are still emitted as rec.Seq/rec.Aux because
+	// storeSeq and decodeRecord gate the packed form on rawAuxBAMSink (false here).
+	dec.arena = &recordArena{}
 	recs, suppress, err := dec.decodeSliceRecords(sl.Header.NumRecords)
 	if err != nil {
 		return nil, false, wrapf(err, "container %d slice %d", containerIdx, sliceIdx)

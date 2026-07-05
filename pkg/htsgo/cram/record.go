@@ -93,6 +93,18 @@ type recordDecoder struct {
 	// base relative to the reference base at that position.
 	substMatrix substMatrix
 
+	// qsEnc and baEnc are the resolved QS (quality score) and BA (base) data
+	// series encodings, looked up once from the compression header when the
+	// decoder is built rather than re-resolved through the data-series map on
+	// every quality base and every unmapped base. They are the per-slice cache
+	// the per-base hot loops (readQualityBlockInto, decodeUnmapped) read; both
+	// are nil when the series is absent, in which case those loops fall back to
+	// the unchanged per-value byteSeries path. They point into the container's
+	// shared CompressionHeader and are only ever read after construction, so a
+	// worker decoding its own slice never mutates them.
+	qsEnc *Encoding
+	baEnc *Encoding
+
 	// namePrefix is the basename of the opened file. When a lossy-names
 	// (read-names-not-preserved) CRAM drops a record's name, the decoder
 	// synthesises "<namePrefix>:<record_number>", matching htslib's
@@ -312,6 +324,8 @@ func newRecordDecoder(h *CompressionHeader, sh *SliceHeader, src *SeriesSource, 
 		refBases:           refBases,
 		refStart:           refStart,
 		substMatrix:        newSubstMatrix(h.Preservation.SubstitutionMatrix),
+		qsEnc:              h.Encoding("QS"),
+		baEnc:              h.Encoding("BA"),
 	}, nil
 }
 
@@ -399,6 +413,23 @@ func (rd *recordDecoder) byteArraySeries(key string) ([]byte, error) {
 		return nil, errFormat("data series %q is required but absent from the encoding map", key)
 	}
 	b, err := enc.decodeByteArray(rd.src.s)
+	if err != nil {
+		return nil, wrapf(err, "data series %q", key)
+	}
+	return b, nil
+}
+
+// byteArraySeriesBorrow is byteArraySeries returning a NO-COPY sub-slice of
+// the block buffer (see Encoding.decodeByteArrayBorrow). The returned bytes
+// alias the decompressed block and MUST be copied out (e.g. string()) before
+// the slice's source is released; use it only for immediately-consumed values
+// such as a read name that is copied into rec.QName.
+func (rd *recordDecoder) byteArraySeriesBorrow(key string) ([]byte, error) {
+	enc := rd.h.Encoding(key)
+	if enc == nil {
+		return nil, errFormat("data series %q is required but absent from the encoding map", key)
+	}
+	b, err := enc.decodeByteArrayBorrow(rd.src.s)
 	if err != nil {
 		return nil, wrapf(err, "data series %q", key)
 	}
@@ -872,23 +903,44 @@ func linkMates(up, down *sam.Record) {
 	setMateFields(up, down)
 	setMateFields(down, up)
 
-	// TLEN spans from the leftmost mapped base of the pair to the
-	// rightmost; the upstream (smaller-coordinate) record carries the
-	// positive value and the downstream record its negation.
+	// TLEN spans from the leftmost mapped base of the pair to the rightmost.
+	// The magnitude is max(up.end, down.end) - min(up.pos, down.pos) + 1: when
+	// the lower-POS mate soft-clips or indels further right than the higher-POS
+	// mate, that lower mate — not the higher one — sets the right end, so taking
+	// the right end from only the higher-POS mate would understate the span.
+	//
+	// The sign/tie-break must reproduce htslib's cram_decode.c mate
+	// cross-reference pass EXACTLY so a decoded within-slice pair matches
+	// upstream byte-for-byte; this is the decode-side mirror of writeencode.go
+	// computeTLenOverrides (keep the two in sync). `up` is the earlier (lower
+	// in-slice index) record — htslib's `p` — and `down` its later mate (`cr`).
 	if up.Flag&sam.FlagUnmapped == 0 && down.Flag&sam.FlagUnmapped == 0 && up.RName == down.RName {
-		left := up.Pos
-		right := down.EndPosition()
-		if down.Pos < left {
-			left = down.Pos
-			right = up.EndPosition()
+		aleft := up.Pos
+		if down.Pos < aleft {
+			aleft = down.Pos
 		}
-		span := right - left + 1
-		if up.Pos <= down.Pos {
-			up.TLen = span
-			down.TLen = -span
-		} else {
-			up.TLen = -span
-			down.TLen = span
+		aright := up.EndPosition()
+		if down.EndPosition() > aright {
+			aright = down.EndPosition()
+		}
+		span := aright - aleft + 1
+		switch {
+		case up.Pos == aleft && (up.EndPosition() < aright || up.Pos != down.Pos):
+			// up is leftmost and is either the strictly-lower start or not the
+			// sole rightmost mate: it takes the positive span.
+			up.TLen, down.TLen = span, -span
+		case up.Pos == down.Pos && up.EndPosition() == down.EndPosition():
+			// Full overlap (equal start AND equal end): resolve via READ1 so the
+			// sign is independent of record order.
+			if up.Flag&sam.FlagRead1 != 0 {
+				up.TLen, down.TLen = span, -span
+			} else {
+				up.TLen, down.TLen = -span, span
+			}
+		default:
+			// down is leftmost, or up is the sole rightmost mate at an equal
+			// start: down takes the positive span.
+			up.TLen, down.TLen = -span, span
 		}
 	}
 }
@@ -922,7 +974,9 @@ func setMateFields(rec, mate *sam.Record) {
 // read-name position when comp_hdr->read_names_included is set.
 func (rd *recordDecoder) decodeReadName(dr *decodedRecord, cf int32, index int) error {
 	if rd.h.Preservation.ReadNamesIncluded {
-		name, err := rd.byteArraySeries("RN")
+		// The name is copied straight into QName below, so borrow it from the
+		// block buffer instead of allocating a per-record copy.
+		name, err := rd.byteArraySeriesBorrow("RN")
 		if err != nil {
 			return wrapf(err, "record %d read name", index)
 		}
@@ -944,6 +998,21 @@ func (rd *recordDecoder) optByteArraySeries(key string) ([]byte, bool, error) {
 		return nil, false, nil
 	}
 	b, err := enc.decodeByteArray(rd.src.s)
+	if err != nil {
+		return nil, false, wrapf(err, "data series %q", key)
+	}
+	return b, true, nil
+}
+
+// optByteArraySeriesBorrow is optByteArraySeries returning a NO-COPY sub-slice
+// of the block buffer (see byteArraySeriesBorrow's retention contract): the
+// bytes must be copied out before the slice's source is released.
+func (rd *recordDecoder) optByteArraySeriesBorrow(key string) ([]byte, bool, error) {
+	enc := rd.h.Encoding(key)
+	if enc == nil {
+		return nil, false, nil
+	}
+	b, err := enc.decodeByteArrayBorrow(rd.src.s)
 	if err != nil {
 		return nil, false, wrapf(err, "data series %q", key)
 	}
@@ -979,7 +1048,7 @@ func (rd *recordDecoder) decodeMate(dr *decodedRecord, cf int32, index int) erro
 		// encoding map, read it; when it is absent the name was dropped and
 		// reconstructDroppedNames synthesises it after the slice decodes.
 		if !rd.h.Preservation.ReadNamesIncluded {
-			name, ok, nerr := rd.optByteArraySeries("RN")
+			name, ok, nerr := rd.optByteArraySeriesBorrow("RN")
 			if nerr != nil {
 				return wrapf(nerr, "record %d detached read name", index)
 			}
@@ -1060,17 +1129,27 @@ func (rd *recordDecoder) decodeTags(tl int32, rgValue int32, index int) (aux []s
 	// the backing array instead of reallocating and copying every tag once
 	// per record (a measurable slice of the CRAM-decode allocation churn).
 	var out []sam.Aux
-	if rd.arena != nil {
-		// Reuse the per-arena header scratch: the tags are serialised into the aux
-		// byte arena (buildRawAux) before the next record's decode reuses it, so a
-		// fresh make() per record is not needed. Keep the larger backing across
-		// records (and slices).
+	if rd.rawAuxBAMSink {
+		// Reuse the per-arena header scratch: on the rawAuxBAMSink path the tags are
+		// serialised into the aux byte arena (buildRawAux) before the next record's
+		// decode reuses this header slice, so a fresh make() per record is not
+		// needed. Keep the larger backing across records (and slices). This reuse is
+		// gated on rawAuxBAMSink (NOT merely arena != nil) because on the eager arena
+		// path `out` becomes rec.Aux verbatim — reusing one backing slice there would
+		// have every record's aux alias, and be overwritten by, the next record's.
 		if cap(rd.arena.auxScratch) < len(keys)+1 {
 			rd.arena.auxScratch = make([]sam.Aux, 0, len(keys)+1)
 		}
 		out = rd.arena.auxScratch[:0]
 	} else {
-		out = make([]sam.Aux, 0, len(keys)+1)
+		// Eager path: `out` is retained as rec.Aux, so it gets its own backing.
+		// Size it for the dictionary tags plus the three appends that follow
+		// downstream without a reallocation — the data-series RG (mergeAux) and the
+		// regenerated MD and NM (insertBeforeTrailingRG) — so those splices reuse
+		// this backing in place instead of allocating a second, larger aux slice per
+		// record (the standalone realloc was the single largest resident allocation
+		// of eager CRAM decode). The emitted tags and their order are unchanged.
+		out = make([]sam.Aux, 0, len(keys)+3)
 	}
 	// For CRAM v4 the presence of an MD*/NM* placeholder in this record's
 	// tag-line dictionary is what authorises regeneration; for v<4 the cF
@@ -1111,7 +1190,11 @@ func (rd *recordDecoder) decodeTags(tl int32, rgValue int32, index int) (aux []s
 		if enc == nil {
 			return nil, false, suppress, errFormat("record %d tag %q is not in the tag-encoding map", index, key.String())
 		}
-		raw, derr := enc.decodeByteArray(rd.src.s)
+		// raw is consumed immediately — isCRAMFlagsTag reads it and decodeTagValue
+		// copies it into aux.Value (string() for Z/H/A, a numeric parse otherwise,
+		// a fresh []interface{} for B) — and never retained or mutated, so borrow it
+		// from the block buffer instead of allocating a per-tag copy.
+		raw, derr := enc.decodeByteArrayBorrow(rd.src.s)
 		if derr != nil {
 			return nil, false, suppress, wrapf(derr, "record %d tag %q value", index, key.String())
 		}
@@ -1135,7 +1218,7 @@ func (rd *recordDecoder) decodeTags(tl int32, rgValue int32, index int) (aux []s
 		}
 		out = append(out, val)
 	}
-	if rd.arena != nil {
+	if rd.rawAuxBAMSink {
 		rd.arena.auxScratch = out // keep any growth for the next record.
 	}
 	return out, rgEmitted, rd.mdnmSuppressFor(cf, seenMDStar, seenNMStar), nil
@@ -1263,12 +1346,32 @@ func (rd *recordDecoder) decodeUnmapped(rec *sam.Record, cf int32, readLen int32
 	} else {
 		seq = make([]byte, readLen)
 	}
-	for i := int32(0); i < readLen; i++ {
-		b, err := rd.byteSeries("BA")
-		if err != nil {
-			return wrapf(err, "record %d base %d", index, i)
+	// Fast path mirrors readQualityBlockInto: the BA (base) series is normally an
+	// EXTERNAL byte block, so resolve its encoding and cursor once and read every
+	// base directly from the cursor rather than through two map lookups per base.
+	// The bytes and error wrapping match the per-base byteSeries("BA") loop it
+	// replaces (byteSeries wraps a cursor/read error as `data series "BA"`, then
+	// decodeUnmapped wraps that as `record N base i`).
+	if enc := rd.baEnc; enc != nil && enc.ID == EncodingExternal {
+		c, cerr := rd.src.s.cursor(enc.ExternalID)
+		if cerr != nil {
+			return wrapf(wrapf(cerr, "data series %q", "BA"), "record %d base %d", index, 0)
 		}
-		seq[i] = b
+		for i := int32(0); i < readLen; i++ {
+			b, rerr := c.readByte()
+			if rerr != nil {
+				return wrapf(wrapf(rerr, "data series %q", "BA"), "record %d base %d", index, i)
+			}
+			seq[i] = b
+		}
+	} else {
+		for i := int32(0); i < readLen; i++ {
+			b, err := rd.byteSeries("BA")
+			if err != nil {
+				return wrapf(err, "record %d base %d", index, i)
+			}
+			seq[i] = b
+		}
 	}
 	rd.storeSeq(rec, seq)
 	if cf&cfQualityPreserved != 0 {
@@ -1300,6 +1403,30 @@ func (rd *recordDecoder) readQualityBlock(readLen int32) ([]byte, error) {
 // reconstruction's arena qual) for the preserved-quality block read.
 func (rd *recordDecoder) readQualityBlockInto(dst []byte, readLen int32) ([]byte, error) {
 	q := dst[:readLen]
+	// Fast path: the QS series is almost always an EXTERNAL byte block. Resolve
+	// its encoding (memoised on the decoder) and its block cursor ONCE, then read
+	// every quality base straight from the cursor — rather than re-resolving both
+	// the encoding and the cursor through two map lookups on EVERY base, which
+	// made this the single hottest loop of CRAM decode. The cursor is the same
+	// cached, stateful cursor byteSeries("QS") would fetch on each iteration, so
+	// it advances identically and the bytes (and the error wrapping) are exactly
+	// what the per-base path produced.
+	if enc := rd.qsEnc; enc != nil && enc.ID == EncodingExternal {
+		c, err := rd.src.s.cursor(enc.ExternalID)
+		if err != nil {
+			return nil, wrapf(err, "data series %q", "QS")
+		}
+		for i := int32(0); i < readLen; i++ {
+			b, rerr := c.readByte()
+			if rerr != nil {
+				return nil, wrapf(rerr, "data series %q", "QS")
+			}
+			q[i] = b
+		}
+		return q, nil
+	}
+	// Any other QS encoding (HUFFMAN/BETA/CONST, or an absent series) takes the
+	// unchanged per-base path, byte-for-byte as before.
 	for i := int32(0); i < readLen; i++ {
 		b, err := rd.byteSeries("QS")
 		if err != nil {

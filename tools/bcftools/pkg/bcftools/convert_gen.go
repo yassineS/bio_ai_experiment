@@ -94,7 +94,17 @@ func VCFToGenSample(in io.Reader, prefix string, opts GenSampleOptions) error {
 		return err
 	}
 
-	hdr, variants, err := readAllVariants(in)
+	// Stream the input one record at a time. The .gen writer emits one row per
+	// accepted record and only carries a backward (prevChrom/prevPos) dedup
+	// state, so there is no need to buffer the whole VCF; peak memory is O(1) in
+	// the record count. The rows, their order, and the bytes are identical to
+	// the former readAllVariants slice loop.
+	br := bufio.NewReader(in)
+	head, err := br.Peek(5)
+	if err != nil && err != io.EOF {
+		return err
+	}
+	src, hdr, err := openVariantSource(br, head)
 	if err != nil {
 		return err
 	}
@@ -128,7 +138,15 @@ func VCFToGenSample(in io.Reader, prefix string, opts GenSampleOptions) error {
 
 	prevChrom, prevPos := "", -1
 	havePrev := false
-	for _, v := range variants {
+	for {
+		v, err := src.next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			closeFn()
+			return err
+		}
 		if include != nil && !include.Eval(v) {
 			continue
 		}

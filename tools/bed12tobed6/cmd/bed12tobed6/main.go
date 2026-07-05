@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -76,7 +77,17 @@ func main() {
 	defer out.Close()
 
 	if _, err := bed12tobed6.Convert(in, out, bed12tobed6.Options{NumberBlocks: numberBlocks}); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		// Flush records emitted before the error so partial stdout matches
+		// upstream's streaming behaviour on abort.
+		_ = out.Close()
+		var fcErr *bed12tobed6.FieldCountError
+		if errors.As(err, &fcErr) {
+			// Reproduce upstream bedtools' diagnostic verbatim (no "Error:"
+			// prefix) so stderr matches byte-for-byte.
+			fmt.Fprintln(os.Stderr, fcErr.Error())
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		os.Exit(1)
 	}
 }

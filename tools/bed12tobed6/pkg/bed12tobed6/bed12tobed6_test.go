@@ -2,9 +2,58 @@ package bed12tobed6
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 )
+
+// TestConvert_DifferingFieldCounts is the parity test for upstream bedtools'
+// "Differing number of BED fields encountered" behaviour: the first data record
+// fixes the expected column count and any later record with a different count
+// aborts. Records emitted before the offending line are preserved (streaming),
+// matching upstream's stdout on exit.
+func TestConvert_DifferingFieldCounts(t *testing.T) {
+	// First record BED12 (12 cols) → establishes 12; second record has 6 cols.
+	in := "chr1\t100\t200\tn1\t0\t+\t100\t200\t0\t2\t10,20\t0,50\nchr1\t300\t400\tn2\t0\t+\n"
+	wantOut := "chr1\t100\t110\tn1\t0\t+\nchr1\t150\t170\tn1\t0\t+\n"
+
+	var out bytes.Buffer
+	n, err := Convert(strings.NewReader(in), &out, Options{})
+	if err == nil {
+		t.Fatal("expected a FieldCountError for a mixed-field file, got nil")
+	}
+	var fcErr *FieldCountError
+	if !errors.As(err, &fcErr) {
+		t.Fatalf("error type: got %T (%v), want *FieldCountError", err, err)
+	}
+	if fcErr.Line != 2 {
+		t.Errorf("FieldCountError.Line = %d, want 2", fcErr.Line)
+	}
+	if want := "Differing number of BED fields encountered at line: 2.  Exiting..."; fcErr.Error() != want {
+		t.Errorf("message = %q, want %q", fcErr.Error(), want)
+	}
+	// Blocks from the first (valid) record must still have been written.
+	if n != 2 {
+		t.Errorf("written = %d, want 2 (first record's blocks)", n)
+	}
+	if got := out.String(); got != wantOut {
+		t.Errorf("partial output = %q, want %q", got, wantOut)
+	}
+}
+
+// TestConvert_UniformSixColUnchanged guards against the field-count check
+// firing on a well-formed uniform file (all records share a column count).
+func TestConvert_UniformSixColUnchanged(t *testing.T) {
+	in := "chr1\t10\t20\ta\t0\t+\nchr2\t30\t40\tb\t0\t-\n"
+	want := "chr1\t10\t20\ta\t0\t+\nchr2\t30\t40\tb\t0\t-\n"
+	var out bytes.Buffer
+	if _, err := Convert(strings.NewReader(in), &out, Options{}); err != nil {
+		t.Fatalf("unexpected err on uniform file: %v", err)
+	}
+	if got := out.String(); got != want {
+		t.Errorf("output = %q, want %q", got, want)
+	}
+}
 
 func TestConvert_OneBlock(t *testing.T) {
 	in := "chr1\t0\t50\tone_blocks_match\t0\t+\t0\t0\t0\t1\t50,\t0,\n"
@@ -134,14 +183,80 @@ func TestConvert_SkipsHeadersAndComments(t *testing.T) {
 	}
 }
 
-func TestConvert_PassThroughShortRecord(t *testing.T) {
+// TestConvert_Bed6RoundTrips confirms a full BED6 record (6 columns, not 12)
+// is re-emitted identically as a normalised single-block BED6.
+func TestConvert_Bed6RoundTrips(t *testing.T) {
 	in := "chr1\t0\t50\tbed6\t1\t+\n"
 	var out bytes.Buffer
 	if _, err := Convert(strings.NewReader(in), &out, Options{}); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if got := out.String(); got != in {
-		t.Fatalf("short record should pass through unchanged; got %q", got)
+		t.Fatalf("BED6 should round-trip unchanged; got %q", got)
+	}
+}
+
+// TestConvert_NormaliseNonBed12 verifies that upstream's behaviour of treating
+// any non-12-column record as a single whole-feature block, then always
+// printing six columns with empty defaults for absent trailing fields, is
+// matched byte-for-byte for BED3, BED4 and BED5 inputs — with and without -n.
+func TestConvert_NormaliseNonBed12(t *testing.T) {
+	cases := []struct {
+		name  string
+		in    string
+		want  string
+		wantN string // expected output with NumberBlocks
+	}{
+		{
+			name:  "bed3",
+			in:    "chr20\t81335\t101267\n",
+			want:  "chr20\t81335\t101267\t\t\t\n",
+			wantN: "chr20\t81335\t101267\t\t1\t\n",
+		},
+		{
+			name:  "bed4",
+			in:    "chr1\t10\t20\tfeat\n",
+			want:  "chr1\t10\t20\tfeat\t\t\n",
+			wantN: "chr1\t10\t20\tfeat\t1\t\n",
+		},
+		{
+			name:  "bed5",
+			in:    "chr1\t10\t20\tfeat\t500\n",
+			want:  "chr1\t10\t20\tfeat\t500\t\n",
+			wantN: "chr1\t10\t20\tfeat\t1\t\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			if _, err := Convert(strings.NewReader(tc.in), &out, Options{}); err != nil {
+				t.Fatalf("err: %v", err)
+			}
+			if got := out.String(); got != tc.want {
+				t.Fatalf("normalise mismatch:\nwant=%q\ngot =%q", tc.want, got)
+			}
+			var outN bytes.Buffer
+			if _, err := Convert(strings.NewReader(tc.in), &outN, Options{NumberBlocks: true}); err != nil {
+				t.Fatalf("err (-n): %v", err)
+			}
+			if got := outN.String(); got != tc.wantN {
+				t.Fatalf("normalise -n mismatch:\nwant=%q\ngot =%q", tc.wantN, got)
+			}
+		})
+	}
+}
+
+// TestConvert_ThirteenColumns verifies that records with MORE than 12 columns
+// are also normalised (fields.size() != 12) rather than block-split.
+func TestConvert_ThirteenColumns(t *testing.T) {
+	in := "chr1\t0\t50\tname\t0\t+\t0\t0\t0\t1\t50,\t0,\textra\n"
+	want := "chr1\t0\t50\tname\t0\t+\n"
+	var out bytes.Buffer
+	if _, err := Convert(strings.NewReader(in), &out, Options{}); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got := out.String(); got != want {
+		t.Fatalf(">12-column record should normalise:\nwant=%q\ngot =%q", want, got)
 	}
 }
 

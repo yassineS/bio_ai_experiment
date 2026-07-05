@@ -126,6 +126,40 @@ func NewBAMWriterThreads(w io.Writer, threads int) *BAMWriter {
 	return &BAMWriter{bw: mw}
 }
 
+// MarshalBAMHeader serialises h into the BAM binary header block: the "BAM\1"
+// magic, l_text plus the header text, then n_ref followed by the per-reference
+// name and length. It returns the exact byte sequence WriteHeader writes to the
+// BGZF stream, factored out so callers that assemble a BAM stream without a
+// BAMWriter — such as samtools cat's raw compressed-block passthrough — emit a
+// byte-identical header. h may be nil, which is treated as an empty header.
+func MarshalBAMHeader(h *Header) ([]byte, error) {
+	if h == nil {
+		h = &Header{}
+	}
+	var buf bytes.Buffer
+	buf.Write(BAMMagic)
+	text := h.Text()
+	if err := binary.Write(&buf, binary.LittleEndian, int32(len(text))); err != nil {
+		return nil, err
+	}
+	buf.WriteString(text)
+	if err := binary.Write(&buf, binary.LittleEndian, int32(len(h.Refs))); err != nil {
+		return nil, err
+	}
+	for _, r := range h.Refs {
+		nameBytes := []byte(r.Name)
+		nameBytes = append(nameBytes, 0)
+		if err := binary.Write(&buf, binary.LittleEndian, int32(len(nameBytes))); err != nil {
+			return nil, err
+		}
+		buf.Write(nameBytes)
+		if err := binary.Write(&buf, binary.LittleEndian, r.Length); err != nil {
+			return nil, err
+		}
+	}
+	return buf.Bytes(), nil
+}
+
 // WriteHeader serialises the header to BAM: magic, l_text, header text,
 // n_ref, then per-ref name and length.
 func (bw *BAMWriter) WriteHeader(h *Header) error {
@@ -137,28 +171,11 @@ func (bw *BAMWriter) WriteHeader(h *Header) error {
 	for i, r := range h.Refs {
 		bw.refMap[r.Name] = int32(i)
 	}
-	var buf bytes.Buffer
-	buf.Write(BAMMagic)
-	text := h.Text()
-	if err := binary.Write(&buf, binary.LittleEndian, int32(len(text))); err != nil {
+	b, err := MarshalBAMHeader(h)
+	if err != nil {
 		return err
 	}
-	buf.WriteString(text)
-	if err := binary.Write(&buf, binary.LittleEndian, int32(len(h.Refs))); err != nil {
-		return err
-	}
-	for _, r := range h.Refs {
-		nameBytes := []byte(r.Name)
-		nameBytes = append(nameBytes, 0)
-		if err := binary.Write(&buf, binary.LittleEndian, int32(len(nameBytes))); err != nil {
-			return err
-		}
-		buf.Write(nameBytes)
-		if err := binary.Write(&buf, binary.LittleEndian, r.Length); err != nil {
-			return err
-		}
-	}
-	_, err := bw.bw.Write(buf.Bytes())
+	_, err = bw.bw.Write(b)
 	return err
 }
 

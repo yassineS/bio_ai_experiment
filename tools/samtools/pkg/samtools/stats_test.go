@@ -730,6 +730,69 @@ func TestStatsCountersBasic(t *testing.T) {
 	}
 }
 
+// TestStatsErrorRateFloat32 verifies the SN "error rate" line reproduces
+// upstream's 32-bit-float division (stats.c:1585,
+// `(float)nmismatches/nbases_mapped_cigar`). For the pair below the float64
+// ratio rounds to 9.999877e-03 but the float32 ratio rounds to 9.999878e-03;
+// ours must emit the float32 value to stay byte-exact with upstream.
+func TestStatsErrorRateFloat32(t *testing.T) {
+	const (
+		mismatches       = int64(39999)
+		basesMappedCigar = int64(3999949)
+		wantF32          = "SN\terror rate:\t9.999878e-03\t# mismatches / bases mapped (cigar)"
+		f64              = "SN\terror rate:\t9.999877e-03" // what a float64 division would emit
+	)
+	c := newStatsCounters()
+	c.Mismatches = mismatches
+	c.BasesMappedCigar = basesMappedCigar
+	var out bytes.Buffer
+	if err := c.Write(&out, StatsOptions{MaxInsertSize: 8000}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, wantF32) {
+		t.Fatalf("error rate not computed in float32: want line %q in:\n%s", wantF32, got)
+	}
+	if strings.Contains(got, f64) {
+		t.Fatalf("error rate used float64 rounding (%q); expected float32 rounding", f64)
+	}
+}
+
+// TestStatsHeaderBlock verifies the three-line header banner is present and
+// that the split-tag-free "all reads" line is byte-exact (upstream
+// stats.c:1545-1556).
+func TestStatsHeaderBlock(t *testing.T) {
+	c := newStatsCounters()
+	var out bytes.Buffer
+	opts := StatsOptions{
+		MaxInsertSize: 8000,
+		Argv:          []string{"samtools", "stats", "in.bam"},
+		Version:       "0.1.0+htslib-0.1.0",
+	}
+	if err := c.Write(&out, opts); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	got := out.String()
+	// The byte-stable line (no split-tag support) must appear verbatim.
+	if !strings.Contains(got, "# This file contains statistics for all reads.\n") {
+		t.Fatalf("missing byte-stable all-reads header line; got:\n%s", got)
+	}
+	// The banner and command-line labels must be present (their embedded
+	// version/argv are env-dependent and normalised away by the harness).
+	if !strings.Contains(got, "# This file was produced by samtools stats (") ||
+		!strings.Contains(got, ") and can be plotted using plot-bamstats\n") {
+		t.Fatalf("missing producer banner line; got:\n%s", got)
+	}
+	// Note the TWO spaces after the colon, matching upstream.
+	if !strings.Contains(got, "# The command line was:  samtools stats in.bam\n") {
+		t.Fatalf("missing/incorrect command-line header; got:\n%s", got)
+	}
+	// The header must precede the CHK block.
+	if idxHdr, idxCHK := strings.Index(got, "# This file was produced"), strings.Index(got, "# CHK,"); idxHdr < 0 || idxCHK < 0 || idxHdr > idxCHK {
+		t.Fatalf("header block must precede CHK block; got:\n%s", got)
+	}
+}
+
 // TestStatsHelpers covers small internal helpers.
 func TestStatsHelpers(t *testing.T) {
 	t.Run("sortedKeys", func(t *testing.T) {

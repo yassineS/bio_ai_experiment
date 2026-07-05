@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 
+	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -70,11 +71,79 @@ func Cat(inputs []io.Reader, out io.Writer, opts CatOptions) error {
 		}
 	}
 
+	// Fast path: mirror upstream bam_cat's raw BGZF-block passthrough. It does
+	// zero (de)compression on records — after writing the merged header it
+	// flushes each input's still-decompressed header-block tail, then copies the
+	// remaining compressed blocks verbatim, trimming each input's trailing EOF
+	// block, and finally emits exactly one EOF block. This is eligible only when
+	// there is no header override (which may rewrite the @SQ table and, upstream,
+	// is the user's responsibility) and every input is a real BGZF stream (so the
+	// block-level raw copy is available). Anything else takes the decode fallback.
+	fast := opts.HeaderOverride == ""
+	if fast {
+		for _, br := range readers {
+			if br.BGZFReader() == nil {
+				fast = false
+				break
+			}
+		}
+	}
+	if fast {
+		return catFast(readers, hdr, out)
+	}
+	return catDecode(readers, hdr, out)
+}
+
+// catFast concatenates inputs by copying their compressed BGZF blocks verbatim,
+// never decoding or recompressing a record. It is the drop-in analogue of
+// htslib's bam_cat: write the header, then for each input flush the leftover
+// decompressed bytes of the block that also held the header (a tiny tail that
+// is recompressed — harmless, and what htslib does too), copy the remaining
+// compressed blocks minus their trailing EOF marker, and emit one final EOF
+// block. Every input reader must be BGZF-backed (guaranteed by the caller).
+func catFast(readers []*sam.BAMReader, hdr *sam.Header, out io.Writer) error {
+	bgw := bgzip.NewWriter(out)
+	headerBytes, err := sam.MarshalBAMHeader(hdr)
+	if err != nil {
+		return err
+	}
+	if _, err := bgw.Write(headerBytes); err != nil {
+		return err
+	}
+	for i, br := range readers {
+		bz := br.BGZFReader()
+		// Re-emit the decompressed remainder of the block that held the header
+		// (records packed into the same BGZF block as the header text). These
+		// bytes are recompressed into the output stream.
+		if rem := bz.DecompressedRemainder(); len(rem) > 0 {
+			if _, err := bgw.Write(rem); err != nil {
+				return err
+			}
+		}
+		// Flush so the header/tail block(s) land in the output before the raw
+		// compressed blocks that follow are appended directly to out.
+		if err := bgw.Flush(); err != nil {
+			return err
+		}
+		if _, err := bgzip.CopyRawTrimEOF(out, bz.RawRemaining()); err != nil {
+			return fmt.Errorf("samtools cat: input %d: %w", i, err)
+		}
+	}
+	// Exactly one EOF block terminates the concatenated stream.
+	if _, err := out.Write(bgzip.EOFBlock); err != nil {
+		return err
+	}
+	return nil
+}
+
+// catDecode is the record-by-record fallback used when the fast raw-block copy
+// cannot apply (a header override, or a non-BGZF input). It decodes every record
+// and re-encodes it against hdr, exactly as the original implementation did.
+func catDecode(readers []*sam.BAMReader, hdr *sam.Header, out io.Writer) error {
 	bw := sam.NewBAMWriter(out)
 	if err := bw.WriteHeader(hdr); err != nil {
 		return err
 	}
-
 	for i, br := range readers {
 		for {
 			rec, err := br.Read()

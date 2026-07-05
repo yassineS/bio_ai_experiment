@@ -12,9 +12,15 @@
 // environment variable), though multicov only reads alignment coordinates
 // and so decodes CRAM correctly even without a reference.
 //
-// Internally each input file is loaded into a per-chromosome interval
-// tree (`pkg/htsgo/bed.IntervalTree`), and the A file is streamed
-// line-by-line. Optional strand filters (-s same / -S opposite),
+// Internally the *A* file (`-bed`, typically small) is loaded into a
+// per-chromosome interval tree (`pkg/htsgo/bed.IntervalTree`) and each B
+// input is then streamed a record at a time and discarded after use — the
+// data flow is inverted relative to the naive approach so peak memory is
+// O(A intervals) plus one decoded read, not O(B alignments). Each streamed
+// B record queries the A tree and increments a per-A counter for every A
+// interval it overlaps (subject to the filters below); the A rows are then
+// emitted verbatim in their original input order with one count column per
+// source appended. Optional strand filters (-s same / -S opposite),
 // fraction-of-A (-f), fraction-of-B (-F), and reciprocal (-r) thresholds
 // mirror upstream's semantics.
 //
@@ -122,13 +128,18 @@ func Run(aR io.Reader, bRs []io.Reader, out io.Writer, opts Options) (int, error
 	return RunSources(aR, srcs, out, opts)
 }
 
-// RunSources reads A from aR and the N B inputs from srcs in order. Each
-// input is indexed per chromosome (BED records are read with the bed
-// package; BAM records are decoded with pkg/htsgo/sam and -q MAPQ
-// filtered up front). RunSources then streams A and emits one row per A
-// record with one count column appended per source. -D, if set, caps the
-// reported per-A count per BAM input. Returns the number of A records
-// processed.
+// RunSources reads A from aR and the N B inputs from srcs in order. The
+// data flow is inverted for memory: the (typically small) A file is loaded
+// into a per-chromosome interval tree while the B inputs are streamed one
+// record at a time and discarded after use (BED records are read with the
+// bed package; BAM/CRAM records are decoded with pkg/htsgo/alnio and -q
+// MAPQ filtered on the fly). Each streamed B record queries the A tree and
+// increments a per-A counter for every A interval it overlaps, so peak
+// memory is O(A intervals) plus one decoded read rather than O(B records).
+// RunSources then emits one row per A record — in original input order —
+// with one count column appended per source. -D, if set, caps the reported
+// per-A count per BAM/CRAM input at emit time. Returns the number of A
+// records processed.
 func RunSources(aR io.Reader, srcs []Source, out io.Writer, opts Options) (int, error) {
 	if opts.SameStrand && opts.OppositeStrand {
 		return 0, fmt.Errorf("cannot combine -s and -S")
@@ -154,17 +165,32 @@ func RunSources(aR io.Reader, srcs []Source, out io.Writer, opts Options) (int, 
 		effFracB = opts.FractionA
 	}
 
-	trees := make([]map[string]*bedpkg.IntervalTree, len(srcs))
-	splitMeta := make([][]splitAln, len(srcs)) // populated only when src is split-mode BAM
+	// Load A into an ordered slice (for verbatim emit) and a per-chrom
+	// interval tree. Each A record's Score field carries its 0-based index
+	// so a tree hit can be mapped back to its counters.
+	aRaw, aRecs, err := readARecords(aR)
+	if err != nil {
+		return 0, err
+	}
+	aTrees := buildATrees(aRecs)
+
+	// counts[aIdx][srcIdx] accumulates overlaps for A record aIdx from
+	// source srcIdx.
+	counts := make([][]int, len(aRecs))
+	for i := range counts {
+		counts[i] = make([]int, len(srcs))
+	}
 	kinds := make([]SourceKind, len(srcs))
+
+	// Stream each source once, discarding each record after it has been
+	// scored against the A tree.
 	for i, s := range srcs {
+		kinds[i] = s.Kind
 		switch s.Kind {
 		case SourceBED:
-			t, err := indexBED(s.Reader)
-			if err != nil {
+			if err := streamBED(s.Reader, aTrees, counts, i, opts, effFracB); err != nil {
 				return 0, fmt.Errorf("file %d (BED): %w", i+1, err)
 			}
-			trees[i] = t
 		case SourceBAM, SourceCRAM:
 			label := "BAM"
 			if s.Kind == SourceCRAM {
@@ -175,31 +201,54 @@ func RunSources(aR io.Reader, srcs []Source, out io.Writer, opts Options) (int, 
 				return 0, fmt.Errorf("file %d (%s): %w", i+1, label, err)
 			}
 			if opts.Split {
-				t, meta, err := indexAlignmentsSplit(ar, opts.MinMAPQ)
-				if err != nil {
+				if err := streamAlignmentsSplit(ar, aTrees, counts, i, opts); err != nil {
 					return 0, fmt.Errorf("file %d (%s): %w", i+1, label, err)
 				}
-				trees[i] = t
-				splitMeta[i] = meta
 			} else {
-				t, err := indexAlignments(ar, opts.MinMAPQ)
-				if err != nil {
+				if err := streamAlignments(ar, aTrees, counts, i, opts, effFracB); err != nil {
 					return 0, fmt.Errorf("file %d (%s): %w", i+1, label, err)
 				}
-				trees[i] = t
 			}
 		default:
 			return 0, fmt.Errorf("file %d: unknown source kind %d", i+1, s.Kind)
 		}
-		kinds[i] = s.Kind
 	}
 
+	// Emit A rows verbatim in original order, appending the per-source count.
 	bw := bufio.NewWriter(out)
 	defer bw.Flush()
+	for aIdx, raw := range aRaw {
+		if _, err := bw.WriteString(raw); err != nil {
+			return aIdx, err
+		}
+		for srcIdx := range srcs {
+			n := counts[aIdx][srcIdx]
+			// MaxDepth caps the reported count for BAM/CRAM inputs.
+			if isAlignment(kinds[srcIdx]) && opts.MaxDepth > 0 && n > opts.MaxDepth {
+				n = opts.MaxDepth
+			}
+			if _, err := fmt.Fprintf(bw, "\t%d", n); err != nil {
+				return aIdx, err
+			}
+		}
+		if err := bw.WriteByte('\n'); err != nil {
+			return aIdx, err
+		}
+	}
+	return len(aRecs), nil
+}
 
+// readARecords reads the primary (-bed) A file fully into memory: it returns
+// the raw output columns (tab-joined) in input order and the parsed records
+// used for overlap/strand tests. Comment/track/browser lines are skipped and
+// each parsed record's Score field is set to its 0-based index so a later
+// interval-tree hit can be mapped back to its output row. The A file is the
+// small input; keeping it resident is what makes the streaming B pass O(A).
+func readARecords(aR io.Reader) ([]string, []*bedpkg.Record, error) {
 	sc := bufio.NewScanner(aR)
 	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
-	count := 0
+	var raws []string
+	var recs []*bedpkg.Record
 	lineNo := 0
 	for sc.Scan() {
 		lineNo++
@@ -211,55 +260,123 @@ func RunSources(aR io.Reader, srcs []Source, out io.Writer, opts Options) (int, 
 		}
 		fields := strings.Split(raw, "\t")
 		if len(fields) < 3 {
-			return count, fmt.Errorf("line %d: BED record needs >=3 columns: %q", lineNo, raw)
+			return nil, nil, fmt.Errorf("line %d: BED record needs >=3 columns: %q", lineNo, raw)
 		}
 		rec, err := parseRecord(fields)
 		if err != nil {
-			return count, fmt.Errorf("line %d: %w", lineNo, err)
+			return nil, nil, fmt.Errorf("line %d: %w", lineNo, err)
 		}
-		// Emit A's original columns verbatim, then one count per source.
-		if _, err := bw.WriteString(strings.Join(fields, "\t")); err != nil {
-			return count, err
-		}
-		for i, t := range trees {
-			var n int
-			if isAlignment(kinds[i]) && opts.Split {
-				n = countOverlapsSplit(rec, t[rec.Chrom], splitMeta[i], opts)
-			} else {
-				n = countOverlaps(rec, t[rec.Chrom], opts, effFracB)
-			}
-			// MaxDepth caps the reported count for BAM/CRAM inputs.
-			if isAlignment(kinds[i]) && opts.MaxDepth > 0 && n > opts.MaxDepth {
-				n = opts.MaxDepth
-			}
-			if _, err := fmt.Fprintf(bw, "\t%d", n); err != nil {
-				return count, err
-			}
-		}
-		if err := bw.WriteByte('\n'); err != nil {
-			return count, err
-		}
-		count++
+		rec.Score = len(recs)
+		recs = append(recs, rec)
+		raws = append(raws, strings.Join(fields, "\t"))
 	}
 	if err := sc.Err(); err != nil {
-		return count, err
+		return nil, nil, err
 	}
-	return count, nil
+	return raws, recs, nil
 }
 
-// countOverlaps returns the number of B records that overlap a after
-// applying strand and fraction filters.
-func countOverlaps(a *bedpkg.Record, t *bedpkg.IntervalTree, opts Options, effFracB float64) int {
+// buildATrees groups the A records by chromosome and builds one balanced
+// interval tree per chromosome. Records keep their Score-encoded index
+// across the sort so tree hits still map back to the right output row.
+func buildATrees(recs []*bedpkg.Record) map[string]*bedpkg.IntervalTree {
+	byChrom := map[string][]*bedpkg.Record{}
+	for _, r := range recs {
+		byChrom[r.Chrom] = append(byChrom[r.Chrom], r)
+	}
+	return buildTrees(byChrom)
+}
+
+// streamBED reads a B BED file one record at a time and scores each against
+// the A tree. Records are not retained, so peak memory stays O(A).
+func streamBED(r io.Reader, aTrees map[string]*bedpkg.IntervalTree, counts [][]int, srcIdx int, opts Options, effFracB float64) error {
+	rd := bedpkg.NewReader(r)
+	for {
+		b, err := rd.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		countBIntoA(b, aTrees[b.Chrom], counts, srcIdx, opts, effFracB)
+	}
+	return nil
+}
+
+// streamAlignments is the BAM/CRAM counterpart of streamBED for the
+// non-split path. It decodes each alignment, turns its reference span into a
+// transient B record, scores it against the A tree, and discards it.
+// bedtools multicov counts reads "regardless of the BAM FLAG field", so only
+// duplicate and QC-fail records are dropped (plus the MAPQ floor); unmapped,
+// secondary, and supplementary reads are all counted. An unmapped read (or one
+// with no CIGAR) is given a 1bp span [POS-1, POS) — bam_endpos semantics — so
+// it still overlaps its enclosing interval. Each alignment contributes at most
+// +1 to every A interval it overlaps (subject to the strand/fraction filters).
+func streamAlignments(br sam.Reader, aTrees map[string]*bedpkg.IntervalTree, counts [][]int, srcIdx int, opts Options, effFracB float64) error {
+	for {
+		rec, err := br.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		// bedtools multicov counts reads "regardless of the BAM FLAG field":
+		// it drops only duplicate / QC-fail records (plus the MAPQ floor and
+		// the strand/properOnly filters). Unmapped, secondary, and
+		// supplementary reads are NOT dropped — matching multiBamCov's default.
+		if rec.IsDuplicate() || rec.IsQCFail() {
+			continue
+		}
+		if int(rec.MapQ) < opts.MinMAPQ {
+			continue
+		}
+		// BAM stores POS as 1-based; convert to 0-based half-open BED-style.
+		start := int(rec.Pos) - 1
+		if start < 0 {
+			continue
+		}
+		// bam_endpos semantics: a mapped read spans [start, start+refLen),
+		// but an unmapped read (or one with no CIGAR) is given a 1bp span
+		// [start, start+1) so it still overlaps its enclosing interval — this
+		// is what upstream counts and what our old code wrongly dropped.
+		refLen := rec.Cigar.ReferenceLength()
+		end := start + refLen
+		if rec.IsUnmapped() || len(rec.Cigar) == 0 {
+			end = start + 1
+		}
+		strand := "+"
+		if rec.Flag&sam.FlagReverse != 0 {
+			strand = "-"
+		}
+		b := &bedpkg.Record{
+			Chrom:      rec.RName,
+			ChromStart: start,
+			ChromEnd:   end,
+			Strand:     strand,
+		}
+		countBIntoA(b, aTrees[rec.RName], counts, srcIdx, opts, effFracB)
+	}
+	return nil
+}
+
+// countBIntoA scores a single B record against the A interval tree,
+// incrementing counts[a.Score][srcIdx] for every A interval that survives
+// the strand, fraction-of-A (-f), and fraction-of-B (-F/-r) filters. It is
+// the inverted-flow analogue of the old countOverlaps: the same (A,B) pairs
+// are evaluated against the same predicate, only the iteration is driven by
+// B instead of A, so the resulting counts are identical.
+func countBIntoA(b *bedpkg.Record, t *bedpkg.IntervalTree, counts [][]int, srcIdx int, opts Options, effFracB float64) {
 	if t == nil {
-		return 0
+		return
 	}
-	cand := t.Query(a)
+	cand := t.Query(b)
 	if len(cand) == 0 {
-		return 0
+		return
 	}
-	lenA := a.ChromEnd - a.ChromStart
-	n := 0
-	for _, b := range cand {
+	lenB := b.ChromEnd - b.ChromStart
+	for _, a := range cand {
 		if !strandOK(a, b, opts) {
 			continue
 		}
@@ -267,13 +384,15 @@ func countOverlaps(a *bedpkg.Record, t *bedpkg.IntervalTree, opts Options, effFr
 		if overlap <= 0 {
 			continue
 		}
-		if opts.FractionA > 0 && lenA > 0 {
-			if float64(overlap)/float64(lenA) < opts.FractionA {
-				continue
+		if opts.FractionA > 0 {
+			lenA := a.ChromEnd - a.ChromStart
+			if lenA > 0 {
+				if float64(overlap)/float64(lenA) < opts.FractionA {
+					continue
+				}
 			}
 		}
 		if effFracB > 0 {
-			lenB := b.ChromEnd - b.ChromStart
 			if lenB <= 0 {
 				continue
 			}
@@ -281,9 +400,8 @@ func countOverlaps(a *bedpkg.Record, t *bedpkg.IntervalTree, opts Options, effFr
 				continue
 			}
 		}
-		n++
+		counts[a.Score][srcIdx]++
 	}
-	return n
 }
 
 // overlapLen returns the length of the intersection of a and b's spans.
@@ -344,20 +462,6 @@ func parseRecord(fields []string) (*bedpkg.Record, error) {
 	return r, nil
 }
 
-// indexBED reads a B file fully into memory and returns a per-chrom tree.
-func indexBED(r io.Reader) (map[string]*bedpkg.IntervalTree, error) {
-	rd := bedpkg.NewReader(r)
-	all, err := rd.ReadAll()
-	if err != nil {
-		return nil, err
-	}
-	byChrom := map[string][]*bedpkg.Record{}
-	for _, x := range all {
-		byChrom[x.Chrom] = append(byChrom[x.Chrom], x)
-	}
-	return buildTrees(byChrom), nil
-}
-
 // isAlignment reports whether a SourceKind is a SAM-family alignment input
 // (BAM or CRAM), as opposed to a plain BED file. Alignment inputs share the
 // `-split`, `-q`, and `-D` handling that BED inputs ignore.
@@ -365,74 +469,12 @@ func isAlignment(k SourceKind) bool {
 	return k == SourceBAM || k == SourceCRAM
 }
 
-// indexAlignments decodes every primary alignment from a SAM-family reader
-// (BAM or CRAM, supplied by pkg/htsgo/alnio), drops unmapped / secondary /
-// supplementary / duplicate / QC-fail records (matching `bedtools
-// multicov`'s default record filter), enforces the caller-supplied MAPQ
-// floor, and returns a per-reference interval tree over the alignments'
-// reference spans. The recorded interval is [Pos-1, Pos-1+ReferenceLength())
-// and the strand is the FLAG-derived `-` / `+` so `-s` / `-S` keep working.
-//
-// `-split` (per-block CIGAR coverage) is handled by indexAlignmentsSplit;
-// this function is only called when Options.Split is false. With Split off
-// the recorded interval is the full reference footprint of each alignment,
-// which is what upstream emits without `-split`.
-func indexAlignments(br sam.Reader, minMAPQ int) (map[string]*bedpkg.IntervalTree, error) {
-	byChrom := map[string][]*bedpkg.Record{}
-	for {
-		rec, err := br.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		if rec.IsUnmapped() || rec.IsSecondary() || rec.IsSupplementary() ||
-			rec.IsDuplicate() || rec.IsQCFail() {
-			continue
-		}
-		if int(rec.MapQ) < minMAPQ {
-			continue
-		}
-		refLen := rec.Cigar.ReferenceLength()
-		if refLen <= 0 {
-			continue
-		}
-		// BAM stores POS as 1-based; convert to 0-based half-open BED-style.
-		start := int(rec.Pos) - 1
-		if start < 0 {
-			continue
-		}
-		end := start + refLen
-		strand := "+"
-		if rec.Flag&sam.FlagReverse != 0 {
-			strand = "-"
-		}
-		b := &bedpkg.Record{
-			Chrom:      rec.RName,
-			ChromStart: start,
-			ChromEnd:   end,
-			Strand:     strand,
-		}
-		byChrom[b.Chrom] = append(byChrom[b.Chrom], b)
-	}
-	return buildTrees(byChrom), nil
-}
-
-// splitAln is per-alignment metadata for `-split` mode: the strand and
-// the total reference footprint summed across all emitted blocks. Indexed
-// by the value stored in `bed.Record.Score` of every block contributed by
-// this alignment.
-type splitAln struct {
-	strand    string
-	footprint int
-}
-
-// indexAlignmentsSplit is the `-split` counterpart of indexAlignments: it
-// walks each alignment's CIGAR and emits one `bed.Record` per contiguous
-// reference-consuming op-run (M/=/X). N ops break a block, advance the reference,
-// and contribute zero coverage — the whole point of `-split`. D, I, S, H,
-// P are handled to upstream's semantics:
+// streamAlignmentsSplit is the `-split` counterpart of streamAlignments. It
+// folds the per-alignment CIGAR decomposition into the streaming loop: each
+// primary alignment is decomposed locally into its contiguous reference-
+// consuming op-runs (M/=/X), scored against the A tree, and discarded — no
+// per-block tree over the whole BAM is ever built. D, I, S, H, P are handled
+// to upstream's semantics:
 //
 //   - M, =, X advance both query and reference and extend the current block.
 //   - D advances reference only and EXTENDS the current block (matches
@@ -442,26 +484,38 @@ type splitAln struct {
 //   - I, S, P consume neither reference position — ignored for block math.
 //   - H consumes neither — ignored.
 //
-// The per-block `bed.Record` is tagged with `Score = alignment index` so
-// `countOverlapsSplit` can group hits back to their parent alignment for
-// the once-per-alignment counting rule and the footprint-fraction filter.
-// The returned `[]splitAln` is indexed by that same alignment index.
-func indexAlignmentsSplit(br sam.Reader, minMAPQ int) (map[string]*bedpkg.IntervalTree, []splitAln, error) {
-	byChrom := map[string][]*bedpkg.Record{}
-	var alns []splitAln
+// Counting mirrors the old countOverlapsSplit exactly, only inverted so the
+// aggregation is keyed by A index instead of alignment index:
+//
+//   - The alignment counts once per A iff at least one of its blocks has
+//     positive overlap with that A.
+//   - When FractionA > 0, the threshold is applied to
+//     total_block_overlap / footprint with a strict `>` comparison — exactly
+//     mirroring `multiBamCov.cpp::FindBlockedOverlaps`. (This differs from
+//     the non-split path, which uses overlap/lenA ≥ frac; the asymmetry is
+//     upstream's behaviour, not a port artifact.)
+//   - Reciprocal additionally requires total_block_overlap / lenA > FractionA.
+//   - SameStrand / OppositeStrand filter on the alignment's strand vs A's.
+//
+// footprint is the sum of every positive-length block of the alignment,
+// independent of which A intervals (if any) it overlaps.
+func streamAlignmentsSplit(br sam.Reader, aTrees map[string]*bedpkg.IntervalTree, counts [][]int, srcIdx int, opts Options) error {
 	for {
 		rec, err := br.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return nil, nil, err
+			return err
 		}
-		if rec.IsUnmapped() || rec.IsSecondary() || rec.IsSupplementary() ||
-			rec.IsDuplicate() || rec.IsQCFail() {
+		// Same FLAG policy as the non-split path: drop only duplicate /
+		// QC-fail (plus the MAPQ floor). Unmapped / no-CIGAR reads emit no
+		// blocks below and so contribute 0 naturally; secondary and
+		// supplementary reads are counted consistently with the non-split path.
+		if rec.IsDuplicate() || rec.IsQCFail() {
 			continue
 		}
-		if int(rec.MapQ) < minMAPQ {
+		if int(rec.MapQ) < opts.MinMAPQ {
 			continue
 		}
 		// BAM stores 1-based POS; bedtools internally uses 0-based.
@@ -475,24 +529,19 @@ func indexAlignmentsSplit(br sam.Reader, minMAPQ int) (map[string]*bedpkg.Interv
 		}
 
 		// Walk the CIGAR, emitting one block per contiguous reference-
-		// consuming run that is broken by an N op.
+		// consuming run that is broken by an N op. Blocks are transient and
+		// local to this alignment; they are discarded once scored.
 		blockLen := 0
 		blockStart := curPos
 		footprint := 0
-		alnIdx := len(alns)
-		// blocks emitted by this alignment, deferred so we don't append to
-		// byChrom until we know the alignment actually produced ≥1 block.
-		var pending []*bedpkg.Record
+		var blocks []*bedpkg.Record
 		emit := func() {
 			if blockLen <= 0 {
 				return
 			}
-			pending = append(pending, &bedpkg.Record{
-				Chrom:      rec.RName,
+			blocks = append(blocks, &bedpkg.Record{
 				ChromStart: blockStart,
 				ChromEnd:   blockStart + blockLen,
-				Strand:     strand,
-				Score:      alnIdx,
 			})
 			footprint += blockLen
 		}
@@ -522,87 +571,63 @@ func indexAlignmentsSplit(br sam.Reader, minMAPQ int) (map[string]*bedpkg.Interv
 			}
 		}
 		emit()
-		if len(pending) == 0 {
+		if len(blocks) == 0 {
 			continue
 		}
-		alns = append(alns, splitAln{strand: strand, footprint: footprint})
-		for _, b := range pending {
-			byChrom[b.Chrom] = append(byChrom[b.Chrom], b)
+		t := aTrees[rec.RName]
+		if t == nil {
+			continue
 		}
-	}
-	return buildTrees(byChrom), alns, nil
-}
 
-// countOverlapsSplit counts the number of distinct BAM alignments whose
-// emitted blocks overlap A, applying strand and fraction filters using
-// upstream's `-split` semantics:
-//
-//   - The alignment counts once iff at least one block has positive
-//     overlap with A.
-//   - When FractionA > 0, the threshold is applied to
-//     total_block_overlap / alignment.footprint with a strict `>`
-//     comparison — exactly mirroring
-//     `multiBamCov.cpp::FindBlockedOverlaps`. (Note: this differs from
-//     the non-split path, which uses overlap/lenA ≥ frac. The asymmetry
-//     is upstream's behaviour, not a port artifact.)
-//   - Reciprocal additionally requires
-//     total_block_overlap / lenA > FractionA.
-//   - SameStrand / OppositeStrand filter on the alignment's strand vs A's.
-func countOverlapsSplit(a *bedpkg.Record, t *bedpkg.IntervalTree, alns []splitAln, opts Options) int {
-	if t == nil {
-		return 0
-	}
-	cand := t.Query(a)
-	if len(cand) == 0 {
-		return 0
-	}
-	// Aggregate overlap per alignment index.
-	perAln := make(map[int]int, len(cand))
-	for _, b := range cand {
-		ov := overlapLen(a, b)
-		if ov <= 0 {
-			continue
-		}
-		perAln[b.Score] += ov
-	}
-	lenA := a.ChromEnd - a.ChromStart
-	n := 0
-	for idx, totOverlap := range perAln {
-		if idx < 0 || idx >= len(alns) {
-			continue
-		}
-		al := alns[idx]
-		// Strand filter on the parent alignment.
-		if opts.SameStrand {
-			if a.Strand == "" || al.strand == "" || a.Strand != al.strand {
-				continue
-			}
-		}
-		if opts.OppositeStrand {
-			if a.Strand == "" || al.strand == "" || a.Strand == al.strand {
-				continue
-			}
-		}
-		if opts.FractionA > 0 {
-			if al.footprint <= 0 {
-				continue
-			}
-			// Upstream uses strict `>` here, not `>=`.
-			if float64(totOverlap)/float64(al.footprint) <= opts.FractionA {
-				continue
-			}
-			if opts.Reciprocal {
-				if lenA <= 0 {
+		// Aggregate this alignment's total overlap per A interval (keyed by
+		// the A record's Score-encoded index) across all of its blocks.
+		perA := make(map[int]int)
+		aByIdx := make(map[int]*bedpkg.Record)
+		for _, blk := range blocks {
+			for _, a := range t.Query(blk) {
+				ov := overlapLen(a, blk)
+				if ov <= 0 {
 					continue
 				}
-				if float64(totOverlap)/float64(lenA) <= opts.FractionA {
+				perA[a.Score] += ov
+				aByIdx[a.Score] = a
+			}
+		}
+		for idx, totOverlap := range perA {
+			a := aByIdx[idx]
+			// Strand filter on the parent alignment.
+			if opts.SameStrand {
+				if a.Strand == "" || strand == "" || a.Strand != strand {
 					continue
 				}
 			}
+			if opts.OppositeStrand {
+				if a.Strand == "" || strand == "" || a.Strand == strand {
+					continue
+				}
+			}
+			if opts.FractionA > 0 {
+				if footprint <= 0 {
+					continue
+				}
+				// Upstream uses strict `>` here, not `>=`.
+				if float64(totOverlap)/float64(footprint) <= opts.FractionA {
+					continue
+				}
+				if opts.Reciprocal {
+					lenA := a.ChromEnd - a.ChromStart
+					if lenA <= 0 {
+						continue
+					}
+					if float64(totOverlap)/float64(lenA) <= opts.FractionA {
+						continue
+					}
+				}
+			}
+			counts[idx][srcIdx]++
 		}
-		n++
 	}
-	return n
+	return nil
 }
 
 // buildTrees turns a per-chrom record map into per-chrom interval trees,

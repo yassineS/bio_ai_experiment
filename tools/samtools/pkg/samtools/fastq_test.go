@@ -157,6 +157,66 @@ func TestFastqInterleavedOutput(t *testing.T) {
 	}
 }
 
+// TestFastqDefaultConsecutivePairOrder is the parity regression for the
+// emission-order bug: upstream bam2fq groups CONSECUTIVE same-QNAME records
+// and always flushes R1 before R2 (flush_rec writes best[1] then best[2]),
+// even when the second mate appears FIRST in the file. Our default
+// (interleaved-to-output) path must do the same.
+func TestFastqDefaultConsecutivePairOrder(t *testing.T) {
+	// pa's second mate (R2, 0x1|0x80=129) is written BEFORE its first mate
+	// (R1, 0x1|0x40=65). Upstream still emits R1 (@pa/1) before R2 (@pa/2).
+	const sam = `@HD	VN:1.6	SO:queryname
+@SQ	SN:chr1	LN:1000
+pa	129	chr1	200	60	5M	=	100	-100	TGCAT	IIIII
+pa	65	chr1	100	60	5M	=	200	100	ACGTA	IIIII
+`
+	dir := t.TempDir()
+	out := filepath.Join(dir, "all.fq")
+	if _, err := Fastq(strings.NewReader(sam), FastqOptions{OutputPath: out}); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(out)
+	recs := parseFastqRecords(t, string(body))
+	if len(recs) != 2 {
+		t.Fatalf("got %d records, want 2", len(recs))
+	}
+	if recs[0][0] != "@pa/1" || recs[1][0] != "@pa/2" {
+		t.Errorf("consecutive pair order: got [%q, %q], want [@pa/1, @pa/2]",
+			recs[0][0], recs[1][0])
+	}
+}
+
+// TestFastqDefaultNonAdjacentMatesKeepFileOrder verifies that mates which are
+// NOT consecutive are never joined: each emits as a singleton in its original
+// file position (upstream groups only consecutive QNAMEs, so coordinate-sorted
+// separated mates come out in file order, not paired/reordered).
+func TestFastqDefaultNonAdjacentMatesKeepFileOrder(t *testing.T) {
+	// File order: xa/1, xb/1, xa/2, xb/2 — mates separated by the other pair.
+	const sam = `@HD	VN:1.6	SO:coordinate
+@SQ	SN:chr1	LN:1000
+xa	65	chr1	100	60	5M	=	500	100	ACGTA	IIIII
+xb	65	chr1	150	60	5M	=	600	100	CCCCC	IIIII
+xa	129	chr1	500	60	5M	=	100	-100	TGCAT	IIIII
+xb	129	chr1	600	60	5M	=	150	-100	GGGGG	IIIII
+`
+	dir := t.TempDir()
+	out := filepath.Join(dir, "all.fq")
+	if _, err := Fastq(strings.NewReader(sam), FastqOptions{OutputPath: out}); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(out)
+	recs := parseFastqRecords(t, string(body))
+	want := []string{"@xa/1", "@xb/1", "@xa/2", "@xb/2"}
+	if len(recs) != len(want) {
+		t.Fatalf("got %d records, want %d", len(recs), len(want))
+	}
+	for i, w := range want {
+		if recs[i][0] != w {
+			t.Errorf("record %d: got %q, want %q", i, recs[i][0], w)
+		}
+	}
+}
+
 func TestFastqReverseStrandReverseComplement(t *testing.T) {
 	// A single unpaired reverse-strand record. BAM stores SEQ as
 	// revcomp(original), so emitting FASTQ must revcomp it back.
@@ -505,6 +565,75 @@ func TestFastqSingletonOnly(t *testing.T) {
 	// `sing` is the only unpaired record → Singleton count = 1, rest dropped.
 	if counts.Singleton != 1 {
 		t.Errorf("Singleton count: got %d, want 1", counts.Singleton)
+	}
+}
+
+// loneMateSAM has two paired reads whose mates are absent from the file: a
+// lone READ1 (flag 0x1|0x40=65) and a lone READ2 (flag 0x1|0x80=129). Both
+// are forward strand so SEQ is written verbatim.
+const loneMateSAM = `@HD	VN:1.6	SO:queryname
+@SQ	SN:chr1	LN:1000
+loneA	65	chr1	100	60	5M	*	0	0	ACGTA	IIIII
+loneB	129	chr1	200	60	5M	*	0	0	CCCCC	IIIII
+`
+
+// TestFastqLoneMateToReadFiles is the parity test for the lone-mate routing
+// fix: in the -1/-2 split path, a paired read whose mate is absent must be
+// written to its R1/R2 file (upstream bam2fq flush_rec writes fpr[1]/fpr[2]
+// when no -s file is given), not dropped into a nil sink.
+func TestFastqLoneMateToReadFiles(t *testing.T) {
+	dir := t.TempDir()
+	r1 := filepath.Join(dir, "r1.fq")
+	r2 := filepath.Join(dir, "r2.fq")
+	counts, err := Fastq(strings.NewReader(loneMateSAM), FastqOptions{
+		Read1Path: r1,
+		Read2Path: r2,
+	})
+	if err != nil {
+		t.Fatalf("Fastq: %v", err)
+	}
+	if counts.Read1 != 1 {
+		t.Errorf("Read1 count: got %d, want 1 (lone R1 written to R1 file)", counts.Read1)
+	}
+	if counts.Read2 != 1 {
+		t.Errorf("Read2 count: got %d, want 1 (lone R2 written to R2 file)", counts.Read2)
+	}
+	if counts.Dropped != 0 {
+		t.Errorf("Dropped count: got %d, want 0 (lone mates must not be dropped)", counts.Dropped)
+	}
+	if body, _ := os.ReadFile(r1); !strings.Contains(string(body), "@loneA\nACGTA\n") {
+		t.Errorf("R1 file missing lone READ1; got %q", body)
+	}
+	if body, _ := os.ReadFile(r2); !strings.Contains(string(body), "@loneB\nCCCCC\n") {
+		t.Errorf("R2 file missing lone READ2; got %q", body)
+	}
+}
+
+// TestFastqLoneMateToSingleton verifies that when a singleton (-s) file is
+// configured, lone mates are routed there instead of the R1/R2 files —
+// matching upstream bam2fq flush_rec's fpse branch.
+func TestFastqLoneMateToSingleton(t *testing.T) {
+	dir := t.TempDir()
+	r1 := filepath.Join(dir, "r1.fq")
+	r2 := filepath.Join(dir, "r2.fq")
+	sing := filepath.Join(dir, "s.fq")
+	counts, err := Fastq(strings.NewReader(loneMateSAM), FastqOptions{
+		Read1Path:     r1,
+		Read2Path:     r2,
+		SingletonPath: sing,
+	})
+	if err != nil {
+		t.Fatalf("Fastq: %v", err)
+	}
+	if counts.Singleton != 2 {
+		t.Errorf("Singleton count: got %d, want 2 (both lone mates to -s)", counts.Singleton)
+	}
+	if counts.Read1 != 0 || counts.Read2 != 0 {
+		t.Errorf("Read1/Read2 counts: got %d/%d, want 0/0 (lone mates go to -s)", counts.Read1, counts.Read2)
+	}
+	body, _ := os.ReadFile(sing)
+	if !strings.Contains(string(body), "@loneA\n") || !strings.Contains(string(body), "@loneB\n") {
+		t.Errorf("singleton file missing lone mates; got %q", body)
 	}
 }
 

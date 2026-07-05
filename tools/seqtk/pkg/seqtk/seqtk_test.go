@@ -729,6 +729,26 @@ func TestCutN_BasicSplit(t *testing.T) {
 	}
 }
 
+func TestCutN_FastqOutput(t *testing.T) {
+	// FASTQ input must yield FASTQ fragments (upstream print_seq): '@'+header,
+	// sequence, "+", a LEADING BLANK LINE, then the quality sub-slice for that
+	// fragment. The blank line after "+" is an upstream quirk we reproduce
+	// byte-for-byte. Distinct per-base qualities verify the fragment slicing.
+	//   seq  = ACGNNNTGCA  (NNN run at 0-based [3,6))
+	//   qual = ABCDEFGHIJ
+	// Fragments: r1:1-3 (ACG / ABC) and r1:7-10 (TGCA / GHIJ).
+	in := "@r1\nACGNNNTGCA\n+\nABCDEFGHIJ\n"
+	want := "@r1:1-3\nACG\n+\n\nABC\n" + "@r1:7-10\nTGCA\n+\n\nGHIJ\n"
+
+	var buf bytes.Buffer
+	if err := CutN(strings.NewReader(in), &buf, CutNOptions{MinN: 3}); err != nil {
+		t.Fatalf("CutN failed: %v", err)
+	}
+	if got := buf.String(); got != want {
+		t.Errorf("CutN FASTQ output = %q, want %q", got, want)
+	}
+}
+
 func TestCutN_WrapsAt60(t *testing.T) {
 	// A fragment longer than 60 bases must be wrapped at 60, with the column
 	// counter resetting at each fragment start (upstream print_seq's
@@ -824,29 +844,71 @@ func TestCutN_NoCutsRecordUnchanged(t *testing.T) {
 	}
 }
 
-func TestCutN_GapsToStderr(t *testing.T) {
+// TestCutN_GapOnly verifies the upstream `-g` (gap-only) output: only the cut
+// tract coordinates are printed, to the main output, as "name<TAB>start0<TAB>end"
+// with no trailing 'N' column and no sequence records.
+func TestCutN_GapOnly(t *testing.T) {
 	in := ">chr1\nACGNNNTGCANNNNG\n"
-	wantOut := ">chr1:1-3\nACG\n>chr1:7-10\nTGCA\n>chr1:15-15\nG\n"
-	// 0-based half-open BED: NNN at [3,6), NNNN at [10,14).
-	wantGaps := "chr1\t3\t6\tN\nchr1\t10\t14\tN\n"
+	// 0-based half-open gaps: NNN at [3,6), NNNN at [10,14). No sequence.
+	want := "chr1\t3\t6\nchr1\t10\t14\n"
 
-	var out, gaps bytes.Buffer
-	opts := CutNOptions{MinN: 3, EmitGaps: true, GapsW: &gaps}
-	if err := CutN(strings.NewReader(in), &out, opts); err != nil {
+	var out bytes.Buffer
+	if err := CutN(strings.NewReader(in), &out, CutNOptions{MinN: 3, GapOnly: true}); err != nil {
 		t.Fatalf("CutN failed: %v", err)
 	}
-	if got := out.String(); got != wantOut {
-		t.Errorf("CutN stdout = %q, want %q", got, wantOut)
+	if got := out.String(); got != want {
+		t.Errorf("CutN -g output = %q, want %q", got, want)
 	}
-	if got := gaps.String(); got != wantGaps {
-		t.Errorf("CutN gaps = %q, want %q", got, wantGaps)
+}
+
+// TestCutN_GapOnly_LeadingRunSkipped confirms a tract that begins at position 0
+// is dropped (upstream's `if (begin != 0)` guard) and no trailing gap is
+// emitted for the final fragment.
+func TestCutN_GapOnly_LeadingRunSkipped(t *testing.T) {
+	// Leading NNN (begin==0, skipped), internal NNNN gap, then a clean tail.
+	in := ">c\nNNNACGTNNNNACGT\n"
+	// Positions: NNN [0,3) skipped; NNNN [7,11) emitted.
+	want := "c\t7\t11\n"
+
+	var out bytes.Buffer
+	if err := CutN(strings.NewReader(in), &out, CutNOptions{MinN: 3, GapOnly: true}); err != nil {
+		t.Fatalf("CutN failed: %v", err)
+	}
+	if got := out.String(); got != want {
+		t.Errorf("CutN -g leading-run output = %q, want %q", got, want)
+	}
+}
+
+// TestCutN_PenaltyBridging checks the -p scoring: with a low penalty two N
+// tracts separated by a single non-N base are bridged into one cut, whereas the
+// default penalty keeps them separate.
+func TestCutN_PenaltyBridging(t *testing.T) {
+	// NNN A NNN — an internal single non-N between two 3-N runs.
+	in := ">c\nACGTNNNANNNACGT\n"
+	// Layout (0-based): ACGT[0-3] N[4] N[5] N[6] A[7] N[8] N[9] N[10] ACGT[11-14].
+	// With penalty 1 the run bridges the lone A → one gap [4,11).
+	var out bytes.Buffer
+	if err := CutN(strings.NewReader(in), &out, CutNOptions{MinN: 3, Penalty: 1, GapOnly: true}); err != nil {
+		t.Fatalf("CutN -p 1: %v", err)
+	}
+	if got, want := out.String(), "c\t4\t11\n"; got != want {
+		t.Errorf("CutN -p 1 output = %q, want %q (should bridge)", got, want)
+	}
+	// With the default penalty (10) the lone A breaks the run into two gaps.
+	out.Reset()
+	if err := CutN(strings.NewReader(in), &out, CutNOptions{MinN: 3, GapOnly: true}); err != nil {
+		t.Fatalf("CutN default penalty: %v", err)
+	}
+	if got, want := out.String(), "c\t4\t7\nc\t8\t11\n"; got != want {
+		t.Errorf("CutN default-penalty output = %q, want %q (should not bridge)", got, want)
 	}
 }
 
 func TestCutN_FastqInput(t *testing.T) {
-	// FASTQ input is auto-detected by the leading '@'; output is always FASTA.
+	// FASTQ input is auto-detected by the leading '@'; output is FASTQ, matching
+	// upstream print_seq (including the leading blank line after "+").
 	in := "@r1\nACGNNNTGCA\n+\nIIIIIIIIII\n"
-	want := ">r1:1-3\nACG\n>r1:7-10\nTGCA\n"
+	want := "@r1:1-3\nACG\n+\n\nIII\n@r1:7-10\nTGCA\n+\n\nIIII\n"
 
 	var buf bytes.Buffer
 	if err := CutN(strings.NewReader(in), &buf, CutNOptions{MinN: 3}); err != nil {
@@ -855,9 +917,6 @@ func TestCutN_FastqInput(t *testing.T) {
 	got := buf.String()
 	if got != want {
 		t.Errorf("CutN(FASTQ) output = %q, want %q", got, want)
-	}
-	if strings.Contains(got, "@") || strings.Contains(got, "IIII") {
-		t.Errorf("FASTQ header/quality leaked into FASTA output: %q", got)
 	}
 }
 

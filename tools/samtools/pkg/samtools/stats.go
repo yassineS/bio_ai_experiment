@@ -326,6 +326,15 @@ type StatsOptions struct {
 	RefStatsChunk int
 	// Threads is accepted; v1 is single-threaded.
 	Threads int
+	// Argv holds the full command-line argument vector (program name first),
+	// emitted verbatim on the "# The command line was:" header line to match
+	// upstream stats.c:1552-1556. It is env-dependent and normalised away by
+	// the parity harness.
+	Argv []string
+	// Version is the "<samtools-version>+htslib-<htslib-version>" string
+	// embedded in the header banner (upstream stats.c:1545). Like Argv it is
+	// env-dependent and normalised away by the parity harness.
+	Version string
 }
 
 // StatsCounters holds the accumulator state for one stats run.
@@ -2142,6 +2151,9 @@ func parseCoverageBins(spec string) (covMin, covMax, covStep, ncov int) {
 // Write emits the upstream-compatible text report to w.
 func (c *StatsCounters) Write(w io.Writer, opts StatsOptions) error {
 	bw := bufio.NewWriter(w)
+	// Header banner — three leading comment lines ahead of CHK, matching
+	// upstream stats.c:1545-1556.
+	c.writeHeader(bw, opts)
 	// CHK block — emitted first, ahead of SN, matching upstream stats.c:1557.
 	c.writeCHK(bw)
 	// SN block — full upstream parity.
@@ -2318,6 +2330,24 @@ func (c *StatsCounters) writeGCD(bw *bufio.Writer) {
 	}
 }
 
+// writeHeader emits the three leading comment lines of a stats report,
+// matching upstream stats.c:1545-1556:
+//
+//	# This file was produced by samtools stats (<VERSION>+htslib-<HTSVERSION>) and can be plotted using plot-bamstats
+//	# This file contains statistics for all reads.
+//	# The command line was:  <argv joined by single spaces>
+//
+// The banner (line 1) and command-line (line 3) embed the version string and
+// argv, which are environment-dependent and normalised away by the parity
+// harness; line 2 is byte-stable (there is no split-tag support, so it is
+// always the all-reads variant). Note upstream prints TWO spaces after the
+// "was:" colon.
+func (c *StatsCounters) writeHeader(bw *bufio.Writer, opts StatsOptions) {
+	fmt.Fprintf(bw, "# This file was produced by samtools stats (%s) and can be plotted using plot-bamstats\n", opts.Version)
+	fmt.Fprintln(bw, "# This file contains statistics for all reads.")
+	fmt.Fprintf(bw, "# The command line was:  %s\n", strings.Join(opts.Argv, " "))
+}
+
 // writeCHK emits the leading CRC32 checksum block (read names, sequences,
 // qualities), matching upstream stats.c:1557-1559.
 func (c *StatsCounters) writeCHK(bw *bufio.Writer) {
@@ -2396,12 +2426,15 @@ func (c *StatsCounters) writeSN(bw *bufio.Writer, opts StatsOptions) {
 	emit("bases duplicated", c.BasesDuplicated, "")
 	emit("mismatches", c.Mismatches, "# from NM fields")
 	// error rate uses scientific notation, 6-digit precision matching
-	// upstream's `%.6e` printout.
-	errRate := 0.0
+	// upstream's `%e` printout. Upstream computes the ratio in 32-bit float
+	// (`(float)stats->nmismatches/stats->nbases_mapped_cigar`, stats.c:1585),
+	// so the division must be done in float32 to reproduce its rounding
+	// (e.g. 5.000548e-03 rather than the float64 5.000547e-03).
+	var errRate float32
 	if c.BasesMappedCigar > 0 {
-		errRate = float64(c.Mismatches) / float64(c.BasesMappedCigar)
+		errRate = float32(c.Mismatches) / float32(c.BasesMappedCigar)
 	}
-	emit("error rate", fmt.Sprintf("%.6e", errRate), "# mismatches / bases mapped (cigar)")
+	emit("error rate", fmt.Sprintf("%.6e", float64(errRate)), "# mismatches / bases mapped (cigar)")
 	// Average lengths mirror stats.c:1586-1595: each is a 32-bit-float
 	// division of the total length by the read count, formatted with "%.0f"
 	// (round-half-to-even, matching C printf). The denominator is the count of

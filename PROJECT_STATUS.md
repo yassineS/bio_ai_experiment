@@ -64,11 +64,17 @@ a repo-wide packed `sam.Record` migration" theory: the live Go heap is only
 ~20 MB — leaner than upstream's whole 24–31 MB RSS — so up_small's residual is a
 fixed Go-vs-C *runtime* floor (heap arenas/stacks/faidx + BGZF buffers) the
 migration could not move, and it was correctly not pursued (see the roadmap).
-(2) The bayesian consensus `cq` libm last-ULP (`68/10.4M` positions, `cq` column
-only, proximity-parity class): the float-order audit (matched to
+(2) The DEFAULT (gap5 Bayesian) `samtools consensus` libm last-ULP residual,
+proximity-parity class — two facets of the same irreducible Go-math vs
+glibc-libm last-ULP core in the `cp[]` `log`/`pow` seeding. The `cq` quality
+column differs at `68/10.4M` contig-20 positions (`cq` only; every base/seq/qual
+byte otherwise identical), and the base call itself flips at only **~46
+ultra-low-coverage (depth 1-5) homopolymer/STR loci** (13 net differing bases
+over the 64.27 Mb contig). Both are bidirectional ±1 sub-ULP effects, not fixable
+rounding; `consensus --mode simple` is **byte-exact** (md5-locked by
+`TestConsensus_SimpleMode_Deterministic`). The float-order audit (matched to
 `bam_consensus.c`, fixing a latent mixed-mode het-div bug) is structurally
-faithful but provably inert on the cq diffs — the residual is the irreducible
-Go-math vs glibc-libm last-ULP core in the `cp[]` `log`/`pow` seeding.
+faithful but provably inert on these diffs.
 
 Previous wave (2026-06-11, ~70 PRs): `call` modes, `convert` GEN/HAP/TSV,
 `annotate`, `consensus` chain, `mendelian2`, `csq` slices 1–4, mpileup
@@ -198,6 +204,10 @@ them with the upstream tools** so the per-tier inputs never come from the code
 under test (see [`test/nextflow/README.md`](test/nextflow/README.md)).
 `pipeline/cmd/realparity` is the companion real-data samtools/bcftools
 differential parity + performance runner on whole-genome, multi-contig inputs.
+The `pipeline/runner` provenance filter also strips the machine/path-dependent
+`@SQ UR:` field from `dict` / `view -H` output in both the batch and streaming
+paths (commit 8e9b1b8), so cross-machine dictionary comparisons don't false-DIFF
+while every data field still gates.
 
 The earlier **synthetic** combinatorics harness — the `PIPELINE_SCALE`-tiered
 `parity-pipeline` / `full-validation` drivers and the `pipeline/bench`

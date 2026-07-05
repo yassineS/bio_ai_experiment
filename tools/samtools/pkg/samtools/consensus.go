@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/region"
@@ -80,7 +81,17 @@ const consensusTileWidth = 64 * 1024
 // and every recs[readIdx]/bayesReads[readIdx] deref reads the same block-local
 // slice), and reads spanning a block edge are carried into the next block's
 // gather so the indel/overlap context is intact.
-const consensusBlockWidth = 8 * 1024 * 1024 // 128 tiles
+//
+// The width is intentionally SMALL (4 tiles) so the resident read set on the
+// streaming path (consensusFromSortedReader) is ~one block's worth of reads
+// rather than a whole contig's. On real GIAB chr20 the previous 8 MiB block held
+// ~1.1 GB of reads resident at peak; at 256 KiB the peak drops to tens of MB.
+// Because output depends only on the reads overlapping each position (and the
+// width is a whole multiple of consensusTileWidth), shrinking the block is
+// byte-invariant — only the peak RSS and the number of block-edge nmInit
+// recomputes change, and a typical read straddles at most two 256 KiB blocks so
+// the recompute overhead is negligible.
+const consensusBlockWidth = 4 * consensusTileWidth // 256 KiB
 
 // DefaultConsensusMinBaseQ is the upstream samtools consensus `--min-BQ`
 // default (0 — distinct from mpileup's 13).
@@ -336,9 +347,15 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) error {
 	// engine (which defaults to a whole-contig window per contig), instead of
 	// draining every read into per-chrom buckets — the source of the whole-contig
 	// peak RSS (4.8 GiB on a chr20 slice). Output is byte-identical to
-	// consensusFromReader (same records, same order); genuinely-unsorted input
-	// (no SO:coordinate) keeps the buffered path.
-	if len(opts.Regions) == 0 && !opts.AllPositions && !opts.AllContigs && headerIsCoordinateSorted(hdr) {
+	// consensusFromReader (same records, same order). We stream not only literal
+	// SO:coordinate but also SO:unsorted and a missing SO tag (headerConsensusCanStream):
+	// real BAMs (e.g. GIAB chr20) are physically coordinate-sorted yet mis-tagged
+	// SO:unsorted, and the buffered path pins the whole contig's reads in a map
+	// (the RSS blowup). A monotonic-POS guard in the streaming source errors
+	// LOUDLY if the input turns out to be genuinely unsorted, so this relaxation
+	// never silently mis-emits. SO:queryname (and other non-coordinate tags) still
+	// take the buffered path, which sorts each contig.
+	if len(opts.Regions) == 0 && !opts.AllPositions && !opts.AllContigs && headerConsensusCanStream(hdr) {
 		return consensusFromSortedReader(rd, hdr, out, opts)
 	}
 	return consensusFromReader(rd, hdr, out, opts)
@@ -537,8 +554,17 @@ func consensusFromSortedReader(rd sam.Reader, hdr *sam.Header, out io.Writer, op
 		return fmt.Errorf("samtools consensus: %w", err)
 	}
 
+	// seenChroms detects a contig that reappears after we have already finished
+	// it — another signature of genuinely-unsorted input, since a coordinate-sorted
+	// stream visits each contig exactly once as one contiguous run.
+	seenChroms := map[string]struct{}{}
+
 	for carry != nil {
 		chrom := carry.RName
+		if _, dup := seenChroms[chrom]; dup {
+			return errConsensusUnsorted(chrom, carry.Pos)
+		}
+		seenChroms[chrom] = struct{}{}
 		refLen := int(refLengthForName(hdr, chrom))
 
 		var windows [][2]int
@@ -566,7 +592,7 @@ func consensusFromSortedReader(rd sam.Reader, hdr *sam.Header, out io.Writer, op
 		if len(windows) <= 1 {
 			src := &streamRecSource{
 				rd: rd, hdr: hdr, opts: mpopts, chrom: chrom,
-				pending: first, primed: true, carryOut: &carry,
+				pending: first, primed: true, lastPos: first.Pos, carryOut: &carry,
 			}
 			if err := emitConsensusContig(bw, chrom, refLen, windows, src, posFilter, ref, opts); err != nil {
 				return err
@@ -591,6 +617,16 @@ func consensusFromSortedReader(rd sam.Reader, hdr *sam.Header, out io.Writer, op
 	return nil
 }
 
+// errConsensusUnsorted reports that the input is not in coordinate order at the
+// given 1-based position. The streaming consensus engine (entered for
+// SO:coordinate / SO:unsorted / missing-SO headers) requires coordinate-sorted
+// input; upstream `samtools consensus` does too. Rather than silently emit a
+// wrong consensus when a mis-tagged BAM turns out to be genuinely unsorted, we
+// fail loudly with this.
+func errConsensusUnsorted(chrom string, pos1 int64) error {
+	return fmt.Errorf("input is not coordinate-sorted at %s:%d (sort the input, e.g. `samtools sort`)", chrom, pos1)
+}
+
 // drainConsensusContig reads every remaining kept record for chrom from rd
 // (starting with first, already known to belong to chrom), returning them as a
 // slice. The first record of the NEXT contig is stored through carryOut so the
@@ -599,6 +635,7 @@ func consensusFromSortedReader(rd sam.Reader, hdr *sam.Header, out io.Writer, op
 func drainConsensusContig(rd sam.Reader, hdr *sam.Header, mpopts MpileupOptions,
 	chrom string, first *sam.Record, carryOut **sam.Record) ([]*sam.Record, error) {
 	recs := []*sam.Record{first}
+	lastPos := first.Pos
 	for {
 		rec, err := rd.Read()
 		if err == io.EOF {
@@ -614,6 +651,14 @@ func drainConsensusContig(rd sam.Reader, hdr *sam.Header, mpopts MpileupOptions,
 			*carryOut = rec
 			return recs, nil
 		}
+		// Monotonic-POS guard: coordinate-sorted input never steps backwards
+		// within a contig. A real backwards step means the input is genuinely
+		// unsorted (only reachable now that SO:unsorted / missing-SO route here),
+		// so fail loudly instead of mis-emitting.
+		if rec.Pos < lastPos {
+			return recs, errConsensusUnsorted(chrom, rec.Pos)
+		}
+		lastPos = rec.Pos
 		recs = append(recs, rec)
 	}
 }
@@ -903,6 +948,10 @@ type recSource interface {
 	// rewind is a no-op (used only for single-window contigs, where rewind is
 	// never needed after records have been consumed).
 	rewind()
+	// pullErr returns any error raised while pulling records (e.g. the streaming
+	// source's monotonic-POS guard tripping on genuinely-unsorted input, or an
+	// underlying read failure). The buffered source never errors here.
+	pullErr() error
 }
 
 // sliceRecSource is a recSource over a pre-buffered, Pos-sorted per-contig
@@ -927,6 +976,10 @@ func (s *sliceRecSource) nextStarter(limit int) *sam.Record {
 
 func (s *sliceRecSource) rewind() { s.idx = 0 }
 
+// pullErr never errors: the buffered slice is validated up front (drainConsensusContig
+// applies the monotonic-POS guard before buffering).
+func (s *sliceRecSource) pullErr() error { return nil }
+
 // streamRecSource is a recSource over a coordinate-sorted sam.Reader scoped to
 // a single contig. It pulls records on demand (with a one-record lookahead),
 // applies the consensus record filter, and stops at the contig boundary so the
@@ -939,7 +992,8 @@ type streamRecSource struct {
 	chrom   string
 	pending *sam.Record // lookahead: the next kept record for this contig
 	primed  bool
-	done    bool // contig boundary reached (or reader EOF)
+	done    bool  // contig boundary reached (or reader EOF)
+	lastPos int64 // 1-based Pos of the last kept record on this contig (monotonic guard)
 	err     error
 	// carryOut receives the first record of the NEXT contig (read past this
 	// contig's boundary) so consensusFromSortedReader can hand it to the next
@@ -976,6 +1030,16 @@ func (s *streamRecSource) prime() {
 			s.done = true
 			return
 		}
+		// Monotonic-POS guard: a coordinate-sorted stream never steps backwards
+		// within a contig. A real backwards step means the input is genuinely
+		// unsorted (now reachable because SO:unsorted / missing-SO route here), so
+		// stop the stream and surface the error via err() rather than mis-emitting.
+		if rec.Pos < s.lastPos {
+			s.err = errConsensusUnsorted(s.chrom, rec.Pos)
+			s.done = true
+			return
+		}
+		s.lastPos = rec.Pos
 		s.pending = rec
 		s.primed = true
 		return
@@ -1000,6 +1064,10 @@ func (s *streamRecSource) rewind() {
 	// Single-pass: a streamRecSource is only ever used for a single-window
 	// contig, so rewind is never called after a record has been consumed.
 }
+
+// pullErr surfaces the monotonic-POS guard tripping (or an underlying read
+// failure) so emitConsensusContig can abort before emitting the offending block.
+func (s *streamRecSource) pullErr() error { return s.err }
 
 // drainRest consumes any remaining records of this contig (a region whose end
 // is before the contig length leaves reads past the window unconsumed) so the
@@ -1039,6 +1107,29 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 	// (uncovered ones as 'N') so internal gaps are filled, then leading
 	// and trailing N runs are trimmed unless -a is set.
 	var seqBuf, qualBuf []byte
+	emitQual := opts.Format == ConsensusFASTQ
+	if opts.Format != ConsensusPileup {
+		var span int
+		for _, w := range windows {
+			e := w[1]
+			if e > refLen {
+				e = refLen
+			}
+			b := w[0]
+			if b < 0 {
+				b = 0
+			}
+			if e > b {
+				span += e - b
+			}
+		}
+		if span > 0 {
+			seqBuf = make([]byte, 0, span)
+			if emitQual {
+				qualBuf = make([]byte, 0, span)
+			}
+		}
+	}
 	firstCovIdx, lastCovIdx := -1, -1
 
 	// gapRunStart marks the seqBuf index at which the current contiguous run of
@@ -1157,6 +1248,14 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 				}
 			}
 			carry = nextCarry
+
+			// If the streaming source tripped its monotonic-POS guard while
+			// gathering this block (genuinely-unsorted input), abort now — before
+			// emitting this block's tiles — so we never write a wrong consensus for
+			// the unsorted region.
+			if e := src.pullErr(); e != nil {
+				return e
+			}
 
 			// For bayesian mode, build the per-read NM-halo state for just this
 			// block's reads (indexed parallel to blockRecs). This MUST run before
@@ -1345,10 +1444,14 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 							}
 							if ref != nil {
 								seqBuf = append(seqBuf, ref.base(chrom, pos0))
-								qualBuf = append(qualBuf, byte(opts.RefQual)+'!')
+								if emitQual {
+									qualBuf = append(qualBuf, byte(opts.RefQual)+'!')
+								}
 							} else {
 								seqBuf = append(seqBuf, 'N')
-								qualBuf = append(qualBuf, '!')
+								if emitQual {
+									qualBuf = append(qualBuf, '!')
+								}
 							}
 							continue
 						}
@@ -1367,7 +1470,9 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 							// swallow, so it ends any gap run rather than extending it.
 							gapRunStart = -1
 							seqBuf = append(seqBuf, 'N')
-							qualBuf = append(qualBuf, '!')
+							if emitQual {
+								qualBuf = append(qualBuf, '!')
+							}
 							continue
 						}
 						// Emit the reference (nth==0) base unless it is a
@@ -1389,7 +1494,9 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 							// the '*' exactly as upstream does, with no rollback.
 							if gapRunStart >= 0 {
 								seqBuf = seqBuf[:gapRunStart]
-								qualBuf = qualBuf[:gapRunStart]
+								if emitQual {
+									qualBuf = qualBuf[:gapRunStart]
+								}
 								gapRunStart = -1
 							}
 						} else {
@@ -1401,7 +1508,9 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 								firstCovIdx = len(seqBuf)
 							}
 							seqBuf = append(seqBuf, call.base)
-							qualBuf = append(qualBuf, phredByte(call.qual))
+							if emitQual {
+								qualBuf = append(qualBuf, phredByte(call.qual))
+							}
 							lastCovIdx = len(seqBuf)
 						}
 						if !opts.NoShowIns {
@@ -1430,10 +1539,14 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 								}
 								if opts.MarkIns {
 									seqBuf = append(seqBuf, '_')
-									qualBuf = append(qualBuf, '_')
+									if emitQual {
+										qualBuf = append(qualBuf, '_')
+									}
 								}
 								seqBuf = append(seqBuf, cb)
-								qualBuf = append(qualBuf, phredByte(ic.call.qual))
+								if emitQual {
+									qualBuf = append(qualBuf, phredByte(ic.call.qual))
+								}
 								lastCovIdx = len(seqBuf)
 							}
 						}
@@ -1477,7 +1590,9 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 				return nil
 			}
 			seqBuf = seqBuf[firstCovIdx:lastCovIdx]
-			qualBuf = qualBuf[firstCovIdx:lastCovIdx]
+			if emitQual {
+				qualBuf = qualBuf[firstCovIdx:lastCovIdx]
+			}
 		}
 		if len(seqBuf) == 0 && !opts.AllContigs {
 			return nil
@@ -1488,14 +1603,21 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 		// bam_consensus.c:2636-2658).
 		if len(seqBuf) == 0 && opts.AllContigs {
 			seqBuf = make([]byte, refLen)
-			qualBuf = make([]byte, refLen)
+			if emitQual {
+				qualBuf = make([]byte, refLen)
+			}
 			for i := range seqBuf {
 				if ref != nil {
 					seqBuf[i] = ref.base(chrom, i)
-					qualBuf[i] = byte(opts.RefQual) + '!'
 				} else {
 					seqBuf[i] = 'N'
-					qualBuf[i] = '!'
+				}
+				if emitQual {
+					if ref != nil {
+						qualBuf[i] = byte(opts.RefQual) + '!'
+					} else {
+						qualBuf[i] = '!'
+					}
 				}
 			}
 		}
@@ -1724,10 +1846,25 @@ func callConsensus(evs []pileupEvent, opts ConsensusOptions) (consensusCall, int
 // The returned base is 0 (and depth 0) when the column has no usable
 // coverage so the FASTA/FASTQ caller treats it as a skip, matching the
 // simple path.
+// bayesBasesPool recycles the per-column bayesPileupBase scratch slice built
+// by callConsensusBayesian / callConsensusBayesianInsertions. The slice is
+// read-only inside calculateConsensusGap5m and never retained past the call,
+// so reusing one backing array across the ~64 M columns of a contig replaces
+// what was the single largest consensus allocator (a fresh slice per column)
+// with a pooled reuse. Byte-inert: the caller repopulates every element.
+var bayesBasesPool = sync.Pool{
+	New: func() any {
+		s := make([]bayesPileupBase, 0, 256)
+		return &s
+	},
+}
+
 func callConsensusBayesian(evs []pileupEvent, recs []*sam.Record,
 	bayesReads []*bayesRead, o bayesOptions, ps bayesProbSet) (consensusCall, int) {
 
-	bases := make([]bayesPileupBase, 0, len(evs))
+	basesPtr := bayesBasesPool.Get().(*[]bayesPileupBase)
+	bases := (*basesPtr)[:0]
+	defer func() { *basesPtr = bases; bayesBasesPool.Put(basesPtr) }()
 	td := 0
 	for _, e := range evs {
 		if e.dropped {
@@ -1839,16 +1976,51 @@ type bayesInsertionColumn struct {
 	qual  []byte // per-read qual bytes (Phred+33)
 }
 
-// callConsensusBayesianInsertions builds the nth>0 insertion columns for a
-// reference column and runs the bayesian caller on each. A read in the base
-// column participates only when it survives into the insertion column (see
-// spansInsertionColumn): a read with an nth inserted base contributes it,
-// any other surviving read contributes a '*' pad — matching upstream's
-// pileup engine, which pads non-inserting reads but drops reads that end at
-// the reference position. pos1 is the 1-based reference position.
-func callConsensusBayesianInsertions(evs []pileupEvent, recs []*sam.Record,
-	bayesReads []*bayesRead, o bayesOptions, ps bayesProbSet, pos1 int) []bayesInsertionColumn {
+// insertionColumnCell is one spanning read's contribution to an nth>0
+// insertion column, after upstream's stateful pileup pre-pass has been
+// replayed (consensus_pileup.c:180-228). The '*'/'#' pad quality here is the
+// running minimum carried across nth columns, not the raw post-column base
+// quality — the property both insertion builders (simple and bayesian) must
+// share to stay byte-identical with each other and upstream.
+type insertionColumnCell struct {
+	readIdx   int32
+	mapq      uint8
+	isReverse bool
+	inserted  bool // true: the read's nth inserted base; false: a '*'/'#' pad
+	base      byte // the inserted base (uppercase); valid only when inserted
+	base4     byte // sam nt16 code (16 for a pad)
+	seqByte   byte // displayed pileup seq byte: base(upper/lower) or '*'/'#'
+	qual      byte // running-min Phred quality (no +33)
+	seqOff    int  // pinned/carried 0-based query offset (upstream p->seq_offset)
+}
 
+// buildInsertionColumnCells replays upstream's stateful pileup engine
+// (consensus_pileup.c:180-228) across the nth>0 insertion columns following
+// reference position pos1, returning one slice of per-read cells per inserted
+// column. A read participates only when it survives into the insertion column
+// (see spansInsertionColumn): a read with an nth inserted base contributes it;
+// any other surviving read contributes a '*' pad — matching upstream's pileup
+// engine, which pads non-inserting reads but drops reads that end at the
+// reference position.
+//
+// The per-read '*'/'#' pad quality is the STATEFUL running minimum
+// MIN(p->qual, b_qual[seq_offset+1]) (else 0 out of range) carried across nth
+// columns with seq_offset pinned at the read's last consumed base. It is:
+//   - seeded from the aligned-base quality with seq_offset = readBP-1 for a
+//     read entering on an M/=/X base (upstream nth==0 default arm),
+//   - seeded from the deletion running-min delPileupQual-1 with the PRE-gap
+//     seq_offset = readBP-2 for a read entering inside a deletion run (upstream
+//     never advances seq_offset over a D op and p->qual already holds
+//     MIN(pre-gap,post-gap) from the BAM_CDEL arm); delPileupQual==0 means a
+//     deletion at read start (no pre-gap base) where seq_offset = -1 and the
+//     first pad still MINs against b_qual[0],
+//   - re-seeded to the inserted base's quality and offset whenever a read
+//     contributes an inserted base (upstream CINS arm at :224-228).
+//
+// Both callConsensusSimpleInsertions and callConsensusBayesianInsertions
+// consume these cells, so the pad quality that feeds the synthesised call
+// (and hence the insertion cq) is identical in both modes and with upstream.
+func buildInsertionColumnCells(evs []pileupEvent, recs []*sam.Record, pos1 int) [][]insertionColumnCell {
 	// Stable order so the per-read seq/qual columns match upstream.
 	sortEvents(evs)
 
@@ -1865,12 +2037,33 @@ func callConsensusBayesianInsertions(evs []pileupEvent, recs []*sam.Record,
 		return nil
 	}
 
-	cols := make([]bayesInsertionColumn, maxIns)
+	// Per-read carried running-minimum quality and pinned sequence offset,
+	// mirroring upstream's stateful p->qual / p->seq_offset across nth columns.
+	carriedQual := make(map[int32]byte, len(evs))
+	carriedOff := make(map[int32]int, len(evs))
+	for _, e := range evs {
+		if e.dropped || e.kind == pileupEventRefSkip {
+			continue
+		}
+		if !spansInsertionColumn(e, recs, pos1) {
+			continue
+		}
+		if e.kind == pileupEventDel {
+			q := e.qual
+			if e.delPileupQual != 0 {
+				q = e.delPileupQual - 1
+			}
+			carriedQual[e.readIdx] = q
+			carriedOff[e.readIdx] = int(e.readBP) - 2
+			continue
+		}
+		carriedQual[e.readIdx] = e.qual
+		carriedOff[e.readIdx] = int(e.readBP) - 1
+	}
+
+	cols := make([][]insertionColumnCell, maxIns)
 	for nth := 1; nth <= maxIns; nth++ {
-		bases := make([]bayesPileupBase, 0, len(evs))
-		seq := make([]byte, 0, len(evs))
-		qual := make([]byte, 0, len(evs))
-		td := 0
+		cells := make([]insertionColumnCell, 0, len(evs))
 		for _, e := range evs {
 			if e.dropped || e.kind == pileupEventRefSkip {
 				continue
@@ -1878,69 +2071,111 @@ func callConsensusBayesianInsertions(evs []pileupEvent, recs []*sam.Record,
 			if !spansInsertionColumn(e, recs, pos1) {
 				continue
 			}
+			var rec *sam.Record
+			if e.readIdx >= 0 && int(e.readIdx) < len(recs) {
+				rec = recs[e.readIdx]
+			}
+			cell := insertionColumnCell{
+				readIdx:   e.readIdx,
+				mapq:      e.mapq,
+				isReverse: e.isReverse,
+			}
+			if e.kind == pileupEventBase && nth <= len(e.insAfter) {
+				ib := upper(e.insAfter[nth-1])
+				// The nth inserted base sits at query offset
+				// (readBP-1)+nth in the read's SEQ.
+				seqOff := int(e.readBP) - 1 + nth
+				var q byte
+				if rec != nil && seqOff >= 0 && seqOff < len(rec.Qual) {
+					q = rec.Qual[seqOff]
+				}
+				cell.inserted = true
+				cell.base = ib
+				cell.base4 = byte(baseToSeqi(ib))
+				cell.qual = q
+				cell.seqOff = seqOff
+				cell.seqByte = ib
+				if e.isReverse {
+					cell.seqByte = lower(ib)
+				}
+				// Re-seed carried state to the inserted base so a later pad
+				// column (a nth where this read no longer inserts) runs its
+				// MIN against the inserted base, not the M-base.
+				carriedQual[e.readIdx] = q
+				carriedOff[e.readIdx] = seqOff
+			} else {
+				// Pad: '*'/'#' deletion placeholder. Carry the stateful
+				// running minimum MIN(p->qual, b_qual[seq_offset+1]) while
+				// seq_offset < l_qseq, else 0, with seq_offset pinned.
+				carried := carriedQual[e.readIdx]
+				off := carriedOff[e.readIdx]
+				if rec != nil && off < len(rec.Qual) {
+					next := byte(0)
+					if off+1 >= 0 && off+1 < len(rec.Qual) {
+						next = rec.Qual[off+1]
+					}
+					if next < carried {
+						carried = next
+					}
+				} else {
+					carried = 0
+				}
+				carriedQual[e.readIdx] = carried
+				cell.base4 = 16
+				cell.qual = carried
+				cell.seqOff = off
+				cell.seqByte = '*'
+				if e.isReverse {
+					cell.seqByte = '#'
+				}
+			}
+			cells = append(cells, cell)
+		}
+		cols[nth-1] = cells
+	}
+	return cols
+}
+
+// callConsensusBayesianInsertions builds the nth>0 insertion columns for a
+// reference column and runs the bayesian caller on each, consuming the shared
+// stateful pre-pass in buildInsertionColumnCells so the per-read pad quality
+// (which feeds the insertion cq) matches the simple builder and upstream.
+// pos1 is the 1-based reference position.
+func callConsensusBayesianInsertions(evs []pileupEvent, recs []*sam.Record,
+	bayesReads []*bayesRead, o bayesOptions, ps bayesProbSet, pos1 int) []bayesInsertionColumn {
+
+	colCells := buildInsertionColumnCells(evs, recs, pos1)
+	if colCells == nil {
+		return nil
+	}
+
+	cols := make([]bayesInsertionColumn, len(colCells))
+	basesPtr := bayesBasesPool.Get().(*[]bayesPileupBase)
+	defer func() { bayesBasesPool.Put(basesPtr) }()
+	for i, cells := range colCells {
+		bases := (*basesPtr)[:0]
+		seq := make([]byte, 0, len(cells))
+		qual := make([]byte, 0, len(cells))
+		td := 0
+		for _, c := range cells {
 			var bp bayesPileupBase
-			bp.mapQ = e.mapq
-			readIdx := int(e.readIdx)
+			bp.mapQ = c.mapq
+			readIdx := int(c.readIdx)
 			if readIdx >= 0 && readIdx < len(bayesReads) {
 				bp.read = bayesReads[readIdx]
 			}
-			var b byte = '*'
-			var q byte
-			if e.kind == pileupEventBase && nth <= len(e.insAfter) {
-				ib := upper(e.insAfter[nth-1])
-				bp.base4 = byte(baseToSeqi(ib))
-				// The nth inserted base sits at query offset
-				// (readBP-1)+nth in the read's SEQ.
-				bp.seqOff = int(e.readBP) - 1 + nth
-				var rec *sam.Record
-				if readIdx >= 0 && readIdx < len(recs) {
-					rec = recs[readIdx]
-				}
-				if rec != nil && bp.seqOff >= 0 && bp.seqOff < len(rec.Qual) {
-					q = rec.Qual[bp.seqOff]
-				}
-				bp.qual = q
-				b = ib
-				if e.isReverse {
-					b = lower(b)
-				}
-			} else {
-				// Pad: '*' base. Upstream's pileup engine carries the
-				// read's current base quality and position into the
-				// insertion column for non-inserting reads, running a
-				// minimum against the base AFTER the insertion point —
-				// consensus_pileup.c:188-189 does
-				//   p->qual = MIN(p->qual, p->b_qual[p->seq_offset+1]).
-				// e.qual alone is only the raw post-column base quality, so
-				// without this running MIN the '*' pad quality sits above
-				// upstream's (the same running-min the #57 deletion pad
-				// path applies). Guarded by seqOff+1 being in range; when
-				// out of range we keep e.qual (upstream's edge case).
-				bp.base4 = 16
-				bp.seqOff = int(e.readBP) - 1
-				q = e.qual
-				var rec *sam.Record
-				if readIdx >= 0 && readIdx < len(recs) {
-					rec = recs[readIdx]
-				}
-				if rec != nil && bp.seqOff+1 >= 0 && bp.seqOff+1 < len(rec.Qual) {
-					if nq := rec.Qual[bp.seqOff+1]; nq < q {
-						q = nq
-					}
-				}
-				bp.qual = q
-				if e.isReverse {
-					b = '#'
-				}
-			}
+			bp.base4 = c.base4
+			bp.qual = c.qual
+			bp.seqOff = c.seqOff
 			bases = append(bases, bp)
-			seq = append(seq, b)
-			qual = append(qual, q+33)
+			seq = append(seq, c.seqByte)
+			qual = append(qual, c.qual+33)
 			td++
 		}
+		*basesPtr = bases
 		cons := calculateConsensusGap5m(bases, o.useMQual, td, o, ps)
 		cb, cq := bayesCallToBase(cons, o)
-		cols[nth-1] = bayesInsertionColumn{
+		cols[i] = bayesInsertionColumn{
 			call:  consensusCall{base: cb, qual: cq, depth: cons.depth},
 			depth: td,
 			seq:   seq,
@@ -1966,151 +2201,36 @@ func callConsensusBayesianInsertions(evs []pileupEvent, recs []*sam.Record,
 func callConsensusSimpleInsertions(evs []pileupEvent, recs []*sam.Record,
 	pos1 int, opts ConsensusOptions) []bayesInsertionColumn {
 
-	// Stable order so the per-read seq/qual columns match upstream.
-	sortEvents(evs)
-
-	maxIns := 0
-	for _, e := range evs {
-		if e.dropped || e.kind != pileupEventBase {
-			continue
-		}
-		if len(e.insAfter) > maxIns {
-			maxIns = len(e.insAfter)
-		}
-	}
-	if maxIns == 0 {
+	colCells := buildInsertionColumnCells(evs, recs, pos1)
+	if colCells == nil {
 		return nil
 	}
 
-	// Per-read carried running-minimum quality and pinned sequence offset,
-	// mirroring upstream's stateful p->qual / p->seq_offset across nth columns
-	// (consensus_pileup.c:180-211). Keyed by the read's index in the per-base
-	// event list. carriedQual[i] holds the running value entering the next nth
-	// column; carriedOff[i] is the read's last-consumed base index (seq_offset).
-	//
-	// For an aligned base column (pileupEventBase) the seed is upstream's
-	// nth==0 default arm: p->qual = b_qual[seq_offset] (== e.qual) and
-	// seq_offset = readBP-1 (the query index of the displayed base).
-	//
-	// For a deletion column (pileupEventDel) the read enters the insertion
-	// pad already inside a D run, so its upstream state is NOT the post-gap
-	// base: p->qual already holds the running minimum MIN(pre-gap, post-gap)
-	// computed in the BAM_CDEL arm (consensus_pileup.c:195-202), and
-	// seq_offset stays PINNED at the pre-gap base for the whole D run — it is
-	// never advanced by a deletion op (consensus_pileup.c:118-122). Seeding
-	// carriedQual from the raw e.qual (post-gap base only) and carriedOff from
-	// readBP-1 (the POST-gap query index) made the first pad column read
-	// b_qual[seq_offset+1] one base too far past the post-gap base, dragging
-	// the '*' pad quality below upstream's. The deletion event's delPileupQual
-	// (value+1) is exactly upstream's running min, and its readBP is
-	// (post-gap query index)+1, so the pre-gap seq_offset is readBP-2. When
-	// delPileupQual is 0 (a deletion at read start, no pre-gap base) we fall
-	// back to e.qual and readBP-2 == -1, matching upstream's read-start edge
-	// where the first pad still MINs against the post-gap base b_qual[0].
-	carriedQual := make(map[int32]byte, len(evs))
-	carriedOff := make(map[int32]int, len(evs))
-	for _, e := range evs {
-		if e.dropped || e.kind == pileupEventRefSkip {
-			continue
-		}
-		if !spansInsertionColumn(e, recs, pos1) {
-			continue
-		}
-		if e.kind == pileupEventDel {
-			q := e.qual
-			if e.delPileupQual != 0 {
-				q = e.delPileupQual - 1
-			}
-			carriedQual[e.readIdx] = q
-			carriedOff[e.readIdx] = int(e.readBP) - 2
-			continue
-		}
-		carriedQual[e.readIdx] = e.qual
-		carriedOff[e.readIdx] = int(e.readBP) - 1
-	}
-
-	cols := make([]bayesInsertionColumn, maxIns)
-	for nth := 1; nth <= maxIns; nth++ {
-		colEvs := make([]pileupEvent, 0, len(evs))
-		seq := make([]byte, 0, len(evs))
-		qual := make([]byte, 0, len(evs))
+	cols := make([]bayesInsertionColumn, len(colCells))
+	for i, cells := range colCells {
+		colEvs := make([]pileupEvent, 0, len(cells))
+		seq := make([]byte, 0, len(cells))
+		qual := make([]byte, 0, len(cells))
 		td := 0
-		for _, e := range evs {
-			if e.dropped || e.kind == pileupEventRefSkip {
-				continue
-			}
-			if !spansInsertionColumn(e, recs, pos1) {
-				continue
-			}
+		for _, c := range cells {
 			var ce pileupEvent
-			ce.readIdx = e.readIdx
-			ce.mapq = e.mapq
-			ce.isReverse = e.isReverse
-			var rec *sam.Record
-			if e.readIdx >= 0 && int(e.readIdx) < len(recs) {
-				rec = recs[e.readIdx]
-			}
-			var b byte = '*'
-			var q byte
-			if e.kind == pileupEventBase && nth <= len(e.insAfter) {
-				ib := upper(e.insAfter[nth-1])
+			ce.readIdx = c.readIdx
+			ce.mapq = c.mapq
+			ce.isReverse = c.isReverse
+			ce.qual = c.qual
+			if c.inserted {
 				ce.kind = pileupEventBase
-				ce.base = ib
-				// The nth inserted base sits at query offset
-				// (readBP-1)+nth in the read's SEQ.
-				seqOff := int(e.readBP) - 1 + nth
-				if rec != nil && seqOff >= 0 && seqOff < len(rec.Qual) {
-					q = rec.Qual[seqOff]
-				}
-				ce.qual = q
-				b = ib
-				if e.isReverse {
-					b = lower(b)
-				}
-				// Upstream's CINS branch increments seq_offset and re-bases
-				// p->qual to the inserted base's quality (the default arm at
-				// consensus_pileup.c:224-228). Re-seed the carried state so a
-				// later pad column (nth where this read no longer inserts)
-				// runs its MIN against the inserted base, not the M-base.
-				carriedQual[e.readIdx] = q
-				carriedOff[e.readIdx] = seqOff
+				ce.base = c.base
 			} else {
-				// Pad: '*' deletion placeholder. Upstream's pileup engine
-				// (consensus_pileup.c:183-191, the p->nth < nth && op != CINS
-				// branch) carries a STATEFUL running minimum quality across the
-				// insertion columns: p->qual = MIN(p->qual, b_qual[seq_offset+1])
-				// while seq_offset < l_qseq, else 0, with seq_offset pinned at
-				// the read's last consumed base. e.qual alone is only the
-				// nth==0 base column seed, so without the running MIN the pad
-				// '*' qual is >= upstream. Reproduce the carried MIN here.
 				ce.kind = pileupEventDel
-				carried := carriedQual[e.readIdx]
-				off := carriedOff[e.readIdx]
-				if rec != nil && off < len(rec.Qual) {
-					next := byte(0)
-					if off+1 >= 0 && off+1 < len(rec.Qual) {
-						next = rec.Qual[off+1]
-					}
-					if next < carried {
-						carried = next
-					}
-				} else {
-					carried = 0
-				}
-				carriedQual[e.readIdx] = carried
-				q = carried
-				ce.qual = q
-				if e.isReverse {
-					b = '#'
-				}
 			}
 			colEvs = append(colEvs, ce)
-			seq = append(seq, b)
-			qual = append(qual, q+33)
+			seq = append(seq, c.seqByte)
+			qual = append(qual, c.qual+33)
 			td++
 		}
 		call, _ := callConsensus(colEvs, opts)
-		cols[nth-1] = bayesInsertionColumn{
+		cols[i] = bayesInsertionColumn{
 			call:  call,
 			depth: td,
 			seq:   seq,
