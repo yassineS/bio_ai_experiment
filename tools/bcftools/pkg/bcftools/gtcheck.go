@@ -471,15 +471,6 @@ func runGtcheck(
 		opts.Targets = append(opts.Targets, extra...)
 	}
 
-	if err := rejectMultiAllelic(varsQ, "query"); err != nil {
-		return GtcheckResult{}, err
-	}
-	if !crossCheck {
-		if err := rejectMultiAllelic(varsG, "panel"); err != nil {
-			return GtcheckResult{}, err
-		}
-	}
-
 	qSamples := selectSamples(hdrQ.Samples, opts.SamplesQry)
 	gSamples := qSamples
 	if !crossCheck {
@@ -580,9 +571,17 @@ func runGtcheck(
 				stats.skipNoMatch++
 				continue
 			}
-			if err := rejectIfMultiAllelic(gv, "panel"); err != nil {
-				return GtcheckResult{}, err
-			}
+		}
+
+		// Skip multi-allelic sites, mirroring upstream is_input_okay()'s
+		// `n_allele>2` check (vcfgtcheck.c:1162): if any reader's record
+		// carries more than one ALT allele the site is counted in
+		// sites-skipped-multiallelic and skipped (upstream exits 0 and
+		// merely advises `bcftools norm -m -`, it does not error). This
+		// check runs BEFORE the monoallelic check to match upstream order.
+		if isMultiAllelic(qv) || (!crossCheck && isMultiAllelic(gv)) {
+			stats.skipNotBA++
+			continue
 		}
 
 		// Skip monoallelic (no-ALT) sites unless --keep-refs, mirroring
@@ -1144,28 +1143,22 @@ func validateUseTag(tag string) error {
 	return err
 }
 
-// rejectMultiAllelic mirrors upstream's input-shape check.
-func rejectMultiAllelic(vars []*vcf.Variant, label string) error {
-	for _, v := range vars {
-		if err := rejectIfMultiAllelic(v, label); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// rejectIfMultiAllelic enforces the biallelic input constraint.
-func rejectIfMultiAllelic(v *vcf.Variant, label string) error {
+// isMultiAllelic reports whether the record carries more than one ALT
+// allele, mirroring upstream is_input_okay()'s `n_allele>2` check
+// (vcfgtcheck.c:1162; n_allele counts REF+ALTs, so >2 means >1 ALT).
+// Such sites are skipped and counted in sites-skipped-multiallelic
+// rather than treated as a fatal error.
+func isMultiAllelic(v *vcf.Variant) bool {
 	if v == nil {
-		return nil
+		return false
 	}
 	if len(v.Alt) > 1 {
-		return fmt.Errorf("bcftools gtcheck: multi-allelic %s record at %s:%d has %d ALT alleles; run `bcftools norm -m -` first", label, v.Chrom, v.Pos, len(v.Alt))
+		return true
 	}
 	if len(v.Alt) == 1 && strings.Contains(v.Alt[0], ",") {
-		return fmt.Errorf("bcftools gtcheck: multi-allelic %s record at %s:%d; run `bcftools norm -m -` first", label, v.Chrom, v.Pos)
+		return true
 	}
-	return nil
+	return false
 }
 
 // isMonoallelic reports whether the record has no usable ALT allele

@@ -369,9 +369,12 @@ func TestGtcheck_RegionFilterIsolated(t *testing.T) {
 	}
 }
 
-// TestGtcheck_MultiAllelicRejected mirrors upstream's biallelic input
-// requirement.
-func TestGtcheck_MultiAllelicRejected(t *testing.T) {
+// TestGtcheck_MultiAllelicSkipped mirrors upstream's per-record
+// multi-allelic handling: a multi-allelic site is skipped (counted in
+// sites-skipped-multiallelic) rather than treated as a fatal error, and the
+// run exits 0. Upstream advises `bcftools norm -m -` in an informational
+// stderr line but does not fail.
+func TestGtcheck_MultiAllelicSkipped(t *testing.T) {
 	const multi = `##fileformat=VCFv4.2
 ##contig=<ID=chr1,length=10000>
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="GT">
@@ -379,9 +382,15 @@ func TestGtcheck_MultiAllelicRejected(t *testing.T) {
 chr1	100	.	A	T,C	.	.	.	GT	0/0	1/2
 `
 	var out bytes.Buffer
-	_, err := Gtcheck(strings.NewReader(multi), &out, GtcheckOptions{})
-	if err == nil || !strings.Contains(err.Error(), "norm -m -") {
-		t.Fatalf("expected multi-allelic rejection, got %v", err)
+	if _, err := Gtcheck(strings.NewReader(multi), &out, GtcheckOptions{OutputType: "t"}); err != nil {
+		t.Fatalf("multi-allelic site should be skipped, not error: %v", err)
+	}
+	s := out.String()
+	if !strings.Contains(s, "INFO\tsites-skipped-multiallelic\t1\n") {
+		t.Fatalf("expected 1 skipped multi-allelic site, output:\n%s", s)
+	}
+	if !strings.Contains(s, "INFO\tsites-compared\t0\n") {
+		t.Fatalf("expected 0 compared sites, output:\n%s", s)
 	}
 }
 

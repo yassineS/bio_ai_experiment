@@ -454,6 +454,18 @@ func TestSamtoolsBcftoolsCellArgWiring(t *testing.T) {
 			t.Errorf("bcftools_reheader must require NeedSampleRename")
 		}
 	}
+
+	// csq must be ours-only: upstream csq exits 255 on standard GENCODE GFF3
+	// (bare Ensembl IDs), so there is no comparable upstream output. Ours
+	// parses it and emits BCSQ annotations, so the cell runs ours-only.
+	if c := byName["bcftools_csq"]; true {
+		if c.Post != PostOursOnly {
+			t.Errorf("bcftools_csq must be PostOursOnly (upstream fails on GENCODE GFF3), got Post=%d", c.Post)
+		}
+		if c.Need&NeedGFF == 0 {
+			t.Errorf("bcftools_csq must require NeedGFF")
+		}
+	}
 }
 
 // TestDeriveInputs checks that the synthetic bed* inputs are derived

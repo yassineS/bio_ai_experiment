@@ -245,13 +245,23 @@ BAM / plain-VCF placeholder to operations that need more.
   a 10-column BEDPE, and a plain FASTQ from the real inputs at run start, and
   wired `bedsplit`'s `WorkDirOut`. `bedmap`/`bedexpand`/`bedoverlap` now compare
   byte-exact; the four ours-only cells run clean.
-- **`bcftools csq` — HARNESS.** Added `-p a`: the GIAB VCF is single-sample
-  **unphased**, and both upstream and our port hard-error on unphased hets
-  without `--phase`. Both sides now exit 0; BCSQ byte-identical.
+- **`bcftools csq` — HARNESS / OURS (fix-on-port robustness win).** Added `-p a`:
+  the GIAB VCF is single-sample **unphased**, and both upstream and our port
+  hard-error on unphased hets without `--phase`. Separately, on the **real
+  GENCODE chr20 GFF3** upstream csq **exits 255** ("No usable transcripts found")
+  because it cannot parse bare Ensembl IDs — it requires `transcript:`/`gene:`
+  type-prefixes (via `misc/gff2gff`). Our csq parses the bare-ID GENCODE GFF3
+  directly and emits 48091 correct BCSQ annotations, so there is no comparable
+  upstream output; the realbench `bcftools_csq` cell is therefore **ours-only**
+  (`Post: PostOursOnly`) rather than a stdout parity comparison.
 - **`bcftools gtcheck` — OURS.** A single-sample cross-check now emits the
   upstream-identical DCv2 header + INFO block + empty table (exit 0) instead of
   erroring; the error path is preserved for explicit `-p/-P/-g` that resolve to
-  zero pairs. Parity test added.
+  zero pairs. Parity test added. **Multi-allelic sites** are now skipped
+  per-record (counted in `sites-skipped-multiallelic`, exit 0) exactly as
+  upstream `is_input_okay()` does — the port previously hard-errored on the first
+  multi-allelic record. On real chr20 both sides report sites-compared 84998 /
+  sites-skipped-multiallelic 953, byte-identical. Parity test added.
 - **`prinseq` (`-stats`, filter) — OURS.** `openInput` now routes through
   `pkg/htsgo/iohelper` for transparent gzip (matching `fastp`/`sickle`); added a
   flat `-stats_*` reporter emitting the upstream TSV byte-for-byte. The stats

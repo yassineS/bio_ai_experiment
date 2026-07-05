@@ -331,6 +331,70 @@ chr1	300	.	G	A	.	.	.	GT	1/1	0/0	0/1
 	}
 }
 
+// multiAllelicFixtureVCF interleaves biallelic and multi-allelic sites so
+// the per-record multi-allelic skip is exercised. Upstream skips each
+// multi-allelic record (n_allele>2), counts it in
+// sites-skipped-multiallelic, and exits 0 — it does NOT error.
+const multiAllelicFixtureVCF = `##fileformat=VCFv4.2
+##contig=<ID=chr1,length=10000>
+##INFO=<ID=AC,Number=A,Type=Integer,Description="Allele count">
+##INFO=<ID=AN,Number=1,Type=Integer,Description="Allele number">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	A	B	C
+chr1	100	.	A	G	.	.	AC=3;AN=6	GT	0/1	0/1	1/1
+chr1	200	.	C	T,G	.	.	AC=2,1;AN=6	GT	0/1	1/2	0/0
+chr1	300	.	G	A	.	.	AC=2;AN=6	GT	1/1	0/1	0/0
+chr1	400	.	T	C,A,G	.	.	AC=1,1,1;AN=6	GT	0/1	2/3	0/0
+chr1	500	.	A	C	.	.	AC=1;AN=6	GT	0/0	0/1	0/0
+`
+
+// TestParityGtcheck_MultiAllelic verifies that multi-allelic sites are
+// skipped per-record (not fatal), that the port exits 0, and that its
+// INFO stats block (including sites-skipped-multiallelic) and DCv2 table
+// match upstream byte-for-byte. Regression guard: the port previously
+// hard-errored on the first multi-allelic record.
+func TestParityGtcheck_MultiAllelic(t *testing.T) {
+	bin := upstreamBcftoolsGtcheck(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "multi.vcf")
+	if err := os.WriteFile(path, []byte(multiAllelicFixtureVCF), 0o644); err != nil {
+		t.Fatalf("write multi-allelic fixture: %v", err)
+	}
+
+	up := stripNonReproducible(runUpstreamGtcheck(t, bin, []string{"-u", "GT", path}, dir))
+	got := stripNonReproducible(runGoGtcheck(t, path, GtcheckOptions{UseTag: "GT", OutputType: "t"}))
+	if up != got {
+		t.Fatalf("multi-allelic parity mismatch\n--- upstream ---\n%s\n--- go ---\n%s", up, got)
+	}
+	// Sanity: exactly the two multi-allelic sites (POS 200, 400) are counted.
+	if !strings.Contains(got, "INFO\tsites-skipped-multiallelic\t2\n") {
+		t.Fatalf("expected 2 skipped multi-allelic sites, output:\n%s", got)
+	}
+}
+
+// TestGtcheck_MultiAllelicExitsZero asserts the port itself (independent of
+// the live upstream binary) does not error on a multi-allelic-containing
+// cross-check and counts the skipped sites in the INFO block.
+func TestGtcheck_MultiAllelicExitsZero(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "multi.vcf")
+	if err := os.WriteFile(path, []byte(multiAllelicFixtureVCF), 0o644); err != nil {
+		t.Fatalf("write multi-allelic fixture: %v", err)
+	}
+	var out bytes.Buffer
+	if _, err := GtcheckFile(path, &out, GtcheckOptions{UseTag: "GT", OutputType: "t"}); err != nil {
+		t.Fatalf("multi-allelic gtcheck errored, want exit 0: %v", err)
+	}
+	s := out.String()
+	if !strings.Contains(s, "INFO\tsites-skipped-multiallelic\t2\n") {
+		t.Fatalf("multi-allelic output missing skip counter:\n%s", s)
+	}
+	// The three biallelic sites (100, 300, 500) are compared.
+	if !strings.Contains(s, "INFO\tsites-compared\t3\n") {
+		t.Fatalf("expected 3 compared sites, output:\n%s", s)
+	}
+}
+
 func mustParseFloat(t *testing.T, s string) float64 {
 	t.Helper()
 	f, err := strconv.ParseFloat(s, 64)
