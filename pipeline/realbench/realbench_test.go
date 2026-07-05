@@ -339,8 +339,10 @@ func TestBedCellArgWiring(t *testing.T) {
 		if c.Need&NeedBEDPE == 0 {
 			t.Errorf("%s must require NeedBEDPE", name)
 		}
-		if c.Post != PostOursOnly {
-			t.Errorf("%s should be ours-only, got post=%v", name, c.Post)
+		// pairtopair/pairtobed are byte-exact vs upstream, so they are real
+		// stdout comparisons (PostStdout), NOT ours-only perf cells.
+		if c.Post != PostStdout {
+			t.Errorf("%s must be a real upstream stdout comparison (PostStdout), got post=%v", name, c.Post)
 		}
 	}
 	// pairtobed's -a is the BEDPE and -b is the BED3.
@@ -348,13 +350,26 @@ func TestBedCellArgWiring(t *testing.T) {
 		t.Errorf("bedpairtobed -b must be the BED, got %v", c.OurArgs)
 	}
 
-	// 6: bedsplit must run in a work dir with a prefix inside it.
+	// 6: bedsplit must run in a work dir with a prefix inside it, and must use the
+	// deterministic `-a simple` (round-robin) mode so it is byte-exact vs upstream
+	// (the default `-a size` uses an STL-implementation-defined unstable std::sort
+	// tie-break and is NOT portably comparable). The cell compares a named shard
+	// file (PostFile), so it is a real upstream comparison, not an ours-only cell.
 	if c := byName["bedsplit"]; true {
 		if !c.WorkDirOut {
 			t.Errorf("bedsplit must set WorkDirOut so the -p prefix dir exists")
 		}
 		if !strings.Contains(joined(c.OurArgs), phOutdir) {
 			t.Errorf("bedsplit -p must live under {outdir}, got %v", c.OurArgs)
+		}
+		if !contains(c.OurArgs, "simple") {
+			t.Errorf("bedsplit must use -a simple (deterministic) for byte-exact parity, got %v", c.OurArgs)
+		}
+		if c.Post != PostFile {
+			t.Errorf("bedsplit must compare a shard file (PostFile), got Post=%d", c.Post)
+		}
+		if c.Compare == "" {
+			t.Errorf("bedsplit must name a shard file to compare (Compare)")
 		}
 	}
 
@@ -368,6 +383,15 @@ func TestBedCellArgWiring(t *testing.T) {
 		}
 		if contains(c.OurArgs, phBED) {
 			t.Errorf("bedtobam must not feed the bare BED3, got %v", c.OurArgs)
+		}
+		// tobam writes its BAM to stdout, so (like bedtag) it must compare via
+		// `samtools view -h` on the captured stdout BAM (PostViewSAM + StdoutView),
+		// and it is a real upstream comparison, not an ours-only cell.
+		if c.Post != PostViewSAM {
+			t.Errorf("bedtobam must use PostViewSAM (framing-independent BAM compare), got Post=%d", c.Post)
+		}
+		if !c.StdoutView {
+			t.Errorf("bedtobam must set StdoutView (its BAM is on stdout, no output file)")
 		}
 	}
 
@@ -412,11 +436,11 @@ func TestBedCellArgWiring(t *testing.T) {
 		}
 	}
 
-	// No OTHER bed* cell should be a StdoutView cell (the fix is additive to
-	// bedtag alone).
+	// Only bedtag and bedtobam write their comparable BAM to stdout, so they are
+	// the only StdoutView bed* cells; no other bed* cell should be one.
 	for name, c := range byName {
-		if strings.HasPrefix(name, "bed") && name != "bedtag" && c.StdoutView {
-			t.Errorf("%s unexpectedly marked StdoutView; only bedtag should be", name)
+		if strings.HasPrefix(name, "bed") && name != "bedtag" && name != "bedtobam" && c.StdoutView {
+			t.Errorf("%s unexpectedly marked StdoutView; only bedtag/bedtobam should be", name)
 		}
 	}
 }
