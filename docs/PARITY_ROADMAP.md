@@ -226,6 +226,58 @@ A skimmable per-tool completion table lives in the top-level
   through **slice 4**, and `convert`'s GEN/HAP/TSV/gVCF modes are all
   implemented and live-oracle validated.
 
+### Real-data chr20 realbench ERROR-cell wave (2026-07-05)
+
+The full-chr20 GIAB realbench run also left a set of cells in **ERROR** (one side
+exited non-zero) that the wall/RSS/DIFF wave (commit f6ac505 / PR #455) did not
+cover. All are now resolved — each verified **byte-exact against the vendored
+upstream binary** on prepared inputs, with the whole-module `go test -race ./...`
+gate green. Most were **harness** bugs (our tools were already correct, often
+*stricter* than upstream): the realbench matrix reused a cell's `OurArgs`
+verbatim for the upstream side and fed the single real BED3 / coordinate-sorted
+BAM / plain-VCF placeholder to operations that need more.
+
+- **bed cells (`bedmap`, `bedexpand`, `bedoverlap`, `bedpairtopair`,
+  `bedpairtobed`, `bedsplit`, `bedtobam`) — HARNESS.** The real `{bed}` is the
+  NIST high-confidence **BED3**; these ops need a 4th column / 4 position columns
+  / a BEDPE / a name column / an output prefix. Added
+  `pipeline/realbench/derive.go` to synthesise a BED4, an 8-column windowed BED,
+  a 10-column BEDPE, and a plain FASTQ from the real inputs at run start, and
+  wired `bedsplit`'s `WorkDirOut`. `bedmap`/`bedexpand`/`bedoverlap` now compare
+  byte-exact; the four ours-only cells run clean.
+- **`bcftools csq` — HARNESS.** Added `-p a`: the GIAB VCF is single-sample
+  **unphased**, and both upstream and our port hard-error on unphased hets
+  without `--phase`. Both sides now exit 0; BCSQ byte-identical.
+- **`bcftools gtcheck` — OURS.** A single-sample cross-check now emits the
+  upstream-identical DCv2 header + INFO block + empty table (exit 0) instead of
+  erroring; the error path is preserved for explicit `-p/-P/-g` that resolve to
+  zero pairs. Parity test added.
+- **`prinseq` (`-stats`, filter) — OURS.** `openInput` now routes through
+  `pkg/htsgo/iohelper` for transparent gzip (matching `fastp`/`sickle`); added a
+  flat `-stats_*` reporter emitting the upstream TSV byte-for-byte. The stats
+  cell uses the **deterministic** `-stats_*` subset — it excludes `stats_tag`,
+  whose upstream `midseq` value is an unsorted Perl-hash `join` and so differs
+  run-to-run. The harness derives a decompressed plain FASTQ because upstream
+  `prinseq-lite.pl` 0.20.4 cannot read gzip.
+- **`skewer_pe` — stale binary (no source change).** The recorded container
+  carried a `bin/ours/skewer` built before commit 44b7f95 (which added the
+  upstream positional CLI). The in-branch source is correct and byte-identical to
+  upstream; the AWS container must be rebuilt from HEAD.
+- **`samtools fixmate` — HARNESS + fix-on-port.** The harness now derives a
+  name-collated BAM (upstream fixmate rejects coordinate-sorted input). **Our
+  `fixmate` now emits `MC` (mate CIGAR) and `MQ` (mate MAPQ) tags by default**,
+  matching upstream `bam_mate.c` (`MQ` only when the source mate is mapped; `MC`
+  when either mate is mapped; unmapped-mate CIGAR renders `*`). This is a
+  deliberate default-output behaviour change to reach upstream parity, not a
+  regression; `-m` still additionally adds `ms`. Byte-identical to upstream incl.
+  the unmapped-mate edge case.
+- **`samtools markdup`, `bcftools reheader`, `bedtools unionbedg`,
+  `bedtools tag` — HARNESS/DATA.** markdup gets a derived
+  `sort -n | fixmate -m | sort` BAM; reheader gets a derived `-s` rename file (a
+  bare `reheader` has no directive and upstream errors); unionbedg gets a derived
+  4-column BedGraph (upstream **SIGABRTs** on BED3); the `tag` cell drops the
+  mutually-exclusive `-names` (kept `-labels`). All byte-exact vs upstream.
+
 ### Real-data chr20 realbench wall/RSS wave (2026-07-04, commit f6ac505)
 
 The full-chr20 GIAB realbench run (ours vs the vendored upstream binaries)
