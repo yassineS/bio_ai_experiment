@@ -162,3 +162,5 @@ _rpscratch/
 work/
 .nextflow/
 .nextflow.log*
+# realbench/Nextflow run output (reports + pipeline_info) — generated, never commit
+results/
