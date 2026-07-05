@@ -148,10 +148,12 @@ RUN cp reference_code/prinseq/prinseq-lite.pl /opt/upstream/prinseq-lite.pl && \
     printf '#!/bin/sh\nexec perl /opt/upstream/prinseq-lite.pl "$@"\n' > /opt/upstream/prinseq && \
     chmod +x /opt/upstream/prinseq
 
-# NOTE: mosdepth is NOT built here. It is a Nim project distributed only as a
-# linux/amd64 GitHub release asset; the repo resolves it via the MOSDEPTH_BIN
-# env var / release cache (see pipeline/internal/upstream). If you need the
-# mosdepth cells, drop the release binary into /opt/upstream/mosdepth at runtime.
+# NOTE: mosdepth is a Nim project distributed only as a linux/amd64 GitHub
+# release asset (not built from source). The runtime stage below pulls the
+# pinned release binary from the mosdepth repo into /opt/upstream/mosdepth so
+# the mosdepth realbench cells run a real comparison. (The harness can still
+# override it via the MOSDEPTH_BIN env var / release cache — see
+# pipeline/internal/upstream.)
 
 # =============================================================================
 #  Stage 3: the runtime image.
@@ -178,6 +180,18 @@ COPY --from=gobuild   /opt/ours              /opt/ours
 COPY --from=gobuild   /usr/local/bin/realbench /usr/local/bin/realbench
 COPY --from=upstream  /opt/upstream          /opt/upstream
 
+# Upstream mosdepth — a Nim project distributed only as a linux/amd64 GitHub
+# release asset, so it is pulled from the mosdepth repo's release (not built
+# from source). Baking it into /opt/upstream lets the mosdepth realbench cells
+# run a real ours-vs-upstream comparison instead of SKIPping. Version pinned to
+# match the harness's expected oracle (pipeline/internal/upstream MOSDEPTH cache
+# name mosdepth_v0.3.14).
+ARG MOSDEPTH_VERSION=v0.3.14
+RUN curl -fsSL -o /opt/upstream/mosdepth \
+        "https://github.com/brentp/mosdepth/releases/download/${MOSDEPTH_VERSION}/mosdepth" \
+    && chmod +x /opt/upstream/mosdepth \
+    && /opt/upstream/mosdepth --help >/dev/null 2>&1
+
 # Put bgzip/tabix on PATH (Nextflow STAGE_* steps call them via $upstream_bin,
 # but having them on PATH is convenient for interactive debugging).
 RUN ln -sf /opt/upstream/bgzip /usr/local/bin/bgzip && \
@@ -190,10 +204,18 @@ RUN ln -sf /opt/upstream/bgzip /usr/local/bin/bgzip && \
 ENV REF_PATH=/dev/null \
     PATH="/opt/ours:/opt/upstream:${PATH}"
 
-# Sanity smoke at build time: both sides answer --version.
-RUN /opt/upstream/samtools --version | head -1 && \
-    /opt/ours/samtools --version 2>/dev/null | head -1 || true && \
-    realbench -h 2>/dev/null | head -1 || true
+# Sanity smoke at build time. `realbench` on PATH and an executable
+# /opt/upstream/mosdepth are HARD assertions: a missing binary must fail the
+# build here rather than surface at runtime as an exit-127 "command not found"
+# on AWS Batch. The -h/--version invocations are informational (tolerate their
+# exit codes).
+RUN set -e; \
+    /opt/upstream/samtools --version | head -1; \
+    /opt/ours/samtools --version 2>/dev/null | head -1 || true; \
+    command -v realbench >/dev/null || { echo "FATAL: realbench not on PATH"; exit 1; }; \
+    realbench -h 2>&1 | head -1 || true; \
+    test -x /opt/upstream/mosdepth || { echo "FATAL: /opt/upstream/mosdepth missing or not executable"; exit 1; }; \
+    /opt/upstream/mosdepth --version 2>/dev/null | head -1 || true
 
 WORKDIR /work
 ENTRYPOINT []
