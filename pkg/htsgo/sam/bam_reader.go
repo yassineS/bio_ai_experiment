@@ -55,6 +55,13 @@ type BAMReader struct {
 	hdr   *Header
 	refs  []Reference // copied from hdr.Refs for fast indexed lookup
 	scrat []byte      // reusable buffer for record bodies
+	// sizeBuf is a reusable 4-byte scratch for the per-record block_size prefix
+	// on the fast path. Reading into a stack-local [4]byte forces it to escape
+	// to the heap once per record (it is passed to io.ReadFull through the
+	// io.Reader interface), which at millions of records is the single biggest
+	// fast-path allocation; a struct field is written in place and allocates
+	// nothing per call.
+	sizeBuf [4]byte
 	// seqScratch holds the expanded SEQ nibbles between decode and the single
 	// string conversion, reused across records to avoid a per-record slice.
 	seqScratch []byte

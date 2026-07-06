@@ -126,6 +126,49 @@ func TestIntervalTree_DeepTree(t *testing.T) {
 	}
 }
 
+// TestIntervalTree_OverlapsMatchesQuery cross-checks the allocation-free
+// Overlaps predicate against (len(Query(...)) > 0) across a spread of queries,
+// including the boundary (half-open touching) cases, an empty tree and a
+// deep tree. Overlaps must return the same yes/no answer Query would.
+func TestIntervalTree_OverlapsMatchesQuery(t *testing.T) {
+	empty := NewIntervalTree(nil)
+	if empty.Overlaps(0, 100) {
+		t.Errorf("Overlaps on empty tree should be false")
+	}
+
+	recs := makeRecs("chr1", [][2]int{
+		{0, 100}, {50, 150}, {120, 180}, {200, 300}, {250, 280}, {1000, 1000},
+	})
+	tree := NewIntervalTree(recs)
+
+	// A grid of query ranges, deliberately including touching boundaries.
+	queries := [][2]int{
+		{-10, 0}, {0, 1}, {60, 130}, {100, 120}, {180, 200}, {200, 200},
+		{270, 290}, {299, 301}, {300, 400}, {999, 1001}, {5000, 6000},
+	}
+	for _, q := range queries {
+		want := len(tree.Query(&Record{ChromStart: q[0], ChromEnd: q[1]})) > 0
+		got := tree.Overlaps(q[0], q[1])
+		if got != want {
+			t.Errorf("Overlaps(%d,%d)=%v; Query says %v", q[0], q[1], got, want)
+		}
+	}
+
+	// Deep tree: 64 sequential 10bp records, sweep every 5bp query.
+	var ranges [][2]int
+	for i := 0; i < 64; i++ {
+		ranges = append(ranges, [2]int{i * 10, i*10 + 10})
+	}
+	deep := NewIntervalTree(makeRecs("chr1", ranges))
+	for s := -20; s < 700; s += 5 {
+		q := [2]int{s, s + 7}
+		want := len(deep.Query(&Record{ChromStart: q[0], ChromEnd: q[1]})) > 0
+		if got := deep.Overlaps(q[0], q[1]); got != want {
+			t.Errorf("deep Overlaps(%d,%d)=%v; Query says %v", q[0], q[1], got, want)
+		}
+	}
+}
+
 func TestIntervalsOverlap(t *testing.T) {
 	cases := []struct {
 		a, b [2]int

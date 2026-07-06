@@ -45,15 +45,17 @@ func (br *BAMReader) ReadSAMInto(ff *FastFields) error {
 	}
 	// Read the 4-byte little-endian block_size prefix directly rather than via
 	// reflection-based binary.Read — this loop runs once per record, so the
-	// reflection cost is material at hundreds of thousands of records.
-	var sizeBuf [4]byte
-	if _, err := io.ReadFull(br.src, sizeBuf[:]); err != nil {
+	// reflection cost is material at hundreds of thousands of records. Use the
+	// reader's reusable sizeBuf field (not a stack-local array) so the slice
+	// handed to io.ReadFull does not escape to a fresh heap allocation on every
+	// record — that per-record escape was the dominant fast-path allocation.
+	if _, err := io.ReadFull(br.src, br.sizeBuf[:]); err != nil {
 		if err == io.EOF {
 			br.err = io.EOF
 		}
 		return err
 	}
-	blockSize := int32(binary.LittleEndian.Uint32(sizeBuf[:]))
+	blockSize := int32(binary.LittleEndian.Uint32(br.sizeBuf[:]))
 	if blockSize < 32 {
 		return fmt.Errorf("sam: BAM block too small (%d)", blockSize)
 	}

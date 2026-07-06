@@ -74,6 +74,43 @@ func (t *IntervalTree) Query(query *Record) []*Record {
 	return results
 }
 
+// Overlaps reports whether any interval in the tree overlaps the half-open
+// range [start, end). It is the allocation-free, short-circuiting counterpart
+// of Query for callers that only need a yes/no answer (e.g. the samtools view
+// -L / BED fast path, which asks "does this record touch any BED interval?"
+// once per alignment). Unlike Query it neither builds a query *Record nor a
+// results slice, and it returns on the first overlap found — so a hot per-record
+// filter allocates nothing. The overlap semantics (half-open, Chrom ignored —
+// the caller selects the per-chrom tree) match Query exactly.
+func (t *IntervalTree) Overlaps(start, end int) bool {
+	return overlapsNode(t.Root, start, end)
+}
+
+// overlapsNode is the short-circuiting recursion behind Overlaps. It mirrors
+// queryNode's pruning (skip subtrees whose Max end is at or before the query
+// start; only descend right when the query can still reach a later interval)
+// but returns true the moment an overlap is found instead of collecting all of
+// them.
+func overlapsNode(node *IntervalNode, start, end int) bool {
+	if node == nil {
+		return false
+	}
+	if start >= node.Max {
+		return false
+	}
+	if overlapsNode(node.Left, start, end) {
+		return true
+	}
+	// Half-open overlap with this node's interval.
+	if start < node.Interval.ChromEnd && end > node.Interval.ChromStart {
+		return true
+	}
+	if end > node.Interval.ChromStart {
+		return overlapsNode(node.Right, start, end)
+	}
+	return false
+}
+
 // queryNode recursively searches for overlapping intervals under node.
 func (t *IntervalTree) queryNode(node *IntervalNode, query *Record, results *[]*Record) {
 	if node == nil {

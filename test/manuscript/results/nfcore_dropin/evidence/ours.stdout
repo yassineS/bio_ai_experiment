@@ -1,0 +1,7 @@
+=== [ours] samtools = /Users/yassinesouilmi/Code/bio_ai_experiment/bin/ours/samtools ===
+=== [ours] samtools version line: 0.1.0 ===
+[PIPELINE] main.nf | profile=standard
+[WORKDIR] /Users/yassinesouilmi/Code/bio_ai_experiment/test/manuscript/results/nfcore_dropin/work_ours
+[PROCESS 6c/5dc383] SAMTOOLS_FLAGSTAT (test)
+flagstat -> /Users/yassinesouilmi/Code/bio_ai_experiment/test/manuscript/results/nfcore_dropin/work_ours/6c/5dc3837274763652349c772558a01a/test.flagstat
+[SUCCESS] completed=1 failed=0 cached=0
