@@ -269,6 +269,14 @@ func TestCompareSimilarity(t *testing.T) {
 	if r.MaxDeviation == 0 {
 		t.Errorf("expected non-zero recorded deviation")
 	}
+	// The absolute deviation is tracked alongside the relative one: 0.1000001 -
+	// 0.1000000 = 1e-7, so MaxAbsDeviation must be ~1e-7 (and non-zero).
+	if r.MaxAbsDeviation == 0 {
+		t.Errorf("expected non-zero recorded absolute deviation")
+	}
+	if got := r.MaxAbsDeviation; got < 5e-8 || got > 2e-7 {
+		t.Errorf("MaxAbsDeviation = %g, want ~1e-7", got)
+	}
 
 	d := CompareSimilarity([]byte("chr1\t1.0\n"), []byte("chr2\t1.0\n"), similarityEpsilon)
 	if d.Equal {

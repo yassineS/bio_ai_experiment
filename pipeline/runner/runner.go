@@ -33,20 +33,21 @@ const (
 
 // Result is the outcome of one matrix entry.
 type Result struct {
-	Tool         string        `json:"tool"`
-	Name         string        `json:"name"`
-	Args         []string      `json:"args"`
-	Input        string        `json:"input"`
-	Compare      string        `json:"compare"`
-	Heavy        bool          `json:"heavy"`
-	Status       Status        `json:"status"`
-	Detail       string        `json:"detail,omitempty"`
-	MaxDeviation float64       `json:"max_deviation,omitempty"`
-	OursMillis   int64         `json:"ours_ms"`
-	UpstreamMs   int64         `json:"upstream_ms"`
-	TimingRatio  float64       `json:"timing_ratio,omitempty"` // ours/upstream
-	oursDur      time.Duration `json:"-"`
-	upDur        time.Duration `json:"-"`
+	Tool            string        `json:"tool"`
+	Name            string        `json:"name"`
+	Args            []string      `json:"args"`
+	Input           string        `json:"input"`
+	Compare         string        `json:"compare"`
+	Heavy           bool          `json:"heavy"`
+	Status          Status        `json:"status"`
+	Detail          string        `json:"detail,omitempty"`
+	MaxDeviation    float64       `json:"max_deviation,omitempty"`
+	MaxAbsDeviation float64       `json:"max_abs_deviation,omitempty"`
+	OursMillis      int64         `json:"ours_ms"`
+	UpstreamMs      int64         `json:"upstream_ms"`
+	TimingRatio     float64       `json:"timing_ratio,omitempty"` // ours/upstream
+	oursDur         time.Duration `json:"-"`
+	upDur           time.Duration `json:"-"`
 }
 
 // Config controls a run.
@@ -261,6 +262,7 @@ func RunEntry(cfg Config, e matrix.Entry) Result {
 		}
 	}
 	res.MaxDeviation = cmp.MaxDeviation
+	res.MaxAbsDeviation = cmp.MaxAbsDeviation
 	if !cmp.Equal {
 		res.Detail = cmp.Detail
 	}
