@@ -390,6 +390,36 @@ func CompareByteExact(ours, upstream []byte) CompareResult {
 	return CompareResult{Equal: false, Detail: firstDiff(a, b)}
 }
 
+// CompareDigests is the BOUNDED-MEMORY equivalent of CompareByteExact for the
+// ByteExact stdout path: instead of holding both full provenance-stripped
+// outputs in RAM, each side is streamed through a StreamDigester (see
+// timedRunStreaming) that retains only a running md5 of the stripped stream plus
+// a ~64 KiB head. This compares those two digests. Memory is O(64 KiB) per side,
+// never O(output) — the fix for the ~17 GB heavy cells (mpileup/call/isec) that
+// would OOM if both stdouts were buffered in full.
+//
+// The verdict is byte-exact-identical to CompareByteExact: md5 equality over the
+// stripped streams is equality of the streams themselves (a genuine data
+// divergence changes the hash), because StreamDigester.Sum() ==
+// md5.Sum(stripProvenance(all-bytes)). On divergence it uses the two retained
+// heads for the first-diff snippet, matching CompareByteExact's firstDiff over
+// the leading region; when the divergence lies past the 64 KiB head window the
+// heads may be equal, so the detail is annotated accordingly (the PASS/DIVERGE
+// verdict itself is unaffected — it is decided by the full-stream digests).
+func CompareDigests(oursSum [md5.Size]byte, oursHead []byte, upSum [md5.Size]byte, upHead []byte) CompareResult {
+	if oursSum == upSum {
+		return CompareResult{Equal: true}
+	}
+	detail := firstDiff(oursHead, upHead)
+	if bytes.Equal(oursHead, upHead) {
+		// The streams differ but agree over the retained head window, so the
+		// snippet cannot pinpoint the line; say so rather than mislabel it.
+		detail = fmt.Sprintf("streams differ beyond the %d-byte head window (digests ours=%x upstream=%x)",
+			streamHeadCap, oursSum, upSum)
+	}
+	return CompareResult{Equal: false, Detail: detail}
+}
+
 // similarityEpsilon is the default relative tolerance for numeric field
 // comparison. An entry may widen it via Entry.Tolerance (see resolveEpsilon).
 const similarityEpsilon = 1e-6

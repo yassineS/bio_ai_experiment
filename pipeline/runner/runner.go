@@ -164,6 +164,20 @@ func RunEntry(cfg Config, e matrix.Entry) Result {
 		upArgs = append([]string{e.Subcommand}, upArgs...)
 	}
 
+	// The plain ByteExact-stdout compare (no output-prefix files, no BGZF/BAM
+	// re-decode, not Similarity) is the only path whose comparison is genuinely
+	// bounded-memory-able end to end: both children's stdout can be streamed
+	// straight through a StreamDigester (provenance-strip + md5 + 64 KiB head) and
+	// compared by digest, never buffering the whole output. This is the path the
+	// ~17 GB heavy cells (mpileup/call/isec) take, so it is the one that would
+	// OOM if both stdouts were held in RAM — hence it streams. The remaining
+	// modes (BGZFDecoded/BAMDecoded need the full bytes to feed a decoder;
+	// Similarity needs field-by-field line comparison; OutputFiles reads files
+	// off disk) keep the buffered timedRun path below.
+	if !usesOutPrefix && e.CompareModeOrDefault() == matrix.ByteExact {
+		return runByteExactStreaming(res, oursBin, ourArgs, upBin, upArgs)
+	}
+
 	ourOut, ourErr, ourDur, ourRunErr := timedRun(oursBin, ourArgs)
 	upOut, upErr, upDur, upRunErr := timedRun(upBin, upArgs)
 
@@ -253,6 +267,42 @@ func RunEntry(cfg Config, e matrix.Entry) Result {
 	return res
 }
 
+// runByteExactStreaming runs both binaries with their stdout streamed through a
+// StreamDigester and compares the two digests, so a byte-exact stdout compare
+// never buffers either full output in RAM (the bounded-memory path for the heavy
+// mpileup/call/isec cells). It fills the timing fields and returns the final
+// Result. Its PASS/DIVERGE verdict is identical to the buffered
+// CompareByteExact(ourOut, upOut) path — digest equality over the
+// provenance-stripped streams is equality of the streams (see CompareDigests).
+func runByteExactStreaming(res Result, oursBin string, ourArgs []string, upBin string, upArgs []string) Result {
+	ourSum, ourHead, ourErr, ourDur, ourRunErr := timedRunStreaming(oursBin, ourArgs)
+	upSum, upHead, upErr, upDur, upRunErr := timedRunStreaming(upBin, upArgs)
+
+	res.oursDur, res.upDur = ourDur, upDur
+	res.OursMillis = ourDur.Milliseconds()
+	res.UpstreamMs = upDur.Milliseconds()
+	if upDur > 0 {
+		res.TimingRatio = float64(ourDur) / float64(upDur)
+	}
+
+	// A run error on either side that the other did not share is a divergence.
+	if (ourRunErr == nil) != (upRunErr == nil) {
+		res.Status = StatusDiverge
+		res.Detail = fmt.Sprintf("exit mismatch: ours_err=%v upstream_err=%v\nours stderr: %s\nupstream stderr: %s",
+			ourRunErr, upRunErr, trunc(string(ourErr)), trunc(string(upErr)))
+		return res
+	}
+
+	cmp := CompareDigests(ourSum, ourHead, upSum, upHead)
+	if cmp.Equal {
+		res.Status = StatusPass
+	} else {
+		res.Status = StatusDiverge
+		res.Detail = cmp.Detail
+	}
+	return res
+}
+
 // mkOutDirs creates a fresh pair of per-entry output directories (one for our
 // tool, one for upstream) under the cache dir and returns their absolute paths.
 func mkOutDirs(cacheDir string) (ourDir, upDir string, err error) {
@@ -288,6 +338,36 @@ func timedRun(bin string, args []string) (stdout, stderr []byte, dur time.Durati
 	err = cmd.Run()
 	dur = time.Since(start)
 	return out.Bytes(), errb.Bytes(), dur, err
+}
+
+// timedRunStreaming runs a binary with args like timedRun, but pipes its stdout
+// straight into a StreamDigester instead of a bytes.Buffer, so the child's
+// (potentially multi-GB) stdout is provenance-stripped and hashed on the fly
+// without ever being held whole in RAM. It returns the digest, the ~64 KiB head
+// snippet, stderr (kept whole — it is small tool diagnostics), wall-clock, and a
+// run error. This is the bounded-memory core of the ByteExact stdout compare
+// (the same StreamDigester the realparity/realbench harnesses use for the heavy
+// genome-scale cells). Memory is O(64 KiB) plus one partial line, not O(stdout).
+func timedRunStreaming(bin string, args []string) (sum [16]byte, head, stderr []byte, dur time.Duration, err error) {
+	var cmd *exec.Cmd
+	if strings.HasSuffix(bin, ".pl") {
+		cmd = exec.Command("perl", append([]string{bin}, args...)...)
+	} else {
+		cmd = exec.Command(bin, args...)
+	}
+	dig := NewStreamDigester()
+	var errb bytes.Buffer
+	cmd.Stdout = dig
+	cmd.Stderr = &errb
+	start := time.Now()
+	runErr := cmd.Run()
+	dur = time.Since(start)
+	// Close the digester to flush the final partial line before reading Sum/Head,
+	// even on a run error (the head still aids diagnosis).
+	if cerr := dig.Close(); cerr != nil && runErr == nil {
+		runErr = cerr
+	}
+	return dig.Sum(), dig.Head(), errb.Bytes(), dur, runErr
 }
 
 // copyFile copies src to dst, creating dst's parent directory if needed.

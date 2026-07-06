@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/yassineS/bio_ai_experiment/pipeline/matrix"
@@ -334,5 +336,137 @@ func TestCompareOutputFiles_ByteExact(t *testing.T) {
 	write("a.only", "x\n")
 	if r := CompareOutputFiles(filepath.Join(dir, "a"), filepath.Join(dir, "b"), []string{".only"}, matrix.ByteExact, similarityEpsilon); r.Equal {
 		t.Errorf("missing-on-one-side should diverge")
+	}
+}
+
+// TestCompareDigestsMatchesCompareByteExact proves the bounded-memory digest
+// comparison (CompareDigests over StreamDigester digests) yields the SAME
+// PASS/DIVERGE verdict as the buffered CompareByteExact for every provenance
+// fixture — including cases that match only after provenance stripping and cases
+// that genuinely differ. This is the byte-exact-parity guarantee for the G7
+// streaming path.
+func TestCompareDigestsMatchesCompareByteExact(t *testing.T) {
+	inputs := provenanceTestInputs()
+	digest := func(b []byte) ([md5.Size]byte, []byte) {
+		sum, head, err := StreamDigest(bytes.NewReader(b))
+		if err != nil {
+			t.Fatalf("StreamDigest: %v", err)
+		}
+		return sum, head
+	}
+	// Pair every fixture with every other (and itself): the streaming verdict
+	// must equal the buffered verdict for all pairs.
+	names := make([]string, 0, len(inputs))
+	for n := range inputs {
+		names = append(names, n)
+	}
+	for _, na := range names {
+		for _, nb := range names {
+			a, b := inputs[na], inputs[nb]
+			want := CompareByteExact(a, b)
+			asum, ahead := digest(a)
+			bsum, bhead := digest(b)
+			got := CompareDigests(asum, ahead, bsum, bhead)
+			if got.Equal != want.Equal {
+				t.Errorf("%s vs %s: streaming Equal=%v want %v (buffered detail=%q)",
+					na, nb, got.Equal, want.Equal, want.Detail)
+			}
+		}
+	}
+}
+
+// TestCompareDigestsDivergeBeyondHead checks that two streams which agree over
+// the 64 KiB head window but differ far past it still DIVERGE (the verdict is
+// driven by the full-stream digest, not the retained head), and the detail says
+// so rather than mislabelling it.
+func TestCompareDigestsDivergeBeyondHead(t *testing.T) {
+	base := strings.Repeat("chr1\t1\tA\tsome-data-line\n", 20000) // ~440 KiB >> 64 KiB
+	a := []byte(base + "chr1\t2\tG\ttail-A\n")
+	b := []byte(base + "chr1\t2\tG\ttail-B\n")
+	asum, ahead, err := StreamDigest(bytes.NewReader(a))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bsum, bhead, err := StreamDigest(bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(ahead, bhead) {
+		t.Fatalf("precondition: heads should be equal (divergence is past the window)")
+	}
+	got := CompareDigests(asum, ahead, bsum, bhead)
+	if got.Equal {
+		t.Fatalf("expected DIVERGE for streams differing past the head window")
+	}
+	if !strings.Contains(got.Detail, "beyond the") {
+		t.Errorf("expected beyond-head-window detail, got %q", got.Detail)
+	}
+	// And the buffered path agrees this is a divergence.
+	if CompareByteExact(a, b).Equal {
+		t.Fatalf("buffered CompareByteExact should also diverge")
+	}
+}
+
+// TestStreamDigestBoundedMemory demonstrates the G7 fix: digesting a large
+// (~256 MiB) synthetic output holds only O(head) memory, NOT O(output). It
+// streams the bytes through the StreamDigester in small chunks (as a pipe would)
+// and asserts the heap grows by far less than the stream size, and that the
+// retained head stays capped at streamHeadCap. If the digester buffered the
+// whole output (the old OOM-prone behaviour) heap growth would be ~256 MiB.
+func TestStreamDigestBoundedMemory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping large bounded-memory test in -short mode")
+	}
+	const (
+		chunk = 64 << 10      // 64 KiB writes, like a pipe
+		total = 256 << 20     // 256 MiB of synthetic output
+		reps  = total / chunk // number of writes
+	)
+	// A representative provenance-bearing line block, repeated. It includes a
+	// dropped @PG line so the provenance filter is exercised on the hot path.
+	block := []byte("@PG\tID:x\tVN:1\nchr1\t100\tA\tG\t.\tPASS\tDP=30\n")
+	buf := make([]byte, 0, chunk)
+	for len(buf) < chunk {
+		buf = append(buf, block...)
+	}
+	buf = buf[:chunk]
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+
+	dig := NewStreamDigester()
+	for i := 0; i < reps; i++ {
+		if _, err := dig.Write(buf); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+	}
+	if err := dig.Close(); err != nil {
+		t.Fatal(err)
+	}
+	sum := dig.Sum()
+	head := dig.Head()
+
+	runtime.ReadMemStats(&after)
+	// TotalAlloc counts cumulative bytes; use HeapAlloc delta as the live-memory
+	// proxy. The digester must not retain anywhere near the streamed size.
+	liveGrowth := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+	// Generous ceiling: a few MiB of runtime/hash/head overhead, but orders of
+	// magnitude below the 256 MiB stream. A full-buffering implementation would
+	// blow past this immediately.
+	const ceiling = 16 << 20
+	if liveGrowth > ceiling {
+		t.Errorf("live heap grew by %d bytes streaming %d bytes; expected <= %d (bounded memory)",
+			liveGrowth, int64(total), int64(ceiling))
+	}
+	if len(head) > streamHeadCap {
+		t.Errorf("retained head %d bytes exceeds cap %d", len(head), streamHeadCap)
+	}
+
+	// The digest is still correct: it equals md5(stripProvenance(whole stream)).
+	whole := bytes.Repeat(buf, reps)
+	want := md5.Sum(stripProvenance(whole))
+	if sum != want {
+		t.Errorf("streamed digest %x != md5(stripProvenance(whole)) %x", sum, want)
 	}
 }
