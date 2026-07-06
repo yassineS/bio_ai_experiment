@@ -199,8 +199,12 @@ func fastBedFilter(path string) (func(*sam.FastFields) bool, error) {
 		if refLen <= 0 {
 			refLen = 1
 		}
-		q := &bed.Record{Chrom: ff.RName, ChromStart: pos0, ChromEnd: pos0 + refLen}
-		return len(t.Query(q)) > 0
+		// Overlaps is the allocation-free short-circuit form of Query: on the
+		// fast path we only need "does this record touch any BED interval?", so
+		// we avoid both the per-record query *Record and the results slice that
+		// Query would allocate on every alignment (the single biggest BED-path
+		// allocation before this change).
+		return t.Overlaps(pos0, pos0+refLen)
 	}, nil
 }
 

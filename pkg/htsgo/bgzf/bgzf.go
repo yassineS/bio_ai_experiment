@@ -1,6 +1,7 @@
 package bgzf
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"errors"
@@ -10,6 +11,23 @@ import (
 
 	kflate "github.com/klauspost/compress/flate"
 )
+
+// readBufSize is the size of the buffer interposed between the caller's
+// io.Reader (typically a raw *os.File) and the BGZF block parser. Each BGZF
+// block is decoded by several small io.ReadFull calls (a 12-byte fixed header,
+// the XLEN extra field, the ~64 KiB deflate payload and an 8-byte footer). On an
+// unbuffered *os.File every one of those becomes its own read() syscall — and
+// with tens of thousands of blocks that syscall churn dominates the profile
+// (>80% of `samtools view` region/BED wall time was in syscall.rawsyscalln,
+// almost none in the actual inflate). Interposing a 256 KiB buffered reader
+// collapses those tiny reads into a handful of large sequential reads per
+// buffer-fill, cutting the syscall count by orders of magnitude. 256 KiB spans
+// ~4 whole BGZF blocks so a single fill usually serves several blocks. The
+// buffer only ever holds bytes we are entitled to read (a chunk-bounded scan
+// wraps this reader at a higher layer and stops on virtual offset, not on the
+// file position), so read-ahead never over-reads across a chunk boundary in a
+// way that reaches the caller.
+const readBufSize = 256 * 1024
 
 // Both the BGZF compression (writer) and decompression (reader) sides use
 // klauspost/compress's pure-Go flate implementation (imported as kflate). On
@@ -330,7 +348,35 @@ func NewReader(r io.Reader) (*Reader, error) {
 // be off by baseCoff<<16 and the bound would never fire correctly — making the
 // scan over-read into later chunks and emit duplicate records.
 func NewReaderAt(r io.Reader, baseCoff int64) (*Reader, error) {
-	return &Reader{counted: &countingReader{r: r}, nextBlockCoff: baseCoff}, nil
+	// Interpose a buffered reader so the per-block header/payload/footer
+	// io.ReadFull calls are served from memory instead of one read() syscall
+	// each (see readBufSize). A reader that is already a *bufio.Reader (or any
+	// source that buffers internally, e.g. bytes.Reader/bytes.Buffer used by
+	// in-memory tests) is left untouched to avoid a redundant copy — the
+	// countingReader still tracks exactly the bytes consumed either way, so
+	// virtual offsets are unchanged.
+	src := r
+	if bufferedReadSource(r) {
+		// already cheap to read in small chunks; no wrapping benefit.
+	} else {
+		src = bufio.NewReaderSize(r, readBufSize)
+	}
+	return &Reader{counted: &countingReader{r: src}, nextBlockCoff: baseCoff}, nil
+}
+
+// bufferedReadSource reports whether r already serves small reads without a
+// per-read syscall, so wrapping it in another bufio.Reader would only add a
+// redundant copy. It recognises *bufio.Reader and the standard in-memory
+// readers (*bytes.Reader, *bytes.Buffer, *strings.Reader) used throughout the
+// tests; anything else (notably *os.File) is treated as syscall-backed and
+// gets buffered.
+func bufferedReadSource(r io.Reader) bool {
+	switch r.(type) {
+	case *bufio.Reader, *bytes.Reader, *bytes.Buffer:
+		return true
+	default:
+		return false
+	}
 }
 
 // countingReader wraps an io.Reader and tracks how many bytes have been
