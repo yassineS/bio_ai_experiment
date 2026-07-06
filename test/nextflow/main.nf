@@ -336,8 +336,13 @@ process DERIVE_EXOME {
               -0 /dev/null -s /dev/null -n
 
     # --- GFF: subset to the exome regions, re-bgzip + index -------------------
-    # tabix accepts a regions BED (-R) to slice the gff to exome targets.
-    ${TB} -R exome.bed "${gff}" | ${BG} -@ ${task.cpus} > exome.gff.gz
+    # tabix accepts a regions BED (-R) to slice the gff to exome targets, but it
+    # emits the overlapping records in per-region order — which is NOT globally
+    # coordinate-sorted when the exome intervals abut/overlap or a feature spans
+    # several targets, so `tabix -p gff` fails with "Unsorted positions". Sort by
+    # seqid+start before bgzip+index (the sliced stream is data-only, no ## header),
+    # mirroring STAGE_GFF.
+    ${TB} -R exome.bed "${gff}" | sort -k1,1 -k4,4n | ${BG} -@ ${task.cpus} > exome.gff.gz
     ${TB} -p gff exome.gff.gz
     """
 }
