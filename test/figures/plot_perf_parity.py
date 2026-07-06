@@ -37,7 +37,7 @@ from scipy.stats import beta
 from majorelle import PAL_QUAL, COLOURS
 from majorelle import mpl as mj
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 RES = os.path.join(ROOT, "test", "manuscript", "results")
 FIGS = os.path.join(RES, "figures")
 os.makedirs(FIGS, exist_ok=True)
