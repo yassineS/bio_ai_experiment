@@ -119,19 +119,10 @@ btp352); Danecek 2011 (VCF, btr330); Hsi-Yang Fritz 2011 (CRAM, gr.114819.110); 
 2010 (BEDTools, btq033); **Danecek 2021 (HTSlib/Twelve years of SAMtools and BCFtools,
 GigaScience giab008/giab007).** `[V]`
 
-**Truth sets & meaningful-equivalence (for C2 GIAB concordance):** GIAB — Zook 2014 (nbt.2835),
-**Zook 2019 (nbt s41587-019-0074-6)**, Wagner 2022 v4.2.1 (Cell Genomics 100128), Wagner 2022
-CMRG (s41587-021-01158-1); HG001=NA12878, HG002–007 (NIST RMs). **GA4GH benchmarking** — Krusche
-2019 (Nat Biotechnol s41587-019-0054-x), hap.py, vcfeval/RTG (Cleary 2015 bioRxiv), GIAB
-stratifications (Dwarshuis 2024, Nat Commun s41467-024-53260-y). precisionFDA Truth Challenge V2
-(Olson 2022, Cell Genomics 100129). Metric: precision/recall/F1 at GA4GH genotype/allele match
-levels. `[V]`/`[S]`
-
-**Re-implementation-validated-by-concordance precedent (for D1 framing):** **Sentieon = GATK
+**Re-implementation precedent (for D1 framing):** **Sentieon = GATK
 reimplementation, >99.99% concordant after removing GATK downsampling** (Kendig 2019, Front.
-Genet.; Freed 2017) — *the* two-pronged template (concordance-to-original + GIAB accuracy).
-DeepVariant (Poplin 2018, nbt.4235), Strelka2 (Kim 2018, s41592-018-0051-x), Octopus (Cooke
-2021, s41587-021-00861-3) all validate on GIAB+hap.py/vcfeval. `[V]`/`[S]`
+Genet.; Freed 2017) — the template of validating a re-implementation against the original tool
+it replaces. `[V]`/`[S]`
 
 **Pipeline integration / "drop-in" substrate (for C4):** Nextflow (Di Tommaso 2017, nbt.3820),
 nf-core (Ewels 2020, s41587-020-0439-x), Snakemake (Köster 2012, bts480; Mölder 2021), Galaxy

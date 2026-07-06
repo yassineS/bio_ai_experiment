@@ -13,7 +13,7 @@
 // This is the manuscript's "real-world differential parity + performance on
 // whole-genome data" experiment (claims C2/C3), replacing the synthetic-only
 // large tier with real multi-contig inputs. It is purely our-vs-upstream
-// differential testing: no truth set, hap.py, or vcfeval is needed.
+// differential testing: no truth set is needed.
 //
 // Every input is optional. A cell whose required input is absent SKIPs (with a
 // clear reason) rather than failing, so the command runs partially with whatever

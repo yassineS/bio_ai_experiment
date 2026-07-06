@@ -113,8 +113,6 @@ holes (CI disabled/self-reported; memorization not addressed) currently undercut
 
 **P1 — the `★` experiments (the science):**
 
-+ GIAB concordance to full GA4GH standard **incl. CMRG + difficult-region stratifications**,
-  hap.py *and* vcfeval, vs *upstream* bcftools, ULP-floor proven to never flip a genotype/PASS.
 + Named silent-corruption edge-case battery as discrete results (CRAM M5/REF_CACHE/multi-ref;
   norm Number=A/R/G re-indexing; `.bai/.csi/.tbi` byte-identity; sort stability at `-@1`; MD/NM).
 + Differential fuzzer diffing **stdout+stderr+exit-code** + branch-coverage report.

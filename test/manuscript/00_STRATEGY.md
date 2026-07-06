@@ -89,7 +89,7 @@ targets and their bar:
 
 | Venue | Bar it sets | Fit |
 |---|---|---|
-| **Nature Methods** (recommended primary) | A method/tool of broad utility to life scientists, rigorously validated on community-standard data (GIAB), reproducible | **Strong** if we add GIAB concordance + the counterfactual + artifact package. The "method" is the parity harness + the drop-in suite. |
+| **Nature Methods** (recommended primary) | A method/tool of broad utility to life scientists, rigorously validated on community-standard data (GIAB), reproducible | **Strong** if we add the counterfactual + artifact package. The "method" is the parity harness + the drop-in suite. |
 | **Nature Computational Science / Nature Biotechnology** | Computational advance with demonstrated impact | Strong alternative; NComSci is a natural home for the AI-methodology framing. |
 | **Genome Biology / GigaScience** (recommended fallback) | Solid tool + open, reproducible artifact (GigaScience *loves* this) | **Very strong, high-probability**; GigaScience artifact culture fits the harness. |
 | **Bioinformatics (OUP)** | Useful, correct, benchmarked tool | Safe floor. |
@@ -116,9 +116,8 @@ from existing repo data.
 2. **Tension — can LLMs modernize it, and can we *trust* the result?** The field's own
    evidence says LLM code is gamed, contaminated, hallucination-prone (slopsquatting ~20%).
    Trust is the unsolved problem.
-3. **Idea — make the original tool the oracle.** Byte-exact differential parity + round-trip
-   - GIAB biological concordance: an oracle the agent cannot game, immune to the failure
-   classes plaguing test-based evals.
+3. **Idea — make the original tool the oracle.** Byte-exact differential parity + round-trip:
+   an oracle the agent cannot game, immune to the failure classes plaguing test-based evals.
 4. **Result (D1) — it works at scale.** 53 CLIs, near-perfect parity, memory-safe, often
    faster, drop-in into Nextflow/Snakemake/Galaxy/Conda.
 5. **Result (D2) — *how* it worked, and where it failed.** The validation-layer ablation
