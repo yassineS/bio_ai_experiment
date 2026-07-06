@@ -21,7 +21,7 @@ and are out of scope for this runbook — see "Not in scope" at the end.
 | CPU cores | 8 | 16–32 |
 | RAM | 16 GB | 32–64 GB |
 | Scratch disk (`$TMPDIR`) | 60 GB | 1 TB (for GIAB-full WGS) |
-| Toolchain | Go (version from `go.mod`), `git`, a C/C++ toolchain (`gcc`/`g++`, `make`, `autoconf`, `automake`, `libtool`), `zlib`/`bzip2`/`liblzma`/`libcurl` dev headers | + Docker (for `hap.py`), RTG Tools (for `vcfeval`) |
+| Toolchain | Go (version from `go.mod`), `git`, a C/C++ toolchain (`gcc`/`g++`, `make`, `autoconf`, `automake`, `libtool`), `zlib`/`bzip2`/`liblzma`/`libcurl` dev headers | — (biological-concordance tooling — `hap.py`/RTG `vcfeval` — is **out of scope**; not used) |
 | Network | outbound HTTPS to GitHub + the NIST GIAB FTP/HTTPS mirror | — |
 
 > **Important — do NOT install `libdeflate-dev`.** htslib built against
@@ -106,8 +106,11 @@ Record the box so the numbers are anchored:
 
 ## 3. H2 — Real-data parity + round-trip interop + performance (multi-contig)
 
-We do **not** run the GIAB biological-concordance experiment (no truth set /
-`hap.py` / `vcfeval`). Instead the GIAB files are used as **real, whole-genome,
+The GIAB biological-concordance experiment (truth set / `hap.py` / `vcfeval`
+variant-calling accuracy) is **out of scope** for this project and is **not**
+part of the manuscript — not deferred, not planned. The project validates
+byte-exact parity against the upstream oracles, not variant-calling concordance.
+Instead the GIAB files are used as **real, whole-genome,
 multi-contig inputs** for pure our-vs-upstream **differential parity** and
 **performance**, plus **bidirectional round-trip interop**. No truth set is
 needed — the upstream binary is the oracle.

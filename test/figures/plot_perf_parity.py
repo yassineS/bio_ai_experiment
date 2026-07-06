@@ -542,6 +542,7 @@ def parity_table():
              "| Experiment | k / n | Point (%) | Wilson 95% CI | Clopper-Pearson 95% CI |",
              "|---|---|---:|---|---|"]
     rows = [
+        ("realbench (real GIAB HG002/GRCh38 chr20, all-tool sweep)", 129, 131),
         ("realparity (real GIAB exome, samtools+bcftools)", 15, 15),
         ("full-validation medium (all 53 CLIs, byte-exact-eligible)", 383, 385),
         ("full-validation medium, amd64-adjusted", 385, 385),
@@ -555,7 +556,14 @@ def parity_table():
     lines += ["",
               "> The medium denominator counts the 385 byte-exact-eligible cells (4 SIMILAR "
               "float-scored cells are tolerance-compared, excluded from the binomial). The 2 "
-              "raw diverges are arm64 `vcftools` `-nan`/last-ULP; on `amd64`/CI it is 385/385.", ""]
+              "raw diverges are arm64 `vcftools` `-nan`/last-ULP; on `amd64`/CI it is 385/385.",
+              ">",
+              "> The **realbench chr20** row is the real GIAB HG002/GRCh38 chr20 sweep "
+              "(PASS = 129, DIFF = 2, ERROR = 0, SKIP = 1); denominator = 131 compared cells "
+              "(PASS + DIFF; the 1 SKIP is ours-only `bcftools csq`). The 2 DIFFs are the "
+              "accepted `samtools consensus` libm last-ULP `cq` residuals (see "
+              "`max_fp_deviation.md`). The **exome + wgs 60× whole-genome tiers are in "
+              "progress** (Seqera run `mS3IH42QfGTWO`) and will be folded in by a follow-up.", ""]
     return lines
 
 

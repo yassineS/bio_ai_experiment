@@ -32,6 +32,20 @@ Each figure is emitted as both `.pdf` (vector, for the manuscript) and `.png`
 (preview). Companion tables: [`../performance_tables.md`](../performance_tables.md)
 (C3 per-subcommand speedups + C2 parity rates with Wilson / Clopper-Pearson CIs).
 
+> **2026-07 campaign — figures unchanged; tables refreshed.** The 2026-07
+> parity/perf campaign (chr20 realbench, G1 coverage, G2 max-FP deviation, G3
+> nf-core drop-in, G4 `samtools view`, G7 streaming compare) added **no new
+> `pipeline/bench` performance cells** — the figure source JSONs
+> (`bench_*.json`, `compression.json`) are untouched, so re-running
+> `plot_perf_parity.py` reproduces byte-identical figure artifacts. What the
+> campaign changed is on the **parity/coverage** side (a new **realbench chr20
+> 129/2/0/1** parity row + the G1/G2 artifacts), which lands in the companion
+> **tables** (`performance_tables.md`, `../parity_statistics.md`,
+> `../max_fp_deviation.md`, `../branch_coverage.md`), not in these plots. The
+> **exome + wgs 60× whole-genome realbench tiers are in progress** (Seqera run
+> `mS3IH42QfGTWO`); when they SUCCEED a follow-up folds them into the tables (and
+> regenerates any figure whose source cells they update).
+
 > The numbers are **mixed by tier** (see [`../hardware.md`](../hardware.md) →
 > "Figure data provenance"): **smoke/small/medium were re-measured on the
 > darwin/arm64 host (Apple M2, 16 GiB) on 2026-06-29 at reps=5**; the **large**

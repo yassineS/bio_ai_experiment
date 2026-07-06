@@ -20,6 +20,11 @@ handed off to a local box via [`HEAVY_TIER_RUNBOOK.md`](HEAVY_TIER_RUNBOOK.md).
 | [`ablation.md`](ablation.md) | C7 | Validation-layer ablation — defects uniquely caught per layer + escape-rate-if-removed; completes the labeled bug corpus ([`../bug_corpus.md`](../bug_corpus.md)). |
 | [`flag_compat.md`](flag_compat.md) | C4/C1 | Flag-compatibility **83.6%** weighted (2197/2628 upstream flag slots), per-tool with denominators. Backed by `pipeline/cmd/flagcompat`. |
 | [`transpiler_baseline.md`](transpiler_baseline.md) | C5 ★★ | The counterfactual: a rule-based C→Go transpiler (c2go) cannot reach the bar — panics on trivial C, emits non-idiomatic `unsafe` + libc-shim code, and cannot ingest C++/Perl at all. (`../../../scripts/transpiler/`.) |
+| [`branch_coverage.md`](branch_coverage.md) | C2 (G1) | Go **statement coverage of the parity-exercised code = 64.25 %**, per-tool breakdown — the sharpest answer to "which input regions are untested". |
+| [`max_fp_deviation.md`](max_fp_deviation.md) | C2 (G2) | Per-tool **max abs/rel FP deviation**: byte-exact **0.0** for the vast majority; three documented last-ULP residuals (`bcftools call -m` QUAL, `bedgenomecov` fraction, `samtools consensus` `cq`). |
+| [`view_speed.md`](view_speed.md) | C3 (G4) | `samtools view` region/BED→SAM: the historical ~12× is already ~2.5×; this pass cut hot-loop allocations 23–37× and peak RSS ~15 %; residual is the documented pure-Go inflate floor. |
+| [`nfcore_dropin/`](nfcore_dropin/README.md) | C4 ★ (G3) | Our `samtools`/`flagstat` swapped **unchanged** into a real nf-core-style Nextflow module, run end-to-end — concrete drop-in usability evidence. |
+| chr20 realbench | C2/C3 | Real GIAB HG002/GRCh38 chr20 all-tool sweep: **PASS = 129, DIFF = 2, ERROR = 0, SKIP = 1** (2 DIFF = accepted `consensus` libm `cq` residual; 1 SKIP = ours-only `bcftools csq`). Drove ~10 real-data bug fixes (bug corpus A26–A35). Exome + wgs 60× tiers **in progress** (Seqera run `mS3IH42QfGTWO`). |
 
 ### Supporting code added for these results
 
@@ -38,8 +43,11 @@ handed off to a local box via [`HEAVY_TIER_RUNBOOK.md`](HEAVY_TIER_RUNBOOK.md).
 
 - **Real-data parity + interop + performance** on the GIAB files as
   whole-genome, **multi-contig** inputs (`realparity` + `full-validation`). No
-  truth set — upstream is the oracle. (The GIAB *biological-concordance*
-  experiment is intentionally **not** run.)
+  truth set — upstream is the oracle. GIAB *biological-concordance* (hap.py /
+  vcfeval variant-calling accuracy) is **out of scope** for this project: it
+  tests byte-exact parity against the upstream oracles, not variant-calling
+  concordance. That experiment is **not** part of the manuscript — not deferred,
+  not planned.
 - **Large-tier** parity + round-trip + performance, with the perf-stats upgrade
   (median + IQR + ratio CI) and a pinned hardware spec.
 - **K-run process-reproducibility** (needs LLM-API budget).

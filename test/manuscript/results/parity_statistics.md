@@ -41,6 +41,7 @@ reported with two 95% intervals:
 | — bcftools (6 subcmds) | 32 / 52 | 61.54 | [47.96, 73.53] | [47.02, 74.70] | [`README.md`][r], PR #74 |
 | — mosdepth + vcftools | 50 / 65 | 76.92 | [65.36, 85.49] | [64.81, 86.47] | [`README.md`][r], PR #76 |
 | Spec conformance (htslib / htscodecs) | 89 / 89 | 100.00 | [95.86, 100.00] | [95.94, 100.00] | [`conformance_run.txt`](conformance_run.txt) |
+| realbench (real GIAB HG002/GRCh38 chr20, all-tool sweep) | 129 / 131 | 98.47 | [94.60, 99.58] | [94.59, 99.81] | chr20 realbench (see notes) |
 | Parity-pipeline (small scale) | 398 / 400 | 99.50 | [98.20, 99.86] | [98.21, 99.94] | [`01_CLAIMS_AND_EXPERIMENTS.md`][c1] C2 row |
 | Parity-pipeline (medium scale) | DIVERGE = 0 (denominator not formally recorded) | — | — | — | [`01_CLAIMS_AND_EXPERIMENTS.md`][c1] C2 row |
 
@@ -66,6 +67,16 @@ reported with two 95% intervals:
   this is an all-pass cell, the Clopper-Pearson lower bound (95.94%) is the
   honest figure to quote: with 89 independent passes we can state with 95%
   confidence the true conformance rate is **at least ~96%**, not "100%".
+- **realbench chr20 (129 / 131).** The real-data `realbench` sweep on the GIAB
+  HG002/GRCh38 chr20 tier scored **PASS = 129, DIFF = 2, ERROR = 0, SKIP = 1**.
+  The denominator is the **131 compared cells** (PASS + DIFF); the 1 SKIP
+  (`bcftools csq`, an ours-only feature with no upstream oracle) is *not tested*,
+  not *tested-and-failed*, so it is excluded — the same skip-accounting rule used
+  for the upstream-audit total. The 2 DIFFs are the **accepted `samtools
+  consensus` libm last-ULP `cq`-column residuals** (base/seq/qual bytes
+  byte-exact; see [`max_fp_deviation.md`](max_fp_deviation.md)), not silent
+  corruption. The **exome + wgs 60× whole-genome tiers are in progress** (Seqera
+  run `mS3IH42QfGTWO`) and will be folded in by a follow-up.
 - **Parity-pipeline small (398 / 400).** The `parity-pipeline` byte-compare
   (provenance-stripped) over the small-scale fixture matrix. Source: the C2
   status row in
@@ -149,13 +160,22 @@ Key facts to report from this code:
 
 ### Observed maximum deviation
 
+> **Now materialised — see [`max_fp_deviation.md`](max_fp_deviation.md).** The
+> per-tool max abs/rel deviation is measured and tabulated: **byte-exact 0.0 for
+> the vast majority of tools** (all of `vcftools`, `mosdepth`, most `samtools`/
+> `bcftools`/`bed*`, `seqtk`/`fastp`/`prinseq`/`sickle`/`skewer`,
+> `bgzip`/`tabix`/`htsfile`), with exactly **three documented last-ULP
+> residuals**: `bcftools call -m` QUAL (max rel ~7.2e-6), `bedgenomecov`
+> histogram fraction (max rel 9.7e-6, abs 1.0e-6), and `samtools consensus` gap5
+> `cq` (discrete ±1 phred, base/seq/qual bytes byte-exact). `MaxAbsDeviation` was
+> added to `CompareResult`/`Result` (JSON `max_abs_deviation`) alongside the
+> relative one so both are recorded per cell. The paragraph below is retained for
+> the bounding argument.
+
 The largest *passing* relative deviation is, by construction, bounded by each
 cell's tolerance: for every similarity cell that passes at the default setting,
 `MaxDeviation <= 1e-6`; for a cell with a widened `Entry.Tolerance`, it is
-bounded by that entry's value. The aggregate "max observed deviation across the
-matrix" is **not currently persisted** by the runner (`MaxDeviation` is computed
-per call but the report writer does not aggregate the maximum across cells), so
-a single headline number cannot be read from an existing artifact without a run.
+bounded by that entry's value.
 
 To obtain the concrete per-cell and aggregate maxima cheaply, run the
 similarity cells and capture `MaxDeviation`:

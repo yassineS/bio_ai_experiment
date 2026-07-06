@@ -132,6 +132,38 @@ the central methods claim. Re-run each
 bug-commit through unit-only vs parity vs round-trip in isolation to convert this from assertion to
 measurement.
 
+### Surfaced by the chr20 realbench sweep (2026-07, real GIAB HG002/GRCh38)
+
+The real-data `realbench` sweep on the GIAB HG002/GRCh38 **chr20** tier (via the
+`test/nextflow/` Seqera pipeline, upstream binaries as the oracle) scored
+**PASS = 129, DIFF = 2, ERROR = 0, SKIP = 1** (the 2 DIFFs are the accepted
+`consensus` libm last-ULP `cq` residual; the SKIP is ours-only `bcftools csq`).
+Getting there surfaced and fixed the following real-data divergences — all
+**layer-2 (differential-parity) catches against the upstream oracle on real
+whole-chromosome data**, all `agent-authored` / `agent-self-corrected`. Columns:
+`id | tool | subcommand | class | severity | caught_by | evidence`.
+
+| id | tool | subcommand | class | severity | caught_by | evidence |
+|---|---|---|---|---|---|---|
+| A26 | samtools | fixmate | logic | wrong-output | realbench differential-parity | singleton handling + `TLEN` (`isize`) computation diverged from upstream on real reads; now byte-exact. |
+| A27 | samtools | markdup | logic | wrong-output | realbench differential-parity | duplicate-selection differed from upstream (which representative read is kept); fixed byte-exact. |
+| A28 | samtools | markdup | memory/perf | perf-regression | profiling / realbench | buffered the whole read set → peak RSS **1.4 GiB**; rewritten to bound the working set at **18.5 MiB**, output byte-identical. |
+| A29 | samtools | view -C (CRAM encoder) | format-encoding | wrong-output | realbench differential-parity | partial-reference `@SQ` `M5` (a contig only partly covered by the supplied reference) computed/omitted differently from upstream; fixed byte-exact. |
+| A30 | prinseq | (record ordering) | logic | wrong-output | realbench differential-parity | output ordering not stable vs upstream on ties; switched to a stable sort → byte-exact. |
+| A31 | bcftools | gtcheck | logic | wrong-output | realbench differential-parity | multi-allelic site handling diverged from upstream; fixed byte-exact. |
+| A32 | bedtools | pairtopair / pairtobed / tobam / split | logic | wrong-output | realbench differential-parity | these cells had been `t.Skip`-guarded; converting to live real-data parity surfaced and fixed divergences (`bedtag` compare also corrected to decode SAM, not raw BAM stdout, removing a false DIFF). |
+| A33 | bedtools | random / shuffle / sample | logic | wrong-output (nondeterminism) | realbench differential-parity | RNG cells were skipped as nondeterministic; made deterministic under `-seed` and un-SKIPped into real upstream parity. |
+| A34 | skewer | (oracle build) | build/tooling | n/a (harness) | realbench | the upstream `skewer` oracle failed to build in the realbench image (missing `-c` in the fallback `CXXFLAGS`); fixed so the cell runs a real comparison rather than skipping. |
+| A35 | mosdepth | (real-data parity) | logic | wrong-output | realbench differential-parity | real-data divergence surfaced by the sweep; fixed byte-exact (upstream `mosdepth` oracle bundled into the realbench image). |
+
+These are **layer-2 unique catches** in the same sense as the parity-skip wave:
+each surfaced only when a real-data cell was compared byte-for-byte against the
+upstream oracle (several were `t.Skip`-guarded until this sweep converted them to
+live assertions). They are **not** folded into the ablation denominator below (to
+keep the carefully-bookkept 24-row tally stable and comparable); they are recorded
+here as the chr20-realbench addendum and cited by
+[`results/MANUSCRIPT_GAPS.md`](results/MANUSCRIPT_GAPS.md).
+
 ### Per-layer summary (Corpus A) — the ablation cross-reference
 
 This is the table [`results/ablation.md`](results/ablation.md) consumes. "Unique
