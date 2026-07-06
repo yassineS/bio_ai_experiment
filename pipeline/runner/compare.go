@@ -375,9 +375,10 @@ func StreamDigest(r io.Reader) (sum [md5.Size]byte, head []byte, err error) {
 
 // CompareResult holds the outcome of comparing two output streams.
 type CompareResult struct {
-	Equal        bool
-	MaxDeviation float64 // for Similarity: largest numeric field deviation seen
-	Detail       string  // human-readable explanation on mismatch
+	Equal           bool
+	MaxDeviation    float64 // for Similarity: largest RELATIVE numeric field deviation seen
+	MaxAbsDeviation float64 // for Similarity: largest ABSOLUTE numeric field deviation seen
+	Detail          string  // human-readable explanation on mismatch
 }
 
 // CompareByteExact compares provenance-stripped streams for exact equality.
@@ -444,12 +445,12 @@ func CompareSimilarity(ours, upstream []byte, eps float64) CompareResult {
 	if len(al) != len(bl) {
 		return CompareResult{Equal: false, Detail: fmt.Sprintf("line count differs: ours=%d upstream=%d", len(al), len(bl))}
 	}
-	var maxDev float64
+	var maxDev, maxAbs float64
 	for i := range al {
 		at := strings.Fields(al[i])
 		bt := strings.Fields(bl[i])
 		if len(at) != len(bt) {
-			return CompareResult{Equal: false, MaxDeviation: maxDev,
+			return CompareResult{Equal: false, MaxDeviation: maxDev, MaxAbsDeviation: maxAbs,
 				Detail: fmt.Sprintf("line %d field count differs", i+1)}
 		}
 		for j := range at {
@@ -457,22 +458,26 @@ func CompareSimilarity(ours, upstream []byte, eps float64) CompareResult {
 			bf, bok := parseNum(bt[j])
 			if aok && bok {
 				dev := relDev(af, bf)
+				abs := math.Abs(af - bf)
 				if dev > maxDev {
 					maxDev = dev
 				}
+				if abs > maxAbs {
+					maxAbs = abs
+				}
 				if dev > eps {
-					return CompareResult{Equal: false, MaxDeviation: dev,
+					return CompareResult{Equal: false, MaxDeviation: dev, MaxAbsDeviation: maxAbs,
 						Detail: fmt.Sprintf("line %d field %d numeric deviation %.3g (%v vs %v)", i+1, j+1, dev, af, bf)}
 				}
 				continue
 			}
 			if at[j] != bt[j] {
-				return CompareResult{Equal: false, MaxDeviation: maxDev,
+				return CompareResult{Equal: false, MaxDeviation: maxDev, MaxAbsDeviation: maxAbs,
 					Detail: fmt.Sprintf("line %d field %d differs: %q vs %q", i+1, j+1, at[j], bt[j])}
 			}
 		}
 	}
-	return CompareResult{Equal: true, MaxDeviation: maxDev}
+	return CompareResult{Equal: true, MaxDeviation: maxDev, MaxAbsDeviation: maxAbs}
 }
 
 func parseNum(s string) (float64, bool) {
@@ -536,7 +541,7 @@ func trunc(s string) string {
 // missing-on-exactly-one-side file is a divergence. This is how the vcftools
 // and mosdepth matrices verify multi-file output.
 func CompareOutputFiles(ourPrefix, upPrefix string, suffixes []string, mode matrix.CompareMode, eps float64) CompareResult {
-	var maxDev float64
+	var maxDev, maxAbs float64
 	// BAMDecoded output files (e.g. the per-read-group BAMs samtools split
 	// writes) are decoded through the upstream samtools so only their records
 	// are compared, bypassing the BGZF framing difference.
@@ -572,12 +577,15 @@ func CompareOutputFiles(ourPrefix, upPrefix string, suffixes []string, mode matr
 		if cmp.MaxDeviation > maxDev {
 			maxDev = cmp.MaxDeviation
 		}
+		if cmp.MaxAbsDeviation > maxAbs {
+			maxAbs = cmp.MaxAbsDeviation
+		}
 		if !cmp.Equal {
-			return CompareResult{Equal: false, MaxDeviation: maxDev,
+			return CompareResult{Equal: false, MaxDeviation: maxDev, MaxAbsDeviation: maxAbs,
 				Detail: fmt.Sprintf("output file %q: %s", sfx, cmp.Detail)}
 		}
 	}
-	return CompareResult{Equal: true, MaxDeviation: maxDev}
+	return CompareResult{Equal: true, MaxDeviation: maxDev, MaxAbsDeviation: maxAbs}
 }
 
 // readOutputFile reads one named output file for comparison. In BAMDecoded mode
