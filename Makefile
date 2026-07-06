@@ -18,7 +18,7 @@ BIN          := bin
 OURS_DIR     := $(BIN)/ours
 UPSTREAM_DIR := $(BIN)/upstream
 
-.PHONY: all ours upstream build clean help
+.PHONY: all ours upstream build clean clean-submodules help
 
 all: ours ## Default: build our Go binaries into bin/ours/
 
@@ -46,10 +46,15 @@ upstream: ## Best-effort build the vendored upstream binaries into bin/upstream/
 	-cd reference_code/seqtk && $(MAKE) && cp seqtk "$(CURDIR)/$(UPSTREAM_DIR)/"
 	-cd reference_code/sickle && $(MAKE) && cp sickle "$(CURDIR)/$(UPSTREAM_DIR)/"
 	-cd reference_code/skewer && $(MAKE) && cp skewer "$(CURDIR)/$(UPSTREAM_DIR)/"
+	@$(MAKE) --no-print-directory clean-submodules
+
+clean-submodules: ## Remove build artifacts left inside the reference_code/ submodules
+	@echo "cleaning reference_code/ submodule build artifacts (bin/upstream copies are kept)"
+	-@git submodule foreach --quiet 'git clean -fdxq' 2>/dev/null
 
 build: ours upstream ## Build both ours and upstream
 
-clean: ## Remove the bin/ tree
+clean: clean-submodules ## Remove the bin/ tree and submodule build artifacts
 	rm -rf $(BIN)
 
 help: ## Show this help
