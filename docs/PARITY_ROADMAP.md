@@ -878,8 +878,13 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
 - The large-tier heavy cells (`sam_mpileup`, `bcf_call`, `bcf_isec`) were
   mis-reported as OOM; that was **disk exhaustion** (a ~17 GB temp output on a
   5 GB-free overlay), not RAM — all three are bounded and run with a big-disk
-  `TMPDIR`. The parity *matrix* harness still buffers both outputs in RAM to
-  byte-diff them and wants the stream-comparing approach `realparity` uses.
+  `TMPDIR`. The parity *matrix* harness's ByteExact-stdout compare (the path
+  those three heavy cells take) **now streams both outputs** through the same
+  `StreamDigester` (provenance-strip + running md5 + 64 KiB head) that
+  `realparity`/`realbench` use, comparing digests instead of buffering the full
+  outputs — bounded to O(64 KiB)/side (`timedRunStreaming` + `CompareDigests` in
+  `pipeline/runner`; verdicts byte-exact-identical to the old buffered path, see
+  `TestCompareDigestsMatchesCompareByteExact` / `TestStreamDigestBoundedMemory`).
 
 Genuinely-remaining real gaps (the deliverable — see PROJECT_STATUS.md for
 the canonical version with effort sizing). Cloud I/O is **complete**
