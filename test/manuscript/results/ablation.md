@@ -91,8 +91,10 @@ are reported separately under *non-correctness probes* below.
 Defects that escaped **every** layer are by definition absent, so the ablation
 measures *relative layer value among caught bugs* and is silent on the undetected
 tail. The only probes into that tail are differential fuzzing
-([`difffuzz_run.txt`](difffuzz_run.txt)) and GIAB concordance (claim C2). Read every
-"escape rate if removed" below as *escape-among-caught*, not *escape-absolute*.
+([`difffuzz_run.txt`](difffuzz_run.txt)) and the real-data byte-exact parity
+battery on whole GIAB inputs (`realparity`/`realbench`, upstream as the oracle —
+claim C2). Read every "escape rate if removed" below as *escape-among-caught*,
+not *escape-absolute*.
 
 ---
 
