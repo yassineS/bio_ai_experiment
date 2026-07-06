@@ -339,8 +339,10 @@ func TestBedCellArgWiring(t *testing.T) {
 		if c.Need&NeedBEDPE == 0 {
 			t.Errorf("%s must require NeedBEDPE", name)
 		}
-		if c.Post != PostOursOnly {
-			t.Errorf("%s should be ours-only, got post=%v", name, c.Post)
+		// pairtopair/pairtobed are byte-exact vs upstream, so they are real
+		// stdout comparisons (PostStdout), NOT ours-only perf cells.
+		if c.Post != PostStdout {
+			t.Errorf("%s must be a real upstream stdout comparison (PostStdout), got post=%v", name, c.Post)
 		}
 	}
 	// pairtobed's -a is the BEDPE and -b is the BED3.
@@ -348,13 +350,26 @@ func TestBedCellArgWiring(t *testing.T) {
 		t.Errorf("bedpairtobed -b must be the BED, got %v", c.OurArgs)
 	}
 
-	// 6: bedsplit must run in a work dir with a prefix inside it.
+	// 6: bedsplit must run in a work dir with a prefix inside it, and must use the
+	// deterministic `-a simple` (round-robin) mode so it is byte-exact vs upstream
+	// (the default `-a size` uses an STL-implementation-defined unstable std::sort
+	// tie-break and is NOT portably comparable). The cell compares a named shard
+	// file (PostFile), so it is a real upstream comparison, not an ours-only cell.
 	if c := byName["bedsplit"]; true {
 		if !c.WorkDirOut {
 			t.Errorf("bedsplit must set WorkDirOut so the -p prefix dir exists")
 		}
 		if !strings.Contains(joined(c.OurArgs), phOutdir) {
 			t.Errorf("bedsplit -p must live under {outdir}, got %v", c.OurArgs)
+		}
+		if !contains(c.OurArgs, "simple") {
+			t.Errorf("bedsplit must use -a simple (deterministic) for byte-exact parity, got %v", c.OurArgs)
+		}
+		if c.Post != PostFile {
+			t.Errorf("bedsplit must compare a shard file (PostFile), got Post=%d", c.Post)
+		}
+		if c.Compare == "" {
+			t.Errorf("bedsplit must name a shard file to compare (Compare)")
 		}
 	}
 
@@ -368,6 +383,15 @@ func TestBedCellArgWiring(t *testing.T) {
 		}
 		if contains(c.OurArgs, phBED) {
 			t.Errorf("bedtobam must not feed the bare BED3, got %v", c.OurArgs)
+		}
+		// tobam writes its BAM to stdout, so (like bedtag) it must compare via
+		// `samtools view -h` on the captured stdout BAM (PostViewSAM + StdoutView),
+		// and it is a real upstream comparison, not an ours-only cell.
+		if c.Post != PostViewSAM {
+			t.Errorf("bedtobam must use PostViewSAM (framing-independent BAM compare), got Post=%d", c.Post)
+		}
+		if !c.StdoutView {
+			t.Errorf("bedtobam must set StdoutView (its BAM is on stdout, no output file)")
 		}
 	}
 
@@ -393,6 +417,30 @@ func TestBedCellArgWiring(t *testing.T) {
 		}
 		if !contains(c.OurArgs, "-labels") {
 			t.Errorf("bedtag must still pass -labels, got %v", c.OurArgs)
+		}
+	}
+
+	// 10: bedtag writes its tagged BAM to STDOUT (no output-file flag), so the
+	// cell must compare via `samtools view -h` on the captured stdout BAM
+	// (PostViewSAM + StdoutView) rather than digesting the raw BGZF bytes through
+	// the text provenance filter (which false-DIFFs on BGZF framing alone).
+	if c := byName["bedtag"]; true {
+		if c.Post != PostViewSAM {
+			t.Errorf("bedtag must use PostViewSAM (framing-independent BAM compare), got Post=%d", c.Post)
+		}
+		if !c.StdoutView {
+			t.Errorf("bedtag must set StdoutView (its BAM is on stdout, no output file)")
+		}
+		if c.WriteOut != "" || c.WorkDirOut {
+			t.Errorf("bedtag must not use WriteOut/WorkDirOut (its output is stdout), got WriteOut=%q WorkDirOut=%v", c.WriteOut, c.WorkDirOut)
+		}
+	}
+
+	// Only bedtag and bedtobam write their comparable BAM to stdout, so they are
+	// the only StdoutView bed* cells; no other bed* cell should be one.
+	for name, c := range byName {
+		if strings.HasPrefix(name, "bed") && name != "bedtag" && name != "bedtobam" && c.StdoutView {
+			t.Errorf("%s unexpectedly marked StdoutView; only bedtag/bedtobam should be", name)
 		}
 	}
 }
@@ -452,6 +500,18 @@ func TestSamtoolsBcftoolsCellArgWiring(t *testing.T) {
 		}
 		if c.Need&NeedSampleRename == 0 {
 			t.Errorf("bcftools_reheader must require NeedSampleRename")
+		}
+	}
+
+	// csq must be ours-only: upstream csq exits 255 on standard GENCODE GFF3
+	// (bare Ensembl IDs), so there is no comparable upstream output. Ours
+	// parses it and emits BCSQ annotations, so the cell runs ours-only.
+	if c := byName["bcftools_csq"]; true {
+		if c.Post != PostOursOnly {
+			t.Errorf("bcftools_csq must be PostOursOnly (upstream fails on GENCODE GFF3), got Post=%d", c.Post)
+		}
+		if c.Need&NeedGFF == 0 {
+			t.Errorf("bcftools_csq must require NeedGFF")
 		}
 	}
 }
@@ -670,6 +730,98 @@ func locateTestSamtools(t *testing.T) string {
 			return ""
 		}
 		dir = parent
+	}
+}
+
+// TestRunCell_StdoutViewPostViewSAM proves the bedtag-style fix end to end: a
+// StdoutView PostViewSAM cell whose two sides emit the SAME alignment records to
+// STDOUT but with DIFFERENT BGZF framing must PASS (compared by decoded records
+// via `samtools view -h`), not DIFF on the framing bytes. It stands in a fake
+// bedtag (ours) and bedtools (upstream) that write byte-different-but-record-
+// identical BAMs to stdout, plus a real samtools for the decode.
+func TestRunCell_StdoutViewPostViewSAM(t *testing.T) {
+	samtoolsBin := locateTestSamtools(t)
+	if samtoolsBin == "" {
+		t.Skip("no samtools binary found; skipping stdout-view PostViewSAM decode test")
+	}
+
+	dir := t.TempDir()
+	// A small coord-sorted SAM to turn into the reference BAM both sides emit.
+	sam := "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:chr1\tLN:1000\n" +
+		"r1\t0\tchr1\t100\t60\t5M\t*\t0\t0\tACGTA\tIIIII\tYB:Z:x\n" +
+		"r2\t0\tchr1\t200\t60\t4M\t*\t0\t0\tACGT\tIIII\tYB:Z:x\n"
+	samPath := filepath.Join(dir, "in.sam")
+	if err := os.WriteFile(samPath, []byte(sam), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ourDir := filepath.Join(dir, "our")
+	upDir := filepath.Join(dir, "up")
+	for _, d := range []string{ourDir, upDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// Both sides must find a samtools for the decode step (decodeSamtools
+		// looks up "samtools" via the resolver's dirs).
+		if err := os.Symlink(samtoolsBin, filepath.Join(d, "samtools")); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Fake bedtag (ours): emit an UNCOMPRESSED BAM (-l 0) to stdout.
+	writeFakeBAMEmitter(t, filepath.Join(ourDir, "bedtag"), samtoolsBin, samPath, "0")
+	// Fake bedtools (upstream): emit a level-6 BGZF BAM to stdout — SAME records,
+	// DIFFERENT framing bytes than ours.
+	writeFakeBAMEmitter(t, filepath.Join(upDir, "bedtools"), samtoolsBin, samPath, "6")
+
+	// A BED the cell's -files placeholder resolves to (never read by the fakes).
+	bed := filepath.Join(dir, "in.bed")
+	if err := os.WriteFile(bed, []byte("chr1\t50\t150\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bam := filepath.Join(dir, "in.bam") // placeholder path; the fakes ignore it
+	if err := os.WriteFile(bam, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var notes []string
+	r := NewBinResolver(ourDir, upDir, t.TempDir(), &notes)
+	cfg := WithResolver(Config{
+		Tier:   "chr20",
+		Reps:   1,
+		TmpDir: t.TempDir(),
+		Inputs: Inputs{BAM: bam, BED: bed},
+	}, r)
+
+	// Pull the real bedtag cell out of the matrix so the wiring under test is
+	// exactly what production uses.
+	var bedtag CellSpec
+	for _, c := range Matrix("chr20") {
+		if c.Name == "bedtag" {
+			bedtag = c
+		}
+	}
+	if bedtag.Name == "" {
+		t.Fatal("bedtag cell not found in matrix")
+	}
+
+	res := runCell(cfg, bedtag)
+	if res.Parity != "PASS" {
+		t.Fatalf("stdout-view PostViewSAM parity: got %q (note %q), want PASS despite BGZF framing differences", res.Parity, res.Note)
+	}
+	if res.Ours == nil || res.Up == nil {
+		t.Errorf("both sides should be measured: ours=%v up=%v", res.Ours, res.Up)
+	}
+}
+
+// writeFakeBAMEmitter writes an executable shell script at path that ignores its
+// arguments and streams `samtools view -b -l <level>` of samPath to stdout — a
+// stand-in for bedtag/bedtools that emits a fixed BAM at a chosen BGZF level.
+func writeFakeBAMEmitter(t *testing.T, path, samtoolsBin, samPath, level string) {
+	t.Helper()
+	script := "#!/bin/sh\nexec " + samtoolsBin + " view -b -l " + level + " " + samPath + "\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
 	}
 }
 

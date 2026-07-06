@@ -143,7 +143,12 @@ func bcftoolsCells() []CellSpec {
 			OurArgs: []string{"convert", "-O", "v", phVCF}},
 		{Tool: t, Name: "bcftools_consensus", Subcommand: "consensus -f", Need: NeedVCF | NeedRef, Post: PostStdout,
 			OurArgs: []string{"consensus", "-f", phRef, phVCF}},
-		{Tool: t, Name: "bcftools_csq", Subcommand: "csq -g", Need: NeedVCF | NeedRef | NeedGFF, Post: PostStdout,
+		// ours-only: upstream csq exits 255 on standard GENCODE GFF3 (bare
+		// Ensembl IDs; it needs misc/gff2gff-style transcript:/gene: type
+		// prefixes to parse). Ours parses the bare-ID GFF3 directly and emits
+		// correct BCSQ annotations, so there is no comparable upstream output —
+		// this cell is a perf/functionality cell run ours-only.
+		{Tool: t, Name: "bcftools_csq", Subcommand: "csq -g", Need: NeedVCF | NeedRef | NeedGFF, Post: PostOursOnly,
 			OurArgs: []string{"csq", "-p", "a", "-f", phRef, "-g", phGFF, "-O", "v", phVCF}},
 		{Tool: t, Name: "bcftools_roh", Subcommand: "roh", Need: NeedVCF, Post: PostStdout,
 			OurArgs: []string{"roh", "-G30", phVCF}},
@@ -163,68 +168,96 @@ func bedCells() []CellSpec {
 		args       []string // our argv (also upstream, sans the bedtools subcommand prefix)
 		ourOnly    bool     // ran ours-only as a perf cell (parity SKIP)
 		workDirOut bool     // run in a per-side work dir (needed by cells with an -p prefix)
+		postView   bool     // compare via `samtools view -h` on a stdout-captured BAM (bedtag/bedtobam)
+		compare    string   // when workDirOut is set, the work-dir shard file compared byte-for-byte (bedsplit)
 	}
 	specs := []bc{
-		{"bedintersect", "intersect", NeedBED, []string{"-a", phBED, "-b", phBED}, false, false},
-		{"bedmerge", "merge", NeedBED, []string{"-i", phBED}, false, false},
-		{"bedsort", "sort", NeedBED, []string{"-i", phBED}, false, false},
-		{"bedsubtract", "subtract", NeedBED, []string{"-a", phBED, "-b", phBED}, false, false},
-		{"bedwindow", "window", NeedBED, []string{"-a", phBED, "-b", phBED}, false, false},
-		{"bedclosest", "closest", NeedBED, []string{"-a", phBED, "-b", phBED}, false, false},
+		{"bedintersect", "intersect", NeedBED, []string{"-a", phBED, "-b", phBED}, false, false, false, ""},
+		{"bedmerge", "merge", NeedBED, []string{"-i", phBED}, false, false, false, ""},
+		{"bedsort", "sort", NeedBED, []string{"-i", phBED}, false, false, false, ""},
+		{"bedsubtract", "subtract", NeedBED, []string{"-a", phBED, "-b", phBED}, false, false, false, ""},
+		{"bedwindow", "window", NeedBED, []string{"-a", phBED, "-b", phBED}, false, false, false, ""},
+		{"bedclosest", "closest", NeedBED, []string{"-a", phBED, "-b", phBED}, false, false, false, ""},
 		// BED3 has no col 4; map over col 3 (end) so this is a real BED3 comparison.
-		{"bedmap", "map", NeedBED, []string{"-a", phBED, "-b", phBED, "-c", "3", "-o", "count"}, false, false},
-		{"bedcoverage", "coverage", NeedBED, []string{"-a", phBED, "-b", phBED}, false, false},
-		{"bedjaccard", "jaccard", NeedBED, []string{"-a", phBED, "-b", phBED}, false, false},
-		{"bedfisher", "fisher", NeedBED | NeedRef, []string{"-a", phBED, "-b", phBED, "-g", phFai}, false, false},
-		{"bedreldist", "reldist", NeedBED, []string{"-a", phBED, "-b", phBED}, false, false},
-		{"bedspacing", "spacing", NeedBED, []string{"-i", phBED}, false, false},
-		{"bedslop", "slop", NeedBED | NeedRef, []string{"-i", phBED, "-g", phFai, "-b", "10"}, false, false},
-		{"bedflank", "flank", NeedBED | NeedRef, []string{"-i", phBED, "-g", phFai, "-b", "10"}, false, false},
-		{"bedshift", "shift", NeedBED | NeedRef, []string{"-i", phBED, "-g", phFai, "-s", "5"}, false, false},
-		{"bedcomplement", "complement", NeedBED | NeedRef, []string{"-i", phBED, "-g", phFai}, false, false},
-		{"bedgenomecov", "genomecov", NeedBED | NeedRef, []string{"-i", phBED, "-g", phFai}, false, false},
-		{"bedmakewindows", "makewindows", NeedRef, []string{"-g", phFai, "-w", "100000"}, false, false},
-		{"bedmulticov", "multicov", NeedBED | NeedBAM, []string{"-bams", phBAM, "-bed", phBED}, false, false},
-		{"bedmultiinter", "multiinter", NeedBED, []string{"-i", phBED, phBED}, false, false},
-		{"bednuc", "nuc", NeedBED | NeedRef, []string{"-fi", phRef, "-bed", phBED}, false, false},
-		{"bedgetfasta", "getfasta", NeedBED | NeedRef, []string{"-fi", phRef, "-bed", phBED}, false, false},
-		{"bed12tobed6", "bed12tobed6", NeedBED, []string{"-i", phBED}, false, false},
-		{"bedbamtobed", "bamtobed", NeedBAM, []string{"-i", phBAM}, false, false},
+		{"bedmap", "map", NeedBED, []string{"-a", phBED, "-b", phBED, "-c", "3", "-o", "count"}, false, false, false, ""},
+		{"bedcoverage", "coverage", NeedBED, []string{"-a", phBED, "-b", phBED}, false, false, false, ""},
+		{"bedjaccard", "jaccard", NeedBED, []string{"-a", phBED, "-b", phBED}, false, false, false, ""},
+		{"bedfisher", "fisher", NeedBED | NeedRef, []string{"-a", phBED, "-b", phBED, "-g", phFai}, false, false, false, ""},
+		{"bedreldist", "reldist", NeedBED, []string{"-a", phBED, "-b", phBED}, false, false, false, ""},
+		{"bedspacing", "spacing", NeedBED, []string{"-i", phBED}, false, false, false, ""},
+		{"bedslop", "slop", NeedBED | NeedRef, []string{"-i", phBED, "-g", phFai, "-b", "10"}, false, false, false, ""},
+		{"bedflank", "flank", NeedBED | NeedRef, []string{"-i", phBED, "-g", phFai, "-b", "10"}, false, false, false, ""},
+		{"bedshift", "shift", NeedBED | NeedRef, []string{"-i", phBED, "-g", phFai, "-s", "5"}, false, false, false, ""},
+		{"bedcomplement", "complement", NeedBED | NeedRef, []string{"-i", phBED, "-g", phFai}, false, false, false, ""},
+		{"bedgenomecov", "genomecov", NeedBED | NeedRef, []string{"-i", phBED, "-g", phFai}, false, false, false, ""},
+		{"bedmakewindows", "makewindows", NeedRef, []string{"-g", phFai, "-w", "100000"}, false, false, false, ""},
+		{"bedmulticov", "multicov", NeedBED | NeedBAM, []string{"-bams", phBAM, "-bed", phBED}, false, false, false, ""},
+		{"bedmultiinter", "multiinter", NeedBED, []string{"-i", phBED, phBED}, false, false, false, ""},
+		{"bednuc", "nuc", NeedBED | NeedRef, []string{"-fi", phRef, "-bed", phBED}, false, false, false, ""},
+		{"bedgetfasta", "getfasta", NeedBED | NeedRef, []string{"-fi", phRef, "-bed", phBED}, false, false, false, ""},
+		{"bed12tobed6", "bed12tobed6", NeedBED, []string{"-i", phBED}, false, false, false, ""},
+		{"bedbamtobed", "bamtobed", NeedBAM, []string{"-i", phBAM}, false, false, false, ""},
 		// BED3 has no col 4; expand col 3 (a real, valid BED3 invocation).
-		{"bedexpand", "expand", NeedBED, []string{"-i", phBED, "-c", "3"}, false, false},
-		{"bedgroupby", "groupby", NeedBED, []string{"-i", phBED, "-g", "1", "-c", "2", "-o", "min"}, false, false},
-		{"bedannotate", "annotate", NeedBED, []string{"-i", phBED, "-files", phBED}, false, false},
+		{"bedexpand", "expand", NeedBED, []string{"-i", phBED, "-c", "3"}, false, false, false, ""},
+		{"bedgroupby", "groupby", NeedBED, []string{"-i", phBED, "-g", "1", "-c", "2", "-o", "min"}, false, false, false, ""},
+		{"bedannotate", "annotate", NeedBED, []string{"-i", phBED, "-files", phBED}, false, false, false, ""},
 		// overlap needs four position columns on a paired/windowed file; feed the
 		// derived 8-field window BED with -cols 2,3,6,7 (a real ours-vs-upstream cell).
-		{"bedoverlap", "overlap", NeedBED | NeedWindow, []string{"-i", phWindow, "-cols", "2,3,6,7"}, false, false},
-		{"bedsummary", "summary", NeedBED | NeedRef, []string{"-i", phBED, "-g", phFai}, false, false},
+		{"bedoverlap", "overlap", NeedBED | NeedWindow, []string{"-i", phWindow, "-cols", "2,3,6,7"}, false, false, false, ""},
+		{"bedsummary", "summary", NeedBED | NeedRef, []string{"-i", phBED, "-g", phFai}, false, false, false, ""},
 		// unionbedg needs 4-col BedGraph, not BED3 (upstream SIGABRTs on BED3);
 		// feed the derived 4-col bedgraph.
-		{"bedunionbedg", "unionbedg", NeedBED | NeedBedGraph, []string{"-i", phBedGraph, phBedGraph}, false, false},
-		{"bedcluster", "cluster", NeedBED, []string{"-i", phBED}, false, false},
-		{"bedlinks", "links", NeedBED, []string{"-i", phBED}, false, false},
-		{"bedigv", "igv", NeedBED, []string{"-i", phBED}, false, false},
+		{"bedunionbedg", "unionbedg", NeedBED | NeedBedGraph, []string{"-i", phBedGraph, phBedGraph}, false, false, false, ""},
+		{"bedcluster", "cluster", NeedBED, []string{"-i", phBED}, false, false, false, ""},
+		{"bedlinks", "links", NeedBED, []string{"-i", phBED}, false, false, false, ""},
+		{"bedigv", "igv", NeedBED, []string{"-i", phBED}, false, false, false, ""},
 		// -labels and -names are mutually exclusive upstream; pass only -labels.
-		{"bedtag", "tag", NeedBED | NeedBAM, []string{"-i", phBAM, "-files", phBED, "-labels", "x"}, false, false},
+		{"bedtag", "tag", NeedBED | NeedBAM, []string{"-i", phBAM, "-files", phBED, "-labels", "x"}, false, false, true, ""},
 		// pairtopair needs BEDPE (>=10 fields) on both sides; feed the derived BEDPE.
-		{"bedpairtopair", "pairtopair", NeedBED | NeedBEDPE, []string{"-a", phBEDPE, "-b", phBEDPE}, true, false},
+		// A self-join of the derived BEDPE is byte-identical to `bedtools pairtopair`.
+		{"bedpairtopair", "pairtopair", NeedBED | NeedBEDPE, []string{"-a", phBEDPE, "-b", phBEDPE}, false, false, false, ""},
 		// pairtobed needs a BEDPE -a and a BED -b; feed the derived BEDPE + the BED3.
-		{"bedpairtobed", "pairtobed", NeedBED | NeedBEDPE, []string{"-a", phBEDPE, "-b", phBED}, true, false},
+		// Byte-identical to `bedtools pairtobed`.
+		{"bedpairtobed", "pairtobed", NeedBED | NeedBEDPE, []string{"-a", phBEDPE, "-b", phBED}, false, false, false, ""},
 		// -p is a required output PREFIX; it must live inside a real work dir, so
 		// run in a per-side work dir and write the shards under {outdir}/split.
-		{"bedsplit", "split", NeedBED, []string{"-i", phBED, "-n", "2", "-p", phOutdir + "/split"}, true, true},
+		// The DEFAULT `-a size` mode is NOT portably byte-comparable: `bedtools
+		// split -a size` orders shards with an unstable std::sort whose tie-break
+		// is STL-implementation-defined, so shard assignment is not reproducible
+		// across implementations. The deterministic round-robin `-a simple` mode
+		// IS byte-exact vs upstream, so this cell uses it and compares the first
+		// shard (both shards verified byte-identical on real chr20 data).
+		{"bedsplit", "split", NeedBED, []string{"-i", phBED, "-n", "2", "-a", "simple", "-p", phOutdir + "/split"}, false, true, false, "split.00001.bed"},
 		// tobam requires a name column (BED4+) to fill QNAME; feed the derived BED4.
-		{"bedtobam", "tobam", NeedBED | NeedBED4 | NeedRef, []string{"-i", phBED4, "-g", phFai}, true, false},
-		// RNG-driven tools have no deterministic upstream pair: ours-only perf.
-		{"bedrandom", "random", NeedRef, []string{"-g", phFai, "-n", "100", "-seed", "1"}, true, false},
-		{"bedshuffle", "shuffle", NeedBED | NeedRef, []string{"-i", phBED, "-g", phFai, "-seed", "1"}, true, false},
-		{"bedsample", "sample", NeedBED, []string{"-i", phBED, "-n", "10", "-seed", "1"}, true, false},
+		// tobam writes its BAM to stdout, so compare it framing-independently via
+		// `samtools view -h` (PostViewSAM + StdoutView), like bedtag.
+		{"bedtobam", "bedtobam", NeedBED | NeedBED4 | NeedRef, []string{"-i", phBED4, "-g", phFai}, false, false, true, ""},
+		// RNG-driven tools ARE deterministic under a fixed -seed: bedtools
+		// random/shuffle/sample use C++11 std::mt19937_64 (the default non-USE_RAND
+		// build), which our ports replicate byte-exactly (tools/<tool>/pkg/<tool>/
+		// mt19937.go), so with a matching -seed they compare byte-for-byte vs
+		// upstream. The -g genome file is read from the .fai's first two columns.
+		{"bedrandom", "random", NeedRef, []string{"-g", phFai, "-n", "100", "-seed", "1"}, false, false, false, ""},
+		{"bedshuffle", "shuffle", NeedBED | NeedRef, []string{"-i", phBED, "-g", phFai, "-seed", "1"}, false, false, false, ""},
+		{"bedsample", "sample", NeedBED, []string{"-i", phBED, "-n", "10", "-seed", "1"}, false, false, false, ""},
 	}
 	cells := make([]CellSpec, 0, len(specs))
 	for _, s := range specs {
 		post := PostStdout
 		if s.ourOnly {
 			post = PostOursOnly
+		}
+		// A postView cell writes its comparable BAM to stdout; compare it
+		// framing-independently via `samtools view -h` (PostViewSAM+StdoutView)
+		// instead of digesting the raw BGZF bytes through the text filter.
+		if s.postView {
+			post = PostViewSAM
+		}
+		// A work-dir cell that names a compare file (bedsplit shards) writes plain
+		// text files into a per-side work dir; compare the named shard's bytes
+		// directly (PostFile) rather than treating stdout as the stream.
+		if s.compare != "" {
+			post = PostFile
 		}
 		cells = append(cells, CellSpec{
 			Tool:       s.tool,
@@ -234,6 +267,8 @@ func bedCells() []CellSpec {
 			Post:       post,
 			OurArgs:    s.args,
 			WorkDirOut: s.workDirOut,
+			StdoutView: s.postView,
+			Compare:    s.compare,
 			// Upstream needs the bedtools subcommand prepended; the runner does
 			// that via UpStub. Same trailing args, so UpArgs == OurArgs.
 		})

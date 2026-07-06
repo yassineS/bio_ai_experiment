@@ -88,16 +88,47 @@ func Fixmate(in io.Reader, out io.Writer, opts FixmateOptions) error {
 			prev = nil
 			continue
 		}
-		// prev was a singleton.
+		// prev was a singleton: its mate is not present in the collated
+		// stream, so upstream (bam_mate.c, the "!cur && pre" block) fixes up
+		// the stale mate-related fields before writing it out.
+		fixSingleton(prev)
 		if err := emit(prev); err != nil {
 			return err
 		}
 		prev = rec
 	}
+	// A trailing singleton (the last record with no following mate) is fixed
+	// up too.
+	fixSingleton(prev)
 	if err := emit(prev); err != nil {
 		return err
 	}
 	return bw.Close()
+}
+
+// fixSingleton fixes up a paired-flagged read whose mate is not present in the
+// name-collated stream (e.g. the mate mapped off the region being processed).
+// It mirrors bam_mate.c's "!cur && pre" handling (the single-primary case):
+//   - if the read itself is unmapped, its FUNMAP bit is already set; upstream's
+//     sanitizer/next_template ensures this, and we mirror it defensively;
+//   - clear the mate-reverse (0x20) and proper-pair (0x2) flags, which cannot
+//     hold without a present mate;
+//   - set RNEXT="*" (mtid=-1), PNEXT=0 (mpos=-1 → 1-based 0) and TLEN=0.
+//
+// A record that is not paired-flagged is left untouched: fixmate only rewrites
+// mate fields for reads that claim to have a mate.
+func fixSingleton(r *sam.Record) {
+	if r == nil || !r.IsPaired() {
+		return
+	}
+	if r.IsUnmapped() {
+		r.Flag |= sam.FlagUnmapped
+	}
+	r.Flag &^= sam.FlagMateReverse
+	r.Flag &^= sam.FlagProperPair
+	r.RNext = "*"
+	r.PNext = 0
+	r.TLen = 0
 }
 
 // fixmateShouldDrop reports whether a record should be removed under -r.
@@ -119,9 +150,11 @@ func fixPair(a, b *sam.Record, opts FixmateOptions) {
 	a.PNext = b.Pos
 	b.RNext = mateRName(b.RName, a.RName)
 	b.PNext = a.Pos
-	tlen := computeTLen(a, b)
-	a.TLen = tlen
-	b.TLen = -tlen
+	// TLEN/ISIZE, computed exactly as bam_mate.c does with a = the FIRST
+	// record in file order (upstream "pre") and b = the SECOND ("cur").
+	aTLen, bTLen := computeTLen(a, b)
+	a.TLen = aTLen
+	b.TLen = bTLen
 
 	// MQ (mate MAPQ) and MC (mate CIGAR) are written BY DEFAULT, matching
 	// upstream sync_mq_mc (called unconditionally from sync_mate for every
@@ -185,34 +218,62 @@ func mateRName(self, mate string) string {
 	return mate
 }
 
-// computeTLen returns the signed template length of a as part of a
-// pair (a is the leftmost mate when its 5' position is smaller).
+// computeTLen returns the signed template lengths (a.TLen, b.TLen) for a pair,
+// reproducing bam_mate.c exactly (a = the FIRST record in file order, upstream
+// "pre"; b = the SECOND, "cur"). Upstream uses strand-aware 5' ends with
+// bam_endpos (the 0-based EXCLUSIVE end, pos0 + reference-consumed length):
 //
-// We follow the SAM spec and upstream samtools: TLEN is unsigned distance
-// between the leftmost mapped 5'-end and the rightmost mapped 5'-end,
-// inclusive of both endpoints; sign is positive on the leftmost record
-// and negative on the rightmost. Both records must be mapped on the same
-// reference for a non-zero TLen — otherwise TLen is 0.
-func computeTLen(a, b *sam.Record) int64 {
+//	cur5 = cur.reverse ? bam_endpos(cur) : cur.pos
+//	pre5 = pre.reverse ? bam_endpos(pre) : pre.pos
+//	cur.isize = pre5 - cur5
+//	pre.isize = cur5 - pre5
+//
+// TLEN is 0 when either read OR its mate is unmapped, or when the two are on
+// different references. Both records are guaranteed to be mapped here for a
+// non-zero result, so bam_endpos never falls back to the rlen==0 case in a way
+// that diverges from EndPosition (see bamEndposExcl0).
+func computeTLen(a, b *sam.Record) (int64, int64) {
 	if a.IsUnmapped() || b.IsUnmapped() {
-		return 0
+		return 0, 0
+	}
+	if a.IsMateUnmapped() || b.IsMateUnmapped() {
+		return 0, 0
 	}
 	if a.RName == "" || a.RName != b.RName {
-		return 0
+		return 0, 0
 	}
-	aBeg, aEnd := a.Pos, a.EndPosition()
-	bBeg, bEnd := b.Pos, b.EndPosition()
-	left, right := aBeg, bEnd
-	if bBeg < aBeg {
-		left = bBeg
-		right = aEnd
+	pre5 := fivePrime(a)
+	cur5 := fivePrime(b)
+	// a == pre, b == cur.
+	aTLen := cur5 - pre5 // pre.isize
+	bTLen := pre5 - cur5 // cur.isize
+	return aTLen, bTLen
+}
+
+// fivePrime returns the strand-aware 5' end coordinate upstream uses for TLEN:
+// the alignment's own POS on the forward strand, or bam_endpos (0-based
+// exclusive end) on the reverse strand. Both are returned in the same
+// coordinate frame so their difference is the signed insert size.
+func fivePrime(r *sam.Record) int64 {
+	if r.Flag&sam.FlagReverse != 0 {
+		return bamEndposExcl0(r)
 	}
-	tlen := right - left + 1
-	// Sign: a is leftmost ⇒ positive on a.
-	if aBeg <= bBeg {
-		return tlen
+	// r.Pos is 1-based; bam_endpos is 0-based exclusive. They differ by a
+	// constant +1 that cancels in the TLEN subtraction, so using r.Pos (which
+	// keeps the frame of EndPosition below) yields the identical difference.
+	return r.Pos - 1
+}
+
+// bamEndposExcl0 returns the 0-based exclusive end coordinate (htslib
+// bam_endpos): pos0 + max(reference-consumed CIGAR length, 1). For a mapped
+// record this equals EndPosition() (1-based inclusive) numerically, but the
+// helper spells out the bam_endpos semantics used by the TLEN computation.
+func bamEndposExcl0(r *sam.Record) int64 {
+	rlen := int64(r.Cigar.ReferenceLength())
+	if rlen == 0 {
+		rlen = 1
 	}
-	return -tlen
+	return (r.Pos - 1) + rlen
 }
 
 // mateScore is the sum of every base quality >= 15 in the read,

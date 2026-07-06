@@ -241,3 +241,80 @@ func TestFilterGzipInputRoundTrips(t *testing.T) {
 		t.Errorf("expected 4 kept records after -min_len 5, got %d", got)
 	}
 }
+
+// TestFlatStatsDupl_RevcompStableSort is a regression guard for the reverse-
+// complement dedup phase. Upstream prinseq-lite.pl sorts stably; our port must
+// use sort.SliceStable in checkForDupl's revcomp expansion (graphdata.go),
+// otherwise tied equal-key entries are ordered differently from Perl and the
+// exactrevcomp duplicate count diverges (real chr20 R1 gave 5656 vs upstream's
+// 3780 before the fix). This input is 6 distinct 20-mers each paired with its
+// reverse complement as a separate read, so every pair is an exact-revcomp
+// duplicate: exactrevcomp and total must be 6, deterministically.
+func TestFlatStatsDupl_RevcompStableSort(t *testing.T) {
+	const fq = `@r0
+ACGTACGTACGTAAACCCGT
++
+IIIIIIIIIIIIIIIIIIII
+@r1
+ACGGGTTTACGTACGTACGT
++
+IIIIIIIIIIIIIIIIIIII
+@r2
+TTGGCCAATTGGCCAATTGG
++
+IIIIIIIIIIIIIIIIIIII
+@r3
+CCAATTGGCCAATTGGCCAA
++
+IIIIIIIIIIIIIIIIIIII
+@r4
+GATCGATCGATCTTAACCGG
++
+IIIIIIIIIIIIIIIIIIII
+@r5
+CCGGTTAAGATCGATCGATC
++
+IIIIIIIIIIIIIIIIIIII
+@r6
+ACACACACGTGTGTGTAAAC
++
+IIIIIIIIIIIIIIIIIIII
+@r7
+GTTTACACACACGTGTGTGT
++
+IIIIIIIIIIIIIIIIIIII
+@r8
+GGGGTTTTCCCCAAAAGTAC
++
+IIIIIIIIIIIIIIIIIIII
+@r9
+GTACTTTTGGGGAAAACCCC
++
+IIIIIIIIIIIIIIIIIIII
+@r10
+TACGTACGTACGACGTTTGA
++
+IIIIIIIIIIIIIIIIIIII
+@r11
+TCAAACGTCGTACGTACGTA
++
+IIIIIIIIIIIIIIIIIIII
+`
+	lines, err := CollectFlatStats(strings.NewReader(fq), true, StatsGroups{Dupl: true})
+	if err != nil {
+		t.Fatalf("CollectFlatStats: %v", err)
+	}
+	got := strings.Join(lines, "\n")
+	for _, want := range []string{"stats_dupl\texactrevcomp\t6", "stats_dupl\ttotal\t6"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in stats_dupl output:\n%s", want, got)
+		}
+	}
+	// Determinism: the unstable-sort bug could vary run-to-run; assert stable.
+	for i := 0; i < 5; i++ {
+		l2, _ := CollectFlatStats(strings.NewReader(fq), true, StatsGroups{Dupl: true})
+		if strings.Join(l2, "\n") != got {
+			t.Fatalf("stats_dupl not deterministic across runs")
+		}
+	}
+}

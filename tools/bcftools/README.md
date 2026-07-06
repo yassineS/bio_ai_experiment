@@ -106,8 +106,13 @@ subcommands. The current implementation ships:
   `CSQ<TAB>sample<TAB>haplotype<TAB>chrom<TAB>pos<TAB>consequence`
   row per (sample, haplotype) consequence, byte-for-byte with
   upstream `text_print_vcsq` (the leading `#`-comment version/command
-  provenance lines aside). Remaining gaps (e.g. `-s -` sample
-  dropping) are tracked in `docs/PARITY_ROADMAP.md`.
+  provenance lines aside). As a fix-on-port robustness win, our csq
+  accepts **standard GENCODE GFF3 with bare Ensembl IDs** (no
+  `transcript:`/`gene:` type-prefixes), where upstream csq exits 255
+  ("No usable transcripts found") and directs the user to
+  `misc/gff2gff`; on real GENCODE chr20 ours emits correct BCSQ
+  annotations directly. Remaining gaps (e.g. `-s -` sample dropping)
+  are tracked in `docs/PARITY_ROADMAP.md`.
 - `bcftools mpileup` — per-position genotype likelihoods from BAM
   input, the upstream input to `bcftools call`. v1 ships the
   SNP-only, uniform-error binomial likelihood model: each base

@@ -33,7 +33,7 @@ var bedSubcommand = map[string]string{
 	"bedgetfasta":    "getfasta",
 	"bed12tobed6":    "bed12tobed6",
 	"bedbamtobed":    "bamtobed",
-	"bedtobam":       "tobam",
+	"bedtobam":       "bedtobam",
 	"bedexpand":      "expand",
 	"bedgroupby":     "groupby",
 	"bedannotate":    "annotate",

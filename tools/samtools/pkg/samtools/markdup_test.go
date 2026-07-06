@@ -205,10 +205,15 @@ func TestMarkdupUnit(t *testing.T) {
 		}
 	})
 	t.Run("calcScore_includesMS", func(t *testing.T) {
+		// A genuine mate-mapped pair carries a real mate coordinate (RNext/PNext);
+		// hasMate (and thus the ms-inclusion) requires it, matching upstream's
+		// has_mate gate.
 		rec := &sam.Record{
-			Flag: sam.FlagPaired,
-			Qual: []byte{20, 20},
-			Aux:  []sam.Aux{{Tag: "ms", Type: 'i', Value: int64(1000)}},
+			Flag:  sam.FlagPaired,
+			RNext: "=",
+			PNext: 100,
+			Qual:  []byte{20, 20},
+			Aux:   []sam.Aux{{Tag: "ms", Type: 'i', Value: int64(1000)}},
 		}
 		got := calcScore(rec)
 		if got != 1040 {
@@ -289,18 +294,30 @@ func TestMarkdupUnit(t *testing.T) {
 			}
 		}
 	})
-	t.Run("betterEntry_score", func(t *testing.T) {
+	t.Run("betterPair_score", func(t *testing.T) {
 		a := &markdupEntry{qname: "z", score: 100}
 		b := &markdupEntry{qname: "a", score: 50}
-		if !betterEntry(a, b) {
-			t.Fatalf("betterEntry: higher-score should win")
+		if !betterPair(a, b) {
+			t.Fatalf("betterPair: higher-score should win")
 		}
 	})
-	t.Run("betterEntry_qnameTieBreak", func(t *testing.T) {
+	t.Run("betterPair_qnameTieBreak", func(t *testing.T) {
 		a := &markdupEntry{qname: "a", score: 50}
 		b := &markdupEntry{qname: "z", score: 50}
-		if !betterEntry(a, b) {
-			t.Fatalf("betterEntry: ties go to lex-smaller qname")
+		if !betterPair(a, b) {
+			t.Fatalf("betterPair: pair ties go to lex-smaller qname")
+		}
+	})
+	t.Run("betterSingle_noTieBreak", func(t *testing.T) {
+		// Single hash uses a strict score comparison: on a tie the incumbent
+		// stays regardless of qname order.
+		a := &markdupEntry{qname: "a", score: 50}
+		b := &markdupEntry{qname: "z", score: 50}
+		if betterSingle(a, b) {
+			t.Fatalf("betterSingle: score ties must NOT swap (incumbent wins)")
+		}
+		if !betterSingle(&markdupEntry{score: 51}, b) {
+			t.Fatalf("betterSingle: strictly higher score should win")
 		}
 	})
 }
@@ -372,5 +389,46 @@ func TestMarkdupNoMCFallsBack(t *testing.T) {
 	}
 	if dups != 1 {
 		t.Fatalf("dups: got %d, want 1", dups)
+	}
+}
+
+// TestMarkdupSingleTieKeepsIncumbent locks the single-hash tie-break fix. When
+// two mate-unmapped singletons collide at the same coordinate with an EXACTLY
+// equal score, upstream bam_markdup.c uses a STRICT `new_score > old_score`
+// swap with NO qname tie-break, so the record encountered FIRST in coordinate
+// order (the incumbent) is kept and the second is flagged — even when the
+// second read's qname is lexicographically smaller. Byte-verified against
+// upstream `samtools markdup` (keeps 'zzz', flags 'aaa').
+func TestMarkdupSingleTieKeepsIncumbent(t *testing.T) {
+	// Coordinate-sorted: 'zzz' first (incumbent), 'aaa' second (smaller qname).
+	// Both are mate-unmapped singletons (FLAG 65 = paired|read1, no mate coord)
+	// at chr1:100 with identical quality, so their scores tie exactly.
+	hdr := "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:chr1\tLN:100000\n"
+	body := "zzz\t65\tchr1\t100\t60\t5M\t*\t0\t0\tACGTA\tIIIII\n" +
+		"aaa\t65\tchr1\t100\t60\t5M\t*\t0\t0\tACGTA\tIIIII\n"
+	var out bytes.Buffer
+	if _, err := MarkdupBytes([]byte(hdr+body), &out, MarkdupOptions{}); err != nil {
+		t.Fatalf("MarkdupBytes: %v", err)
+	}
+	br, err := sam.NewReader(&out)
+	if err != nil {
+		t.Fatalf("re-read: %v", err)
+	}
+	dupOf := map[string]bool{}
+	for {
+		rec, err := br.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		dupOf[rec.QName] = rec.IsDuplicate()
+	}
+	if dupOf["zzz"] {
+		t.Errorf("incumbent 'zzz' must NOT be flagged duplicate on an equal-score tie")
+	}
+	if !dupOf["aaa"] {
+		t.Errorf("later-arriving 'aaa' must be flagged duplicate (incumbent wins, no qname tie-break)")
 	}
 }
