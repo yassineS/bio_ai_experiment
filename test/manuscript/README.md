@@ -52,9 +52,9 @@ the causal "feasibility/effort" claim.
   counterfactual and should not be the headline.
 - **Primary venue: Nature Computational Science**; fallback Genome Biology; safety net GigaScience;
   **companion SE/ML paper for the method, sprinted for priority** (Seqera RustQC is the scoop risk).
-- **The five make-or-break experiments** (all currently unrun): GIAB concordance (incl. CMRG +
-  difficult regions), the named silent-corruption edge-case battery, differential fuzzing, the
-  ablation-as-rigorous-data, and the C5 counterfactual (or drop the effort claim).
+- **The make-or-break experiments** (all currently unrun): the named silent-corruption
+  edge-case battery, differential fuzzing, the ablation-as-rigorous-data, and the C5
+  counterfactual (or drop the effort claim).
 - **Fix first, cheaply:** re-enable CI + re-execute the suite independently; recompute every headline
   number once; reclassify the bug ledger to upstream-confirmed only; add the memorization threat.
 

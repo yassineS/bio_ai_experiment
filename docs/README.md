@@ -48,9 +48,6 @@ restating numbers.
 - [`DIFFERENTIAL_FUZZING.md`](DIFFERENTIAL_FUZZING.md) — the differential
   fuzzer (`../pipeline/cmd/diff-fuzz`) that cross-checks our output against
   upstream on randomised inputs.
-- [`GIAB_CONCORDANCE.md`](GIAB_CONCORDANCE.md) — the GIAB real-data concordance
-  harness (`../pipeline/cmd/giab-concordance`, `../pipeline/giab`) for biological
-  validation against the GIAB benchmark.
 
 ## Agent role descriptions
 

@@ -36,17 +36,14 @@ so every parity rate has a stated denominator coverage.
 | Coverage over the input space (Go branch coverage during the parity run) | `-coverprofile` over the parity sweep | — | **NEED** — report what fraction of branches the oracle actually exercised |
 | **Differential fuzzing**: feed both binaries the same fuzzed input, diff stdout+stderr+exit | extend the 10 existing `Fuzz` fns into a differential harness | upstream binary | **NEED ★** — strongest defense vs. "untested input regions" and the only honest answer to "both wrong the same way" for unexplored inputs |
 | Metamorphic relations beyond round-trip (permutation invariance, compositionality, monotonicity, sort idempotence) | property tests over real + fuzzed inputs | self (no oracle) | **NEED** — addresses the "both implementations share a misconception" limit of differential testing |
-| **GIAB biological concordance** (precision/recall/F1, SNV+indel, GA4GH-stratified) | `bcftools mpileup\|call` on HG001–HG007 reads → `hap.py`/`vcfeval` vs GIAB v4.2.1 truth in high-conf BED, GIAB stratifications | DeepVariant/GATK/upstream-bcftools as peers | **NEED ★** — the domain-credible "scientifically meaningful equivalence" beyond byte-exact; precedent: every variant-caller paper (DeepVariant, Strelka2, Octopus) + Sentieon's GATK-concordance model |
 | Conformance against the **spec's own corpus** | run htslib `test/` fixtures + htscodecs-corpus codec vectors through our binaries | htslib expected outputs | **NEED** — far more credible than only our seeded fixtures; ready-made oracle |
 
 **To build (C2, priority order):**
 
 1. ★ Differential fuzzing harness (both binaries, diff output+exit) + branch-coverage report.
-2. ★ GIAB concordance pipeline (hap.py/vcfeval, HG001–007, GA4GH stratifications) for the
-   variant-calling path — report byte-exact parity *and* GIAB F1 side by side.
-3. Adopt htslib `test/` + htscodecs-corpus as conformance suites; report pass rates.
-4. Explicit metamorphic relations (permutation/compositionality/monotonicity).
-5. Upgrade every parity rate to carry a CI and a coverage denominator; report max FP deviation.
+2. Adopt htslib `test/` + htscodecs-corpus as conformance suites; report pass rates.
+3. Explicit metamorphic relations (permutation/compositionality/monotonicity).
+4. Upgrade every parity rate to carry a CI and a coverage denominator; report max FP deviation.
 
 **The fix-on-port ledger as a first-class result:** maintain `docs/UPSTREAM_BUGS.md` as a
 labeled table {tool, bug class, discovery method, disposition, upstream PR/issue, whether
@@ -144,9 +141,8 @@ This is the table the field is missing and the manuscript's strongest methods no
 
 1. C5 counterfactual package (non-LLM transpiler + timed human anchor + COCOMO + supervision cost). ★★
 2. C2 differential-fuzzing harness + branch-coverage report. ★
-3. C2 GIAB concordance pipeline (hap.py/vcfeval, HG001–007). ★
-4. C7 validation-layer ablation + completed labeled bug corpus. ★
-5. C3 large-tier run + pinned hardware spec + median/IQR/CI statistics. ★
+3. C7 validation-layer ablation + completed labeled bug corpus. ★
+4. C3 large-tier run + pinned hardware spec + median/IQR/CI statistics. ★
 
 **Tier B — strengthens:**
 6. C4 real-workflow drop-in demo + flag-compat %.

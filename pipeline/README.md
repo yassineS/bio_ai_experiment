@@ -36,10 +36,6 @@ and performance, and keeps a battery of **crafted-input correctness** suites
   our-vs-upstream differential testing: no truth set is needed. Every input is
   optional; a cell whose input is absent SKIPs, so it exits cleanly (all-SKIP)
   on a machine with no real data.
-- **`giab`** (`pipeline/giab`, CLI `pipeline/cmd/giab-concordance`) — the GIAB
-  real-data biological-**concordance** harness (against the GIAB benchmark VCF +
-  high-confidence BED). See
-  [`../docs/GIAB_CONCORDANCE.md`](../docs/GIAB_CONCORDANCE.md).
 
 ### Crafted-input correctness suites (unchanged)
 

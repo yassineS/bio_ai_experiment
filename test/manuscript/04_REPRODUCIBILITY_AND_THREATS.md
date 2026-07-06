@@ -52,8 +52,7 @@ number is a distribution, not a point.
 - **"Usability"/"feasible" unoperationalized** → metricize (flag-compat %, workflow drop-in,
   CWE-class elimination) or demote to qualitative (C4).
 - **Byte-exact ≠ correct (both wrong the same way)** → mitigate with metamorphic relations +
-  the fix-on-port bug ledger (positive evidence the method catches *real* upstream defects) +
-  GIAB biological concordance (an independent biological oracle, not the C binary).
+  the fix-on-port bug ledger (positive evidence the method catches *real* upstream defects).
 - **LOC ≠ effort** → already disciplined; keep it.
 
 ### Internal (is the causal attribution sound?) — **the #1 desk-reject risk**

@@ -20,7 +20,7 @@ layer caught which defect.* It has two halves:
 > `[reconstructed]` (inferred — needs the independent label). **Survivorship caveat:** this corpus
 > contains only *detected* bugs; bugs that escaped every layer are by definition absent, so the
 > ablation measures *relative layer value among caught bugs* and is silent on the undetected tail —
-> differential fuzzing (`pipeline/difffuzz`) and GIAB concordance are the only probes into it.
+> differential fuzzing (`pipeline/difffuzz`) is the only probe into it.
 
 Labeling schema (one row per defect):
 `{id, tool/subcommand, class, severity, caught_by, introduced_by, fix_origin, disposition,

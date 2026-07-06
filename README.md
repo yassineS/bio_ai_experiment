@@ -92,7 +92,7 @@ bio_ai_experiment/
 │       ├── cmd/<tool>/main.go     # CLI entry
 │       ├── pkg/<tool>/            # logic + tests
 │       └── README.md
-├── pipeline/              # validation harnesses: GIAB concordance,
+├── pipeline/              # validation harnesses: real-data parity,
 │                          #   differential fuzzing, conformance + edge cases
 ├── docs/
 │   ├── PARITY_ROADMAP.md      # authoritative gap list
@@ -243,7 +243,7 @@ corrected on the way (see each PR for details).
 Since those original audits, live byte-for-byte parity harnesses have been
 added for far more of the surface — including `seqtk` (glibc `drand48`
 `sample`/`randbase` + Mott `trimfq`) and the `prinseq` corpus — and the
-`pipeline/` validation suites (GIAB concordance, differential fuzzing,
+`pipeline/` validation suites (real-data parity, differential fuzzing,
 htslib/htscodecs conformance, and a silent-corruption edge-case battery) extend
 the gate beyond the upstream regression tests. `fastp` remains validated mainly
 on the common path. Per-tool parity status is tracked in
