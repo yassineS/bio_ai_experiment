@@ -1519,7 +1519,7 @@ Options:
   -q             Reduce base-quality resolution (qual/10*10+7 for qual>=3).
   -n INT         Mask matching bases of reads whose NM >= INT.
   -Q             Quiet: suppress per-record "different MD/NM" warnings.
-  -@, --threads N  Accepted; v1 is single-threaded.
+  -@, --threads N  Worker threads for parallel BGZF (de)compression (I/O only).
   -o, --output PATH  Output path (default stdout).
   -h, --help     Show this help.
   -v, --version  Show version.
@@ -1603,8 +1603,7 @@ func runCalmd(args []string) int {
 	}
 	inPath := fs.Arg(0)
 	refPath := fs.Arg(1)
-	_ = threads // accepted, ignored
-	_ = sInFmt  // we auto-detect
+	_ = sInFmt // we auto-detect
 	_ = clearMDNM
 	_ = noPG
 	_ = hashQNM
@@ -1626,6 +1625,7 @@ func runCalmd(args []string) int {
 		DropTags:     dropTag,
 		BinQual:      binQual,
 		MaxNM:        maxNM,
+		Threads:      threads,
 	}
 	if err := samtools.CalmdFile(inPath, out, refPath, opts, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools calmd: %v\n", err)

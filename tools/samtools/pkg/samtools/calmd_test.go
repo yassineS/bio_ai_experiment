@@ -5,11 +5,59 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
+
+// TestCalmd_ThreadsDeterministic verifies that -@/--threads only parallelises
+// the BGZF I/O (input inflate + compressed-BAM deflate): the decoded records
+// and their recomputed MD/NM are identical regardless of the worker count, as
+// in upstream bam_md.c where the fill-md compute itself is single-threaded.
+// Guards the threaded input-decode and threaded BAM-output paths wired for -@.
+func TestCalmd_ThreadsDeterministic(t *testing.T) {
+	refPath := parityPath(t, "calmd/ref.fa")
+	decode := func(threads int) string {
+		in := openParity(t, "calmd/basic.sam")
+		defer in.Close()
+		var buf bytes.Buffer
+		if err := Calmd(in, &buf, refPath, CalmdOptions{OutputBAM: true, Threads: threads}, nil); err != nil {
+			t.Fatalf("Calmd -@%d: %v", threads, err)
+		}
+		br, err := sam.NewReader(bytes.NewReader(buf.Bytes()))
+		if err != nil {
+			t.Fatalf("re-open BAM -@%d: %v", threads, err)
+		}
+		var sb strings.Builder
+		n := 0
+		for {
+			rec, err := br.Read()
+			if err != nil {
+				break
+			}
+			md, _ := rec.GetAux("MD")
+			mds, _ := md.String()
+			nm, _ := rec.GetAux("NM")
+			nmv, _ := nm.Int()
+			sb.WriteString(rec.QName)
+			sb.WriteString("|MD=")
+			sb.WriteString(mds)
+			sb.WriteString("|NM=")
+			sb.WriteString(strconv.Itoa(int(nmv)))
+			sb.WriteByte('\n')
+			n++
+		}
+		if n == 0 {
+			t.Fatalf("no records decoded at -@%d", threads)
+		}
+		return sb.String()
+	}
+	if one, many := decode(1), decode(8); one != many {
+		t.Fatalf("calmd -@1 vs -@8 decoded output differs:\n-@1:\n%s\n-@8:\n%s", one, many)
+	}
+}
 
 // TestCalmd_BasicMDNM exercises the four common code paths (match, mismatch,
 // deletion, insertion+softclip) against a tiny hand-built reference. The
