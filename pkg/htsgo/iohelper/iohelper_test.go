@@ -159,6 +159,75 @@ func TestOpenReaderBGZF(t *testing.T) {
 	}
 }
 
+// TestOpenReaderThreaded verifies the block-parallel opener: on a multi-block
+// BGZF input it routes through the MultiReader (*multiReadCloser) and yields
+// bytes byte-for-byte identical to the single-threaded OpenReader; a plain
+// (non-BGZF) input transparently falls back to OpenReader.
+func TestOpenReaderThreaded(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Multi-block BGZF input.
+	chunk := bytes.Repeat([]byte("ACGTN"), 1024)
+	var content []byte
+	for len(content) < bgzip.MaxBlockSize*2+777 {
+		content = append(content, chunk...)
+	}
+	bgzPath := filepath.Join(tmpDir, "big.bgz")
+	f, err := os.Create(bgzPath)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	bgw := bgzip.NewWriter(f)
+	if _, err := bgw.Write(content); err != nil {
+		t.Fatalf("bgzip write: %v", err)
+	}
+	if err := bgw.Close(); err != nil {
+		t.Fatalf("bgzip close: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("file close: %v", err)
+	}
+
+	r, err := OpenReaderThreaded(bgzPath, 4)
+	if err != nil {
+		t.Fatalf("OpenReaderThreaded: %v", err)
+	}
+	if _, ok := r.(*multiReadCloser); !ok {
+		t.Errorf("expected *multiReadCloser for threaded BGZF input, got %T", r)
+	}
+	got, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Errorf("threaded decode differs from source (%d vs %d bytes)", len(got), len(content))
+	}
+
+	// Plain, non-BGZF input: must fall back to OpenReader and read verbatim.
+	plainPath := filepath.Join(tmpDir, "plain.txt")
+	if err := os.WriteFile(plainPath, content, 0o644); err != nil {
+		t.Fatalf("write plain: %v", err)
+	}
+	pr, err := OpenReaderThreaded(plainPath, 4)
+	if err != nil {
+		t.Fatalf("OpenReaderThreaded plain: %v", err)
+	}
+	if _, ok := pr.(*multiReadCloser); ok {
+		t.Errorf("plain input should fall back, not use *multiReadCloser")
+	}
+	pgot, err := io.ReadAll(pr)
+	if err != nil {
+		t.Fatalf("ReadAll plain: %v", err)
+	}
+	pr.Close()
+	if !bytes.Equal(pgot, content) {
+		t.Errorf("plain fallback differs from source")
+	}
+}
+
 // TestOpenReaderBGZFMultiBlock exercises the BGZF path with input large
 // enough that bgzip emits more than one block, ensuring the wrapper streams
 // across block boundaries.

@@ -166,6 +166,59 @@ func OpenReader(filename string) (io.ReadCloser, error) {
 	}
 }
 
+// OpenReaderThreaded is OpenReader with block-parallel BGZF inflate wired to a
+// worker count. When threads >= 2 and the input is BGZF-framed (the on-disk
+// form of .vcf.gz, .bcf, BAM and tabix-indexed files), its blocks are inflated
+// concurrently across up to threads goroutines via bgzf.NewMultiReader, and the
+// decompressed byte stream is byte-for-byte identical to OpenReader's for any
+// thread count — only decode throughput changes. A plain-gzip or uncompressed
+// input (nothing BGZF to parallelise), standard input, or threads < 2 falls
+// back to the single-threaded OpenReader. The caller closes the returned
+// ReadCloser, whose Close tears down the parallel-decode worker goroutines and
+// releases the underlying handle.
+func OpenReaderThreaded(filename string, threads int) (io.ReadCloser, error) {
+	if threads < 2 || filename == "-" || filename == "" {
+		return OpenReader(filename)
+	}
+	src, err := openSource(filename)
+	if err != nil {
+		return nil, err
+	}
+	br := bufio.NewReader(src)
+	head, _ := br.Peek(sniffSize)
+	if !bgzfSniff(head) {
+		// Not BGZF: plain gzip and uncompressed inputs have no block-parallel
+		// decode. Release the raw handle and defer to the single-threaded
+		// opener, which re-sniffs and returns the right decoder.
+		src.Close()
+		return OpenReader(filename)
+	}
+	mr, err := bgzip.NewMultiReader(br, threads)
+	if err != nil {
+		src.Close()
+		return nil, err
+	}
+	return &multiReadCloser{mr: mr, src: src}, nil
+}
+
+// multiReadCloser couples a parallel BGZF MultiReader with the raw source it
+// inflates. Its Close tears down the decode worker goroutines and then releases
+// the underlying handle, returning the first non-nil error.
+type multiReadCloser struct {
+	mr  *bgzip.MultiReader
+	src io.Closer
+}
+
+func (m *multiReadCloser) Read(p []byte) (int, error) { return m.mr.Read(p) }
+
+func (m *multiReadCloser) Close() error {
+	err := m.mr.Close()
+	if cerr := m.src.Close(); cerr != nil && err == nil {
+		err = cerr
+	}
+	return err
+}
+
 // OpenRaw opens filename and returns its bytes WITHOUT any decompression: a
 // BGZF or gzip file is returned still-compressed. It is the opener for callers
 // that want to perform their own (e.g. block-parallel) decompression downstream
