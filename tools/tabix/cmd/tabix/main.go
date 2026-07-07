@@ -78,6 +78,8 @@ Options:
   -h, --print-header               Also emit header lines when querying.
       --only-header                Emit only the header from the file.
   -D                               Do not save the index (only relevant for build).
+  -@, --threads N                  Additional BGZF worker threads for index build
+                                   and reheader (default 0). Query is unaffected.
       --help                       Show this help and exit.
   -v, --version                    Show version and exit.
 `
@@ -137,11 +139,12 @@ func run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	fs.BoolVar(&o.noSaveIdx, "D", false, "do not save the index")
 	cliflag.BoolVar(fs, &o.csiOutput, "C", "csi", false, "emit a CSI index instead of .tbi")
 	cliflag.IntVar(fs, &o.csiMinShift, "m", "csi-min-shift", 0, "CSI min_shift parameter (default 14)")
-	// -@ threads: upstream accepts a worker count; this port is single-threaded
-	// for index build/query, so accept and ignore it (and so `-@N` clusters
-	// parse). No long alias upstream.
+	// -@/--threads: number of additional BGZF worker threads. Threads >= 2
+	// enable parallel BGZF decompression for index build and parallel
+	// decode+recompress for reheader; query and list-chroms stay single-threaded
+	// (they are index-driven seeks the block-parallel reader cannot serve).
 	var threads int
-	cliflag.IntVar(fs, &threads, "@", "", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "number of additional threads to use")
 	fs.BoolVar(&o.showHelp, "help", false, "show help")
 	cliflag.BoolVar(fs, &o.showVersion, "v", "version", false, "show version")
 
@@ -154,7 +157,6 @@ func run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprint(stderr, usage)
 		return 2
 	}
-	_ = threads
 	if o.showHelp {
 		fmt.Fprint(stdout, usage)
 		return 0
@@ -179,6 +181,9 @@ func run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "tabix: %v\n", err)
 		return 2
 	}
+	// -@/--threads is a runtime worker count, carried on cfg for the build and
+	// reheader paths (it is never serialised into the .tbi/.csi header).
+	cfg.Threads = threads
 
 	switch {
 	case o.listChroms:
@@ -200,7 +205,7 @@ func run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 // with the contents of o.reheader and writes a fresh bgzipped stream to
 // stdout, mirroring upstream tabix's `--reheader` behavior.
 func runReheader(dataPath string, o opts, cfg tabix.Config, stdout, stderr io.Writer) int {
-	if err := tabix.Reheader(dataPath, o.reheader, byte(cfg.Meta), stdout); err != nil {
+	if err := tabix.ReheaderThreaded(dataPath, o.reheader, byte(cfg.Meta), stdout, cfg.Threads); err != nil {
 		fmt.Fprintf(stderr, "tabix: reheader: %v\n", err)
 		return 1
 	}
