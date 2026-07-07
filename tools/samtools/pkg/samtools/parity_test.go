@@ -2062,6 +2062,49 @@ func TestParity_Split_T03_SingleRG(t *testing.T) {
 	}
 }
 
+// TestSplit_ThreadsByteIdentical verifies -@/--threads only parallelises the
+// BGZF input inflate: every per-@RG output file is byte-for-byte identical
+// whether split runs single-threaded or with a worker pool (the fan-out writers
+// stay single-threaded, and the decoded records are thread-count-invariant).
+func TestSplit_ThreadsByteIdentical(t *testing.T) {
+	bamBytes := localSAMToBAM(t, "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:chr1\tLN:1000\n"+
+		"@RG\tID:rg1\tSM:s1\n@RG\tID:rg2\tSM:s2\n"+
+		"r1\t0\tchr1\t100\t60\t5M\t*\t0\t0\tACGTA\tIIIII\tRG:Z:rg1\n"+
+		"r2\t0\tchr1\t200\t60\t5M\t*\t0\t0\tACGTA\tIIIII\tRG:Z:rg2\n"+
+		"r3\t0\tchr1\t300\t60\t5M\t*\t0\t0\tACGTA\tIIIII\tRG:Z:rg1\n"+
+		"r4\t0\tchr1\t400\t60\t5M\t*\t0\t0\tACGTA\tIIIII\n")
+
+	split := func(threads int) string {
+		dir := t.TempDir()
+		bamPath := filepath.Join(dir, "in.bam")
+		if err := os.WriteFile(bamPath, bamBytes, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := SplitFile(bamPath, SplitOptions{
+			Pattern:      filepath.Join(dir, "out_%!.bam"),
+			Unidentified: filepath.Join(dir, "unk.bam"),
+			Threads:      threads,
+		}); err != nil {
+			t.Fatalf("SplitFile -@%d: %v", threads, err)
+		}
+		return dir
+	}
+	d1, d4 := split(1), split(4)
+	for _, name := range []string{"out_rg1.bam", "out_rg2.bam", "unk.bam"} {
+		b1, err := os.ReadFile(filepath.Join(d1, name))
+		if err != nil {
+			t.Fatalf("read -@1 %s: %v", name, err)
+		}
+		b4, err := os.ReadFile(filepath.Join(d4, name))
+		if err != nil {
+			t.Fatalf("read -@4 %s: %v", name, err)
+		}
+		if !bytes.Equal(b1, b4) {
+			t.Errorf("%s: -@1 (%d bytes) vs -@4 (%d bytes) differ", name, len(b1), len(b4))
+		}
+	}
+}
+
 // =====================================================================
 // helpers (kept at the bottom so they sit alongside the new cases)
 // =====================================================================

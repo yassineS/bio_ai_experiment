@@ -983,7 +983,9 @@ Options:
   -d, --no-PG    Accepted; v1 never injects @PG.
   -v             Verbose progress (accepted; no-op). Matches upstream split,
                  where -v is verbose rather than version.
-  -M, -p, -@ N   Accepted upstream compatibility stubs (no-op).
+  -@, --threads N  Worker threads for BGZF input inflate. Default 0
+                 (single-threaded). Output writers stay single-threaded.
+  -M, -p N       Accepted upstream compatibility stubs (no-op).
   -h, --help     Show this help.
       --version  Show version.
 `
@@ -1010,7 +1012,7 @@ func runSplit(args []string) int {
 	//   -v        verbose progress (accepted no-op)
 	//   -M N      maximum number of split files (accepted no-op)
 	//   -p N      per-file read budget (accepted no-op)
-	//   -@ N      threads (accepted no-op)
+	//   -@ N      threads: parallel BGZF input inflate (output stays serial)
 	// (-v is upstream's verbose switch here, not version; this port keeps
 	// --version for the version banner.)
 	var (
@@ -1022,7 +1024,7 @@ func runSplit(args []string) int {
 	fs.BoolVar(&splitVerbose, "v", false, "")
 	fs.IntVar(&splitMaxSplit, "M", 0, "")
 	fs.IntVar(&splitPerFile, "p", 0, "")
-	cliflag.IntVar(fs, &splitThreads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &splitThreads, "@", "threads", 0, "Threads for parallel BGZF input inflate")
 
 	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -1032,7 +1034,6 @@ func runSplit(args []string) int {
 	_ = splitVerbose
 	_ = splitMaxSplit
 	_ = splitPerFile
-	_ = splitThreads
 	if showHelp {
 		fmt.Print(splitUsage)
 		return 0
@@ -1049,6 +1050,7 @@ func runSplit(args []string) int {
 		Pattern:      pattern,
 		Unidentified: unident,
 		NoPG:         noPG,
+		Threads:      splitThreads,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools split: %v\n", err)
 		return 1
