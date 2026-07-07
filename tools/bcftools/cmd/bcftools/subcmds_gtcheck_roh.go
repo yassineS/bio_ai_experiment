@@ -50,7 +50,9 @@ Options:
   -u, --use TAG[,TAG2]           Scoring tag for query (and -g panel): GT or PL. Auto-detected per record by default.
   -c, --cluster MIN,MAX          Cluster cross-check samples by pairwise error: merge samples within MAX (MAX<0 derives it from MIN).
   -G, --GTs-only                 Upstream-deprecated alias; rejected with upstream's literal deprecation error.
-      --threads N                Accepted; v1 is single-threaded.
+      --threads N                Worker threads for BGZF (de)compression of the
+                                 inputs and -O z output (default 0). The compare
+                                 is single-threaded; output is identical for any N.
   -?, --help                     Show this help.
       --version                  Show version.
 
@@ -126,14 +128,13 @@ func runGtcheck(args []string) int {
 	// Upstream-deprecated `-G/--GTs-only`. We MUST accept it AND emit
 	// the literal upstream deprecation error.
 	cliflag.BoolVar(fs, &gtsOnlyDeprecated, "G", "GTs-only", false, "Deprecated upstream alias")
-	fs.IntVar(&threads, "threads", 0, "Threads (accepted, ignored)")
+	fs.IntVar(&threads, "threads", 0, "Worker threads for BGZF (de)compression")
 	fs.BoolVar(&showHelp, "?", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 	// Used only for upstream surface parity; ignored in v1.
 	_ = regionsOverlap
 	_ = targetsOverlap
-	_ = threads
 	_ = samplesCombinedFile
 
 	if err := parseFlags(fs, args); err != nil {
@@ -243,6 +244,7 @@ func runGtcheck(args []string) int {
 		Cluster:              clusterSet,
 		ClusterMin:           clusterMin,
 		ClusterMax:           clusterMax,
+		Threads:              threads,
 	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)
