@@ -411,7 +411,18 @@ func CalmdFile(inPath string, out io.Writer, refPath string, opts CalmdOptions, 
 	if warnW == nil {
 		warnW = os.Stderr
 	}
-	in, err := iohelper.OpenReader(inPath)
+	// With -@ >= 2 open the raw (still-BGZF-framed) bytes so Calmd's
+	// NewReaderThreaded can inflate the blocks in parallel; the standard
+	// decompressing opener would hand it an already-inflated stream, so the
+	// parallel input decode would never engage. This mirrors samtools sort /
+	// stats (openStatsInput). The decoded records are identical either way.
+	var in io.ReadCloser
+	var err error
+	if opts.Threads >= 2 {
+		in, err = iohelper.OpenRaw(inPath)
+	} else {
+		in, err = iohelper.OpenReader(inPath)
+	}
 	if err != nil {
 		return err
 	}
