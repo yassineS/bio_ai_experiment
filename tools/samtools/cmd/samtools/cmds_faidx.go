@@ -17,8 +17,10 @@ import (
 
 // faidxUsage / fqidxUsage reproduce `samtools {faidx,fqidx} --help` byte for
 // byte (including the "Option: " trailing space and the global-options
-// footer). The footer's --output-fmt-option / -@/--threads / --write-index
-// lines are listed for parity even though those flags are no-ops in this port.
+// footer). -@/--threads is honoured: it parallelises the BGZF block inflate of
+// the full-stream index-build pass (matching upstream's input-side
+// fai_thread_pool). The footer's --output-fmt-option / --write-index lines
+// remain accepted-but-ignored parity stubs.
 const faidxUsage = `Usage: samtools faidx <file.fa|file.fa.gz> [<reg> [...]]
 Option: 
   -o, --output FILE        Write FASTA to file.
@@ -98,7 +100,7 @@ func runFaidxCore(args []string, format samtools.FaidxFormat, usage string) int 
 		asFastq    bool
 		showHelp   bool
 		showVer    bool
-		threads    int // accepted, no-op (single-threaded)
+		threads    int // -@: parallel BGZF index-build inflate (opt-in)
 	)
 	// -n carries the upstream default sentinel of -60 ("same as input data").
 	cliflag.StringVar(fs, &output, "o", "output", "", "Write to file.")
@@ -114,13 +116,12 @@ func runFaidxCore(args []string, format samtools.FaidxFormat, usage string) int 
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "v", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
-	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Additional threads (no-op).")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Additional threads for BGZF index-build inflate.")
 
 	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprint(os.Stderr, usage)
 		return 1
 	}
-	_ = threads
 	if showHelp {
 		fmt.Print(usage)
 		return 0
@@ -147,6 +148,7 @@ func runFaidxCore(args []string, format samtools.FaidxFormat, usage string) int 
 	opts.ReverseComplement = rev
 	opts.FaiName = faiName
 	opts.GziName = gziName
+	opts.Threads = threads
 
 	// Resolve -n. Default sentinel -60 means "same as input"; a user-supplied
 	// negative value warns and falls back to 60 (matching upstream).

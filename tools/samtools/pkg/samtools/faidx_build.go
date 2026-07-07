@@ -50,7 +50,9 @@ func FaidxBuild(path string, opts FaidxOptions) error {
 		if derr != nil {
 			return derr
 		}
-		br, derr := bgzf.NewReader(f)
+		// -@ >= 2 inflates the BGZF blocks across a worker pool; the decoded
+		// byte stream (and thus the .fai) is identical for any thread count.
+		br, derr := bgzf.NewMultiReader(f, ReadDecodeThreads(opts.Threads))
 		if derr != nil {
 			f.Close()
 			return derr
@@ -106,7 +108,9 @@ func writeGziSidecar(path string, opts FaidxOptions) error {
 // bgzipped) FASTQ payload of path, plus a closer for the underlying handle.
 // It never buffers the whole payload: a BGZF input is inflated block by block
 // through bgzf.NewReader, exactly like the FASTA build's BuildIndexReader path.
-func openFastqReader(path string, bgzipped bool) (io.Reader, func() error, error) {
+// threads is the BGZF inflate worker count (already resolved via
+// ReadDecodeThreads); < 2 keeps the sequential reader.
+func openFastqReader(path string, bgzipped bool, threads int) (io.Reader, func() error, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, nil, err
@@ -114,7 +118,7 @@ func openFastqReader(path string, bgzipped bool) (io.Reader, func() error, error
 	if !bgzipped {
 		return f, f.Close, nil
 	}
-	br, err := bgzf.NewReader(f)
+	br, err := bgzf.NewMultiReader(f, threads)
 	if err != nil {
 		f.Close()
 		return nil, nil, err
@@ -136,7 +140,7 @@ type fastqIndexEntry struct {
 // faiName (plus a .gzi for BGZF input). It walks the decompressed payload with
 // the same state machine semantics as htslib's fai_build_core.
 func buildFastqIndex(path, faiName string, opts FaidxOptions, bgzipped bool) error {
-	r, closeFn, err := openFastqReader(path, bgzipped)
+	r, closeFn, err := openFastqReader(path, bgzipped, ReadDecodeThreads(opts.Threads))
 	if err != nil {
 		return err
 	}
@@ -355,7 +359,7 @@ func openFaidxQual(path string, opts FaidxOptions) (*faidxQualAccess, error) {
 		return nil, err
 	}
 	// Build the index with a streaming pass (closes its own handle).
-	r, closeFn, err := openFastqReader(path, bgzipped)
+	r, closeFn, err := openFastqReader(path, bgzipped, ReadDecodeThreads(opts.Threads))
 	if err != nil {
 		return nil, err
 	}

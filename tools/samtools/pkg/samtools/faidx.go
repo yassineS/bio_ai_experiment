@@ -73,6 +73,16 @@ type FaidxOptions struct {
 	FaiName string
 	// GziName overrides the .gzi index path (--gzi-idx).
 	GziName string
+	// Threads is upstream's -@/--threads worker count. When > 1 it drives
+	// block-parallel BGZF inflate of the full-stream index-build pass over a
+	// BGZF-compressed FASTA/FASTQ input (upstream attaches fai_thread_pool to
+	// the input on the index-build side). Region EXTRACTION uses random-access
+	// per-region seeks, not a stream, so it cannot benefit and stays serial;
+	// there is no compressed faidx output to parallelise. The .fai/.gzi bytes
+	// are identical for any worker count. Parallel decode is opt-in (0/1 stays
+	// single-threaded) because each worker adds block buffers to peak RSS —
+	// important for genome-scale references.
+	Threads int
 }
 
 // DefaultFaidxOptions returns FaidxOptions populated with upstream defaults:
