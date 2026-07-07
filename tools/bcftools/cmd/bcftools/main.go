@@ -655,7 +655,8 @@ Options:
   -e, --exclude EXPR         Drop records matching expression.
   -F, --apply-filters NAMES  Comma list of FILTER names to keep.
   -o, --output PATH          Output file (default stdout).
-      --threads N            Accepted; v1 is single-threaded.
+  -@, --threads N            Accepted for CLI compatibility; query is
+                             single-threaded (upstream vcfquery has no threading).
   -?, --help                 Show this help.
       --version              Show version.
 `
@@ -695,7 +696,7 @@ func runQuery(args []string) int {
 	cliflag.StringVar(fs, &excludeExpr, "e", "exclude", "", "Exclude expression")
 	cliflag.StringVar(fs, &applyFilters, "F", "apply-filters", "", "FILTER name list to keep")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
-	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Accepted for compatibility; query is single-threaded")
 	fs.BoolVar(&showHelp, "?", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
