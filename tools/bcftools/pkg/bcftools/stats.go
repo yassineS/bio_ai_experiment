@@ -34,6 +34,14 @@ type StatsOptions struct {
 	AFTag           string         // --af-tag
 	UserTSTV        []UserTSTVSpec // -u/--user-tstv
 	InputFile       string         // for the header line
+	// Threads is upstream's -@/--threads worker count. When > 1 it drives
+	// block-parallel BGZF inflate of a BGZF-framed input (.vcf.gz or .bcf) —
+	// the only thing upstream bcftools stats parallelises (bgzf_thread_pool via
+	// the synced reader). The vcfstats report is a plain-text writer, so there
+	// is no output compression to thread. Decoded records are identical for any
+	// worker count; parallel decode is opt-in (0/1 stays single-threaded)
+	// because each worker adds block buffers to peak RSS.
+	Threads int
 }
 
 // UserTSTVSpec describes a single `-u/--user-tstv TAG[:min:max:n]` request:
@@ -350,9 +358,12 @@ func Stats(in io.Reader, out io.Writer, opts StatsOptions) (*statsResult, error)
 	return statsFromVCF(br, out, opts)
 }
 
-// StatsFile opens path through iohelper and emits stats.
+// StatsFile opens path through iohelper and emits stats. Under -@ >= 2 the
+// input is opened with the block-parallel BGZF reader (OpenReaderThreaded);
+// since Stats dispatches on the DECOMPRESSED BCF-vs-VCF magic, threading the
+// inflate at the file boundary needs no change to the record parsers.
 func StatsFile(path string, out io.Writer, opts StatsOptions) (*statsResult, error) {
-	in, err := iohelper.OpenReader(path)
+	in, err := iohelper.OpenReaderThreaded(path, opts.Threads)
 	if err != nil {
 		return nil, err
 	}

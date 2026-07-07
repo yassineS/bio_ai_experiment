@@ -473,7 +473,8 @@ Options:
   -u, --user-tstv TAG[:min:max:n] 1st-ALT Ts/Tv binned by a numeric INFO tag (default min:max:n = 0:1:100).
       --af-tag TAG                INFO tag to read AF from (default: compute from GT).
   -o, --output PATH               Output file (default stdout).
-      --threads N                 Accepted; v1 is single-threaded.
+  -@, --threads N                 Worker threads for parallel BGZF decompression
+                                  of the input (default 0 = single-threaded).
   -h, --help                      Show this help.
       --version                   Show version.
 `
@@ -519,7 +520,7 @@ func runStatsCmd(args []string) int {
 	cliflag.StringVar(fs, &userTSTVSpec, "u", "user-tstv", "", "User Ts/Tv tag spec")
 	fs.StringVar(&afTag, "af-tag", "", "INFO AF tag")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
-	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Worker threads for parallel BGZF input decompression")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVersion, "version", false, "")
@@ -554,6 +555,7 @@ func runStatsCmd(args []string) int {
 		FirstAlleleOnly: firstAlleleOnly,
 		AFTag:           afTag,
 		InputFile:       input,
+		Threads:         threads,
 	}
 	if samples != "" {
 		opts.Samples = bcftools.SplitCommaList(samples)

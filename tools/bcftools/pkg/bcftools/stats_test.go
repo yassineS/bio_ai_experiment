@@ -568,6 +568,32 @@ func TestStatsStatsFileVCF(t *testing.T) {
 	}
 }
 
+// TestStatsFile_ThreadsByteIdentical verifies --threads only parallelises the
+// input BGZF decompression: the vcfstats report is byte-for-byte identical for
+// any worker count. Runs over both a BGZF-framed VCF (.vcf.gz) and a BCF
+// fixture, covering the sequential-fallback and the parallel MultiReader paths.
+func TestStatsFile_ThreadsByteIdentical(t *testing.T) {
+	for _, name := range []string{"basic.vcf.gz", "basic.bcf"} {
+		t.Run(name, func(t *testing.T) {
+			path := parityPath(t, name)
+			run := func(threads int) []byte {
+				var buf bytes.Buffer
+				if _, err := StatsFile(path, &buf, StatsOptions{Threads: threads}); err != nil {
+					t.Fatalf("StatsFile -@%d: %v", threads, err)
+				}
+				return buf.Bytes()
+			}
+			b0, b1, b4 := run(0), run(1), run(4)
+			if !bytes.Equal(b0, b1) {
+				t.Errorf("%s: -@0 vs -@1 differ", name)
+			}
+			if !bytes.Equal(b1, b4) {
+				t.Errorf("%s: -@1 (%d bytes) vs -@4 (%d bytes) differ", name, len(b1), len(b4))
+			}
+		})
+	}
+}
+
 func TestStatsFileNotFound(t *testing.T) {
 	var buf bytes.Buffer
 	if _, err := StatsFile("/nonexistent/file.vcf", &buf, StatsOptions{}); err == nil {
