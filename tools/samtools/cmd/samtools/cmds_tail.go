@@ -1655,6 +1655,8 @@ Options:
   -o FILE             Output path (default stdout).
   -u                  Uncompressed BAM out.
   -b                  Force BAM output (default; SAM only when -o ends in .sam).
+  -@, --threads INT   Worker threads for BGZF deflate of the output BAM.
+                      Default 0 (single-threaded). No effect on SAM output.
       --no-PG         Accepted; v1 never injects @PG.
   -h, --help          Show this help.
       --version       Show version.
@@ -1758,6 +1760,7 @@ func runImport(args []string) int {
 		OutputBAM:       outBAM,
 		Uncompressed:    uncomp,
 		NoPG:            noPG,
+		Threads:         threads,
 	}
 	_ = i1Path
 	_ = i2Path
@@ -1765,7 +1768,6 @@ func runImport(args []string) int {
 	_ = barcodeTag
 	_ = qualityTag
 	_ = outputFmt
-	_ = threads
 	if _, err := samtools.FastqImportFiles(fs.Args(), out, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools import: %v\n", err)
 		return 1

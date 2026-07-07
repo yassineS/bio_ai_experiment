@@ -73,13 +73,21 @@ type FastqImportOptions struct {
 	// OutputBAM (default) emits BGZF-wrapped BAM. Setting to false emits
 	// text SAM.
 	OutputBAM bool
-	// Uncompressed implies OutputBAM and sets compression level 0 on the
-	// underlying BGZF writer. Currently ignored (we always use the
-	// default level); the flag is accepted for compat.
+	// Uncompressed implies OutputBAM and selects compression level 0 (stored
+	// BGZF blocks) on the underlying writer (the -u flag). It takes precedence
+	// over the Threads-driven level so -u output is level-0, and — because BGZF
+	// blocks are independent gzip members — byte-identical for any worker count.
 	Uncompressed bool
 	// NoPG suppresses @PG injection (we never inject @PG so this is a
 	// no-op).
 	NoPG bool
+	// Threads is upstream's -@/--threads worker count. When > 1 it spreads the
+	// compressed-BAM OUTPUT's BGZF deflate across that many goroutines. Only
+	// the output BGZF compression is parallelised: the FASTQ input decode
+	// (plain-gzip DEFLATE, not block-parallel) and the record building stay
+	// single-threaded, so the emitted bytes are identical for any worker count.
+	// Ignored for SAM-text output, which has no BGZF framing to parallelise.
+	Threads int
 }
 
 // FastqImport reads FASTQ records from the configured inputs and writes
@@ -140,7 +148,7 @@ func FastqImport(out io.Writer, opts FastqImportOptions) (int, error) {
 
 	var w sam.Writer
 	if opts.OutputBAM || opts.Uncompressed {
-		bw, err := sam.NewBAMWriterOptions(out, sam.BAMWriterOptions{Uncompressed: opts.Uncompressed})
+		bw, err := sam.NewBAMWriterOptions(out, sam.BAMWriterOptions{Uncompressed: opts.Uncompressed, Threads: opts.Threads})
 		if err != nil {
 			return 0, err
 		}
