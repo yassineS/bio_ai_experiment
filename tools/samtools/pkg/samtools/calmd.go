@@ -26,6 +26,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/alnio"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/baq"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
@@ -76,6 +77,13 @@ type CalmdOptions struct {
 	// NM is >= MaxNM (the -n flag). Matching SEQ bases become '=' and their
 	// qualities become 0. The emitted NM/MD are unaffected.
 	MaxNM int
+	// Threads is upstream's -@/--threads worker count. When > 1 it drives
+	// block-parallel BGZF inflate on the input and, for compressed BAM
+	// output, block-parallel BGZF deflate on the output. The MD/NM compute
+	// itself is single-threaded (as in upstream bam_md.c); only the I/O
+	// (de)compression is parallelised, so the emitted records are identical
+	// regardless of the worker count.
+	Threads int
 }
 
 // Calmd reads SAM/BAM records from in, fills in MD + NM aux tags by
@@ -92,19 +100,29 @@ func Calmd(in io.Reader, out io.Writer, refPath string, opts CalmdOptions, warnW
 	}
 	defer ra.Close()
 
-	r, err := sam.NewReader(in)
+	r, err := alnio.NewReaderThreaded(in, "", ReadDecodeThreads(opts.Threads))
 	if err != nil {
 		return fmt.Errorf("samtools calmd: open input: %w", err)
+	}
+	if rc, ok := r.(io.Closer); ok {
+		defer rc.Close()
 	}
 	hdr := r.Header()
 
 	var w sam.Writer
 	if opts.OutputBAM || opts.Uncompressed {
-		bw, err := sam.NewBAMWriterOptions(out, sam.BAMWriterOptions{Uncompressed: opts.Uncompressed})
-		if err != nil {
-			return err
+		// Compressed BAM output honours -@ via the block-parallel BGZF
+		// deflate writer; uncompressed BAM (-u) has no compression to
+		// parallelise, so it keeps the plain writer.
+		if opts.OutputBAM && !opts.Uncompressed && opts.Threads > 1 {
+			w = sam.NewBAMWriterThreads(out, opts.Threads)
+		} else {
+			bw, err := sam.NewBAMWriterOptions(out, sam.BAMWriterOptions{Uncompressed: opts.Uncompressed})
+			if err != nil {
+				return err
+			}
+			w = bw
 		}
-		w = bw
 	} else {
 		w = sam.NewSAMWriter(out)
 	}
@@ -393,7 +411,18 @@ func CalmdFile(inPath string, out io.Writer, refPath string, opts CalmdOptions, 
 	if warnW == nil {
 		warnW = os.Stderr
 	}
-	in, err := iohelper.OpenReader(inPath)
+	// With -@ >= 2 open the raw (still-BGZF-framed) bytes so Calmd's
+	// NewReaderThreaded can inflate the blocks in parallel; the standard
+	// decompressing opener would hand it an already-inflated stream, so the
+	// parallel input decode would never engage. This mirrors samtools sort /
+	// stats (openStatsInput). The decoded records are identical either way.
+	var in io.ReadCloser
+	var err error
+	if opts.Threads >= 2 {
+		in, err = iohelper.OpenRaw(inPath)
+	} else {
+		in, err = iohelper.OpenReader(inPath)
+	}
 	if err != nil {
 		return err
 	}

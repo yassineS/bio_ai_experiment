@@ -621,6 +621,56 @@ func writeBGZF(t *testing.T, path string, payload []byte) error {
 	return bgzf.WriteGZI(gziFile, offsets)
 }
 
+// TestFaidxBuild_ThreadsByteIdentical verifies -@/--threads only parallelises
+// the BGZF index-build inflate: the .fai and .gzi sidecars are byte-for-byte
+// identical whether the build runs single-threaded or with a worker pool. The
+// input is a multi-block BGZF FASTA so parallel block inflate actually engages.
+func TestFaidxBuild_ThreadsByteIdentical(t *testing.T) {
+	// A multi-contig FASTA large enough to span several 64 KiB BGZF blocks.
+	var sb strings.Builder
+	line := strings.Repeat("ACGTACGTAC", 6) // 60-base wrap
+	for c := 1; c <= 3; c++ {
+		sb.WriteString(">contig")
+		sb.WriteByte(byte('0' + c))
+		sb.WriteByte('\n')
+		for i := 0; i < 2000; i++ { // ~120 KB of sequence per contig
+			sb.WriteString(line)
+			sb.WriteByte('\n')
+		}
+	}
+
+	dir := t.TempDir()
+	gzPath := filepath.Join(dir, "ref.fa.gz")
+	if err := writeBGZF(t, gzPath, []byte(sb.String())); err != nil {
+		t.Fatalf("writeBGZF: %v", err)
+	}
+
+	build := func(threads int) (fai, gzi []byte) {
+		faiName := filepath.Join(dir, "t"+strings.Repeat("x", threads)+".fai")
+		gziName := filepath.Join(dir, "t"+strings.Repeat("x", threads)+".gzi")
+		if err := FaidxBuild(gzPath, FaidxOptions{FaiName: faiName, GziName: gziName, Threads: threads}); err != nil {
+			t.Fatalf("FaidxBuild -@%d: %v", threads, err)
+		}
+		fb, err := os.ReadFile(faiName)
+		if err != nil {
+			t.Fatalf("read fai -@%d: %v", threads, err)
+		}
+		gb, err := os.ReadFile(gziName)
+		if err != nil {
+			t.Fatalf("read gzi -@%d: %v", threads, err)
+		}
+		return fb, gb
+	}
+	fai1, gzi1 := build(1)
+	fai4, gzi4 := build(4)
+	if !bytes.Equal(fai1, fai4) {
+		t.Errorf(".fai differs between -@1 (%d bytes) and -@4 (%d bytes)", len(fai1), len(fai4))
+	}
+	if !bytes.Equal(gzi1, gzi4) {
+		t.Errorf(".gzi differs between -@1 (%d bytes) and -@4 (%d bytes)", len(gzi1), len(gzi4))
+	}
+}
+
 // TestFqidxUpstreamParity diffs the Go port against the live upstream
 // `samtools fqidx` on a multi-record FASTQ: index build and a region/extract
 // matrix (including reverse-complement), for both a plain and a BGZF input.

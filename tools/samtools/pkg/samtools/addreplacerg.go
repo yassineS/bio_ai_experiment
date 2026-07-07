@@ -6,6 +6,8 @@ import (
 	"io"
 	"strings"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/alnio"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -44,6 +46,14 @@ type AddReplaceRGOptions struct {
 	OverwriteHeaderRG bool
 	// NoPG is accepted; v1 never emits @PG lines so this is a no-op.
 	NoPG bool
+	// Threads is upstream's -@/--threads worker count. When > 1 it drives
+	// block-parallel BGZF inflate on the input and block-parallel BGZF
+	// deflate on the (always compressed) BAM output. Only the BGZF I/O is
+	// parallelised — the RG-tagging pass is single-threaded, as in upstream
+	// bam_addrprg.c — so the emitted records are byte-identical regardless of
+	// the worker count. Parallel decode is opt-in (0/1 stays single-threaded)
+	// because each worker adds block buffers to peak RSS.
+	Threads int
 }
 
 // AddReplaceRG copies records from in to out, ensuring an @RG record
@@ -53,9 +63,12 @@ func AddReplaceRG(in io.Reader, out io.Writer, opts AddReplaceRGOptions) error {
 	if opts.RGLine == "" && opts.RGID == "" {
 		return errors.New("samtools addreplacerg: need -r RG-line or -R RG-id")
 	}
-	br, err := sam.NewReader(in)
+	br, err := alnio.NewReaderThreaded(in, "", ReadDecodeThreads(opts.Threads))
 	if err != nil {
 		return err
+	}
+	if rc, ok := br.(io.Closer); ok {
+		defer rc.Close()
 	}
 	hdr := br.Header()
 
@@ -90,7 +103,14 @@ func AddReplaceRG(in io.Reader, out io.Writer, opts AddReplaceRGOptions) error {
 		}
 	}
 
-	bw := sam.NewBAMWriter(out)
+	// Output is always compressed BAM; -@ > 1 spreads its BGZF deflate across
+	// the worker pool (byte-identical to the serial writer at the same level).
+	var bw sam.Writer
+	if opts.Threads > 1 {
+		bw = sam.NewBAMWriterThreads(out, opts.Threads)
+	} else {
+		bw = sam.NewBAMWriter(out)
+	}
 	if err := bw.WriteHeader(hdr); err != nil {
 		return err
 	}
@@ -108,6 +128,27 @@ func AddReplaceRG(in io.Reader, out io.Writer, opts AddReplaceRGOptions) error {
 		}
 	}
 	return bw.Close()
+}
+
+// AddReplaceRGFile is a path-based wrapper around AddReplaceRG. Under -@ >= 2
+// it opens the input with iohelper.OpenRaw so the still-BGZF-framed bytes reach
+// AddReplaceRG's block-parallel reader (NewReaderThreaded); the standard
+// decompressing opener would inflate BGZF eagerly and the parallel input decode
+// would never engage. This mirrors samtools calmd (CalmdFile) and sort. The
+// decoded records are identical either way.
+func AddReplaceRGFile(inPath string, out io.Writer, opts AddReplaceRGOptions) error {
+	var in io.ReadCloser
+	var err error
+	if opts.Threads >= 2 {
+		in, err = iohelper.OpenRaw(inPath)
+	} else {
+		in, err = iohelper.OpenReader(inPath)
+	}
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	return AddReplaceRG(in, out, opts)
 }
 
 // setRecordRG sets the RG aux tag on rec per mode. In orphan-only mode

@@ -2,10 +2,63 @@ package samtools
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
+
+// TestAddReplaceRG_ThreadsByteIdentical verifies -@/--threads only parallelises
+// the BGZF I/O: the emitted BAM is byte-for-byte identical for any worker count
+// (the RG-tagging pass is single-threaded, as in upstream bam_addrprg.c). It
+// covers both the in-memory reader path (AddReplaceRG) and the path-based
+// AddReplaceRGFile path, whose -@ >= 2 raw opener engages the block-parallel
+// input inflate.
+func TestAddReplaceRG_ThreadsByteIdentical(t *testing.T) {
+	bamBytes := localSAMToBAM(t,
+		"@HD\tVN:1.6\tSO:coordinate\n"+
+			"@SQ\tSN:chr1\tLN:1000\n"+
+			"@RG\tID:a\tSM:s1\n"+
+			"@RG\tID:b\tSM:s2\n"+
+			"r1\t0\tchr1\t10\t60\t5M\t*\t0\t0\tACGTA\tIIIII\tRG:Z:a\n"+
+			"r2\t0\tchr1\t20\t60\t5M\t*\t0\t0\tACGTA\tIIIII\tRG:Z:b\n"+
+			"r3\t0\tchr1\t30\t60\t5M\t*\t0\t0\tACGTA\tIIIII\n"+
+			"r4\t0\tchr1\t40\t60\t5M\t*\t0\t0\tACGTA\tIIIII\tRG:Z:a\n")
+
+	opts := func(threads int) AddReplaceRGOptions {
+		return AddReplaceRGOptions{RGLine: "ID:rgz\tSM:sz", Mode: AddReplaceRGOverwriteAll, Threads: threads}
+	}
+
+	// In-memory reader path.
+	run := func(threads int) []byte {
+		var out bytes.Buffer
+		if err := AddReplaceRG(bytes.NewReader(bamBytes), &out, opts(threads)); err != nil {
+			t.Fatalf("AddReplaceRG -@%d: %v", threads, err)
+		}
+		return out.Bytes()
+	}
+	if one, many := run(1), run(4); !bytes.Equal(one, many) {
+		t.Errorf("AddReplaceRG -@1 (%d bytes) vs -@4 (%d bytes) differ", len(one), len(many))
+	}
+
+	// Path-based AddReplaceRGFile path: the -@ >= 2 raw opener drives the
+	// block-parallel BGZF input inflate over the on-disk BAM.
+	bamPath := filepath.Join(t.TempDir(), "in.bam")
+	if err := os.WriteFile(bamPath, bamBytes, 0o644); err != nil {
+		t.Fatalf("write bam: %v", err)
+	}
+	runFile := func(threads int) []byte {
+		var out bytes.Buffer
+		if err := AddReplaceRGFile(bamPath, &out, opts(threads)); err != nil {
+			t.Fatalf("AddReplaceRGFile -@%d: %v", threads, err)
+		}
+		return out.Bytes()
+	}
+	if one, many := runFile(1), runFile(4); !bytes.Equal(one, many) {
+		t.Errorf("AddReplaceRGFile -@1 (%d bytes) vs -@4 (%d bytes) differ", len(one), len(many))
+	}
+}
 
 // TestUnitAddReplaceRGHeaderAndRecord pins bug #5's fix with binary-free unit
 // tests over the pure helpers: setRecordRG (the per-record RG:Z: setter for

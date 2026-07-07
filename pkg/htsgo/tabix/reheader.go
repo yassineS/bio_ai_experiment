@@ -18,7 +18,18 @@ import (
 // in one, so the first data line is never merged onto the last header line.
 // This mirrors htslib tabix's `reheader` behavior for text formats.
 func Reheader(dataPath, headerPath string, meta byte, out io.Writer) error {
-	body, err := readBodyAfterHeader(dataPath, meta)
+	return ReheaderThreaded(dataPath, headerPath, meta, out, 0)
+}
+
+// ReheaderThreaded is Reheader with the BGZF (de)compression wired to a worker
+// count (upstream tabix -@/--threads, which shares one pool across the input
+// and output bgzf streams in reheader_file). When threads > 1 the input body is
+// inflated across the pool and the output is deflated across it; at
+// DefaultCompression the framed output is byte-identical to the serial writer,
+// so the reheadered stream is stable for any thread count. threads < 2 keeps
+// the single-threaded reader/writer.
+func ReheaderThreaded(dataPath, headerPath string, meta byte, out io.Writer, threads int) error {
+	body, err := readBodyAfterHeader(dataPath, meta, threads)
 	if err != nil {
 		return err
 	}
@@ -30,11 +41,22 @@ func Reheader(dataPath, headerPath string, meta byte, out io.Writer) error {
 		header = append(header, '\n')
 	}
 
-	bw := bgzip.NewWriter(out)
+	var bw io.WriteCloser
+	if threads > 1 {
+		mw, werr := bgzip.NewMultiWriter(out, bgzip.DefaultCompression, threads)
+		if werr != nil {
+			return werr
+		}
+		bw = mw
+	} else {
+		bw = bgzip.NewWriter(out)
+	}
 	if _, err := bw.Write(header); err != nil {
+		bw.Close()
 		return err
 	}
 	if _, err := bw.Write(body); err != nil {
+		bw.Close()
 		return err
 	}
 	return bw.Close()
@@ -43,13 +65,15 @@ func Reheader(dataPath, headerPath string, meta byte, out io.Writer) error {
 // readBodyAfterHeader decodes the bgzipped file at path and returns the bytes
 // of every line after the leading meta-character header. If the file does not
 // begin with a header line, the entire decoded content is returned unchanged.
-func readBodyAfterHeader(path string, meta byte) ([]byte, error) {
+// threads >= 2 inflates the BGZF blocks across a worker pool (byte-identical
+// output for any count); < 2 stays single-threaded.
+func readBodyAfterHeader(path string, meta byte, threads int) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	br, err := bgzip.NewReader(f)
+	br, err := bgzip.NewMultiReader(f, threads)
 	if err != nil {
 		return nil, err
 	}

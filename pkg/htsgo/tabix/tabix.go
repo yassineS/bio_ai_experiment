@@ -65,6 +65,14 @@ type Config struct {
 	// Skip is the number of header lines to skip past before parsing
 	// records.
 	Skip int32
+	// Threads is a runtime-only worker count (upstream tabix -@/--threads); it
+	// is NOT part of the on-disk .tbi/.csi header and is never serialised. When
+	// > 1 it drives block-parallel BGZF inflate of the full-file index-build
+	// pass in Build (matching upstream tbx_index_build3's bgzf_thread_pool).
+	// The decoded bytes — and thus the produced index — are identical for any
+	// worker count. Parallel decode is opt-in (0/1 stays single-threaded)
+	// because each worker adds block buffers to peak RSS.
+	Threads int
 }
 
 // PresetConfig returns the canonical Config for one of the standard preset
@@ -290,7 +298,11 @@ func Build(path string, cfg Config) (*Index, error) {
 		return nil, err
 	}
 
-	br, err := bgzip.NewReader(f)
+	// cfg.Threads >= 2 inflates the BGZF blocks across a worker pool; the
+	// decoded bytes (and thus the built index) are identical for any count.
+	// The bgzip.Scan above only walks block boundaries (no payload inflate),
+	// so it stays sequential.
+	br, err := bgzip.NewMultiReader(f, cfg.Threads)
 	if err != nil {
 		return nil, err
 	}

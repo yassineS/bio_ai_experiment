@@ -446,6 +446,8 @@ Options:
   -m, --mode MODE        "overwrite_all" (default) or "orphan_only".
   -o, --output PATH      Output BAM (default stdout).
   -w                     Overwrite an existing @RG line with the same ID.
+  -@, --threads N        Worker threads for BGZF (de)compression (input inflate
+                         and output deflate). Default 0 (single-threaded).
       --no-PG            Accepted; v1 never injects @PG.
   -h, --help             Show this help.
   -v, --version          Show version.
@@ -479,15 +481,16 @@ func runAddReplaceRG(args []string) int {
 	fs.BoolVar(&showVer, "version", false, "")
 	// Upstream addreplacerg (bam_addrprg.c getopt "r:R:m:o:O:h@:uw") also
 	// accepts -O (output format), -@ (threads), and -u (uncompressed BAM).
-	// This port emits BAM single-threaded, so these are accepted no-ops kept
-	// for compatibility (and so bundled clusters parse).
+	// -@ is now honoured: it drives block-parallel BGZF (de)compression of the
+	// input and output. -O (output format) and -u (uncompressed BAM) remain
+	// accepted no-ops kept for compatibility (and so bundled clusters parse).
 	var (
 		arOutFmt  string
 		arThreads int
 		arUncomp  bool
 	)
 	cliflag.StringVar(fs, &arOutFmt, "O", "output-fmt", "", "Output format (accepted)")
-	cliflag.IntVar(fs, &arThreads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &arThreads, "@", "threads", 0, "Worker threads for BGZF (de)compression")
 	fs.BoolVar(&arUncomp, "u", false, "")
 
 	if err := cliflag.Parse(fs, args); err != nil {
@@ -496,7 +499,6 @@ func runAddReplaceRG(args []string) int {
 		return 2
 	}
 	_ = arOutFmt
-	_ = arThreads
 	_ = arUncomp
 	if showHelp {
 		fmt.Print(addReplaceRGUsage)
@@ -520,24 +522,19 @@ func runAddReplaceRG(args []string) int {
 		fmt.Fprintf(os.Stderr, "samtools addreplacerg: bad -m %q (orphan_only|overwrite_all)\n", mode)
 		return 2
 	}
-	in, err := iohelper.OpenReader(fs.Arg(0))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "samtools addreplacerg: %v\n", err)
-		return 1
-	}
-	defer in.Close()
 	out, err := openOut(outPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "samtools addreplacerg: %v\n", err)
 		return 1
 	}
 	defer out.Close()
-	if err := samtools.AddReplaceRG(in, out, samtools.AddReplaceRGOptions{
+	if err := samtools.AddReplaceRGFile(fs.Arg(0), out, samtools.AddReplaceRGOptions{
 		RGLine:            rgLine,
 		RGID:              rgID,
 		Mode:              rgMode,
 		OverwriteHeaderRG: overwriteW,
 		NoPG:              noPG,
+		Threads:           arThreads,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools addreplacerg: %v\n", err)
 		return 1
@@ -986,7 +983,9 @@ Options:
   -d, --no-PG    Accepted; v1 never injects @PG.
   -v             Verbose progress (accepted; no-op). Matches upstream split,
                  where -v is verbose rather than version.
-  -M, -p, -@ N   Accepted upstream compatibility stubs (no-op).
+  -@, --threads N  Worker threads for BGZF input inflate. Default 0
+                 (single-threaded). Output writers stay single-threaded.
+  -M, -p N       Accepted upstream compatibility stubs (no-op).
   -h, --help     Show this help.
       --version  Show version.
 `
@@ -1013,7 +1012,7 @@ func runSplit(args []string) int {
 	//   -v        verbose progress (accepted no-op)
 	//   -M N      maximum number of split files (accepted no-op)
 	//   -p N      per-file read budget (accepted no-op)
-	//   -@ N      threads (accepted no-op)
+	//   -@ N      threads: parallel BGZF input inflate (output stays serial)
 	// (-v is upstream's verbose switch here, not version; this port keeps
 	// --version for the version banner.)
 	var (
@@ -1025,7 +1024,7 @@ func runSplit(args []string) int {
 	fs.BoolVar(&splitVerbose, "v", false, "")
 	fs.IntVar(&splitMaxSplit, "M", 0, "")
 	fs.IntVar(&splitPerFile, "p", 0, "")
-	cliflag.IntVar(fs, &splitThreads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &splitThreads, "@", "threads", 0, "Threads for parallel BGZF input inflate")
 
 	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -1035,7 +1034,6 @@ func runSplit(args []string) int {
 	_ = splitVerbose
 	_ = splitMaxSplit
 	_ = splitPerFile
-	_ = splitThreads
 	if showHelp {
 		fmt.Print(splitUsage)
 		return 0
@@ -1052,6 +1050,7 @@ func runSplit(args []string) int {
 		Pattern:      pattern,
 		Unidentified: unident,
 		NoPG:         noPG,
+		Threads:      splitThreads,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools split: %v\n", err)
 		return 1
@@ -1519,7 +1518,7 @@ Options:
   -q             Reduce base-quality resolution (qual/10*10+7 for qual>=3).
   -n INT         Mask matching bases of reads whose NM >= INT.
   -Q             Quiet: suppress per-record "different MD/NM" warnings.
-  -@, --threads N  Accepted; v1 is single-threaded.
+  -@, --threads N  Worker threads for parallel BGZF (de)compression (I/O only).
   -o, --output PATH  Output path (default stdout).
   -h, --help     Show this help.
   -v, --version  Show version.
@@ -1603,8 +1602,7 @@ func runCalmd(args []string) int {
 	}
 	inPath := fs.Arg(0)
 	refPath := fs.Arg(1)
-	_ = threads // accepted, ignored
-	_ = sInFmt  // we auto-detect
+	_ = sInFmt // we auto-detect
 	_ = clearMDNM
 	_ = noPG
 	_ = hashQNM
@@ -1626,6 +1624,7 @@ func runCalmd(args []string) int {
 		DropTags:     dropTag,
 		BinQual:      binQual,
 		MaxNM:        maxNM,
+		Threads:      threads,
 	}
 	if err := samtools.CalmdFile(inPath, out, refPath, opts, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools calmd: %v\n", err)
@@ -1658,6 +1657,8 @@ Options:
   -o FILE             Output path (default stdout).
   -u                  Uncompressed BAM out.
   -b                  Force BAM output (default; SAM only when -o ends in .sam).
+  -@, --threads INT   Worker threads for BGZF deflate of the output BAM.
+                      Default 0 (single-threaded). No effect on SAM output.
       --no-PG         Accepted; v1 never injects @PG.
   -h, --help          Show this help.
       --version       Show version.
@@ -1761,6 +1762,7 @@ func runImport(args []string) int {
 		OutputBAM:       outBAM,
 		Uncompressed:    uncomp,
 		NoPG:            noPG,
+		Threads:         threads,
 	}
 	_ = i1Path
 	_ = i2Path
@@ -1768,7 +1770,6 @@ func runImport(args []string) int {
 	_ = barcodeTag
 	_ = qualityTag
 	_ = outputFmt
-	_ = threads
 	if _, err := samtools.FastqImportFiles(fs.Args(), out, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools import: %v\n", err)
 		return 1

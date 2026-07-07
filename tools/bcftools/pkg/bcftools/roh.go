@@ -104,6 +104,15 @@ type RohOptions struct {
 
 	RegionsOverlap int
 	TargetsOverlap int
+
+	// Threads is upstream's -@/--threads worker count. When > 1 it drives
+	// block-parallel BGZF inflate of a BGZF-framed input (.vcf.gz or .bcf) and,
+	// for -O z output, block-parallel BGZF deflate of the emitted stream —
+	// matching upstream vcfroh's bcf_sr_set_threads, which parallelises only
+	// the BGZF (de)compression. The HMM compute stays single-threaded, so the
+	// output is byte-identical for any worker count. Parallel decode is opt-in
+	// (0/1 stays single-threaded) because each worker adds block buffers to RSS.
+	Threads int
 }
 
 // RohSite captures a single per-site state assignment.
@@ -165,7 +174,12 @@ const DefaultAZtoHW = 5e-9
 
 // RohFile is the file-aware entry point used by the CLI.
 func RohFile(path string, out io.Writer, opts RohOptions) (RohResult, error) {
-	in, err := iohelper.OpenReader(path)
+	// Under -@ >= 2 the input is opened through the block-parallel BGZF reader
+	// (OpenReaderThreaded) so .vcf.gz/.bcf inflate across the worker pool; since
+	// Roh dispatches on the DECOMPRESSED BCF-vs-VCF magic, this needs no change
+	// to the record parser. Plain/uncompressed inputs fall back to the
+	// single-threaded opener inside OpenReaderThreaded.
+	in, err := iohelper.OpenReaderThreaded(path, opts.Threads)
 	if err != nil {
 		return RohResult{}, fmt.Errorf("bcftools roh: open %s: %w", path, err)
 	}
@@ -417,7 +431,19 @@ func Roh(in io.Reader, out io.Writer, opts RohOptions) (RohResult, error) {
 	// bytes (vcfroh.c:290), so we wrap out in a BGZF writer and emit the
 	// same content; the framed result decodes byte-identically.
 	if strings.ContainsRune(opts.OutputTypes, 'z') {
-		bz := bgzf.NewWriter(out)
+		// -@ > 1 spreads the BGZF deflate across the worker pool. The multi and
+		// single writers emit byte-identical framing at the same level
+		// (DefaultCompression), so -O z output is stable across thread counts.
+		var bz io.WriteCloser
+		if opts.Threads > 1 {
+			mw, err := bgzf.NewMultiWriter(out, bgzf.DefaultCompression, opts.Threads)
+			if err != nil {
+				return result, err
+			}
+			bz = mw
+		} else {
+			bz = bgzf.NewWriter(out)
+		}
 		if err := writeRoh(bz, result, opts.OutputTypes); err != nil {
 			bz.Close()
 			return result, err

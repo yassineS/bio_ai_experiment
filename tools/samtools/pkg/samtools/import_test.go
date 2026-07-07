@@ -49,6 +49,30 @@ func TestImport_PairedR1R2(t *testing.T) {
 	}
 }
 
+// TestImport_ThreadsByteIdentical verifies -@/--threads only parallelises the
+// output BAM's BGZF deflate: because BGZF blocks are independent gzip members,
+// the compressed output is byte-for-byte identical for any worker count. Uses
+// OutputBAM:true so the threaded writer branch is actually exercised (SAM text
+// output would not touch it).
+func TestImport_ThreadsByteIdentical(t *testing.T) {
+	run := func(threads int) []byte {
+		var buf bytes.Buffer
+		if _, err := FastqImportFiles(nil, &buf, FastqImportOptions{
+			Read1Path:       parityPath(t, "import/r1.fq"),
+			Read2Path:       parityPath(t, "import/r2.fq"),
+			StripPairSuffix: true,
+			OutputBAM:       true,
+			Threads:         threads,
+		}); err != nil {
+			t.Fatalf("FastqImport -@%d: %v", threads, err)
+		}
+		return buf.Bytes()
+	}
+	if one, many := run(1), run(4); !bytes.Equal(one, many) {
+		t.Errorf("import -@1 (%d bytes) vs -@4 (%d bytes) differ", len(one), len(many))
+	}
+}
+
 // TestImport_SingleUnpaired exercises the -0 unpaired-file shape: each
 // record gets just FUNMAP, no pair bits.
 func TestImport_SingleUnpaired(t *testing.T) {

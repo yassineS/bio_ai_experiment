@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/alnio"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -23,6 +24,18 @@ type SplitOptions struct {
 	Unidentified string
 	// NoPG is accepted; v1 never injects @PG lines.
 	NoPG bool
+	// Threads is upstream's -@/--threads worker count. When > 1 it drives
+	// block-parallel BGZF inflate on the single input stream (bam_split.c
+	// attaches the shared pool to the input via HTS_OPT_THREAD_POOL). The
+	// per-@RG output writers stay single-threaded: split fans one input out to
+	// N outputs, and giving each of N writers its own pool would spawn
+	// N*Threads goroutines — upstream instead shares ONE pool across the reader
+	// and all writers, which pkg/htsgo/bgzf has no equivalent for yet (parallel
+	// output deflate is deferred pending a shared-pool BGZF writer). Only the
+	// BGZF I/O is parallelised, so every output is byte-identical for any
+	// worker count. Parallel input decode is opt-in (0/1 stays single-threaded)
+	// because each worker adds block buffers to peak RSS.
+	Threads int
 }
 
 // splitOut wraps one open per-RG output file.
@@ -37,12 +50,9 @@ type splitOut struct {
 // isn't in the @RG table, go to opts.Unidentified (or are dropped when
 // that path is empty).
 func SplitFile(inPath string, opts SplitOptions) error {
-	in, err := os.Open(inPath)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	br, err := sam.NewBAMReader(in)
+	// -@ >= 2 engages block-parallel BGZF inflate on the input; the raw file
+	// handle is opened internally by alnio (no iohelper pre-inflate pitfall).
+	br, err := alnio.OpenReaderThreaded(inPath, "", ReadDecodeThreads(opts.Threads))
 	if err != nil {
 		return err
 	}

@@ -473,7 +473,8 @@ Options:
   -u, --user-tstv TAG[:min:max:n] 1st-ALT Ts/Tv binned by a numeric INFO tag (default min:max:n = 0:1:100).
       --af-tag TAG                INFO tag to read AF from (default: compute from GT).
   -o, --output PATH               Output file (default stdout).
-      --threads N                 Accepted; v1 is single-threaded.
+  -@, --threads N                 Worker threads for parallel BGZF decompression
+                                  of the input (default 0 = single-threaded).
   -h, --help                      Show this help.
       --version                   Show version.
 `
@@ -519,7 +520,7 @@ func runStatsCmd(args []string) int {
 	cliflag.StringVar(fs, &userTSTVSpec, "u", "user-tstv", "", "User Ts/Tv tag spec")
 	fs.StringVar(&afTag, "af-tag", "", "INFO AF tag")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
-	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Worker threads for parallel BGZF input decompression")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVersion, "version", false, "")
@@ -554,6 +555,7 @@ func runStatsCmd(args []string) int {
 		FirstAlleleOnly: firstAlleleOnly,
 		AFTag:           afTag,
 		InputFile:       input,
+		Threads:         threads,
 	}
 	if samples != "" {
 		opts.Samples = bcftools.SplitCommaList(samples)
@@ -653,7 +655,8 @@ Options:
   -e, --exclude EXPR         Drop records matching expression.
   -F, --apply-filters NAMES  Comma list of FILTER names to keep.
   -o, --output PATH          Output file (default stdout).
-      --threads N            Accepted; v1 is single-threaded.
+  -@, --threads N            Accepted for CLI compatibility; query is
+                             single-threaded (upstream vcfquery has no threading).
   -?, --help                 Show this help.
       --version              Show version.
 `
@@ -693,7 +696,7 @@ func runQuery(args []string) int {
 	cliflag.StringVar(fs, &excludeExpr, "e", "exclude", "", "Exclude expression")
 	cliflag.StringVar(fs, &applyFilters, "F", "apply-filters", "", "FILTER name list to keep")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
-	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Accepted for compatibility; query is single-threaded")
 	fs.BoolVar(&showHelp, "?", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")

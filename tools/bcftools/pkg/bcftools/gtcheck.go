@@ -156,6 +156,15 @@ type GtcheckOptions struct {
 	Cluster    bool
 	ClusterMin float64
 	ClusterMax float64
+
+	// Threads is upstream's -@/--threads worker count. When > 1 it drives
+	// block-parallel BGZF inflate of the BGZF-framed query and -g panel inputs
+	// (.vcf.gz/.bcf) and, for -O z output, block-parallel BGZF deflate of the
+	// report — the only things upstream vcfgtcheck parallelises (its synced
+	// reader's bgzf_thread_pool). The comparison compute stays single-threaded,
+	// so the report is byte-identical for any worker count. Parallel decode is
+	// opt-in (0/1 stays single-threaded) to bound peak RSS.
+	Threads int
 }
 
 // GtcheckPair captures one row of the #DCv2 output. Discordance is held
@@ -186,19 +195,19 @@ type GtcheckResult struct {
 // GtcheckFile is the file-aware entry point used by the CLI.
 func GtcheckFile(queryPath string, out io.Writer, opts GtcheckOptions) (GtcheckResult, error) {
 	if opts.GenotypesFile != "" {
-		gIn, err := openVariantReader(opts.GenotypesFile)
+		gIn, err := openVariantReaderThreaded(opts.GenotypesFile, opts.Threads)
 		if err != nil {
 			return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: open -g %s: %w", opts.GenotypesFile, err)
 		}
 		defer gIn.Close()
-		qIn, err := openVariantReader(queryPath)
+		qIn, err := openVariantReaderThreaded(queryPath, opts.Threads)
 		if err != nil {
 			return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: open %s: %w", queryPath, err)
 		}
 		defer qIn.Close()
 		return GtcheckPaired(qIn, gIn, out, opts)
 	}
-	in, err := openVariantReader(queryPath)
+	in, err := openVariantReaderThreaded(queryPath, opts.Threads)
 	if err != nil {
 		return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: open %s: %w", queryPath, err)
 	}
@@ -206,9 +215,12 @@ func GtcheckFile(queryPath string, out io.Writer, opts GtcheckOptions) (GtcheckR
 	return Gtcheck(in, out, opts)
 }
 
-// openVariantReader opens a VCF/BCF/gzipped-VCF input.
-func openVariantReader(path string) (io.ReadCloser, error) {
-	return iohelper.OpenReader(path)
+// openVariantReaderThreaded opens a VCF/BCF/gzipped-VCF input with block-parallel
+// BGZF inflate under -@ >= 2 (falling back to the single-threaded opener for
+// plain/uncompressed inputs). readAllVariants dispatches on the decompressed
+// BCF-vs-VCF magic, so parallelising the inflate needs no parser change.
+func openVariantReaderThreaded(path string, threads int) (io.ReadCloser, error) {
+	return iohelper.OpenReaderThreaded(path, threads)
 }
 
 // Gtcheck is the cross-check entry point: every query sample vs every
@@ -704,9 +716,21 @@ func emitGtcheckOutput(
 		if level < 0 {
 			level = bgzf.DefaultCompression
 		}
-		bz, berr := bgzf.NewWriterLevel(out, level)
-		if berr != nil {
-			return berr
+		// -@ > 1 spreads the BGZF deflate across the worker pool; the multi and
+		// single writers emit byte-identical framing at the same level.
+		var bz io.WriteCloser
+		if opts.Threads > 1 {
+			mw, berr := bgzf.NewMultiWriter(out, level, opts.Threads)
+			if berr != nil {
+				return berr
+			}
+			bz = mw
+		} else {
+			w, berr := bgzf.NewWriterLevel(out, level)
+			if berr != nil {
+				return berr
+			}
+			bz = w
 		}
 		if werr := writeGtcheckBody(bz, result, stats, st, opts, crossCheck, qSamples, gSamples, ds); werr != nil {
 			bz.Close()
