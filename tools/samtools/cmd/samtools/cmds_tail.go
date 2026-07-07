@@ -446,6 +446,8 @@ Options:
   -m, --mode MODE        "overwrite_all" (default) or "orphan_only".
   -o, --output PATH      Output BAM (default stdout).
   -w                     Overwrite an existing @RG line with the same ID.
+  -@, --threads N        Worker threads for BGZF (de)compression (input inflate
+                         and output deflate). Default 0 (single-threaded).
       --no-PG            Accepted; v1 never injects @PG.
   -h, --help             Show this help.
   -v, --version          Show version.
@@ -479,15 +481,16 @@ func runAddReplaceRG(args []string) int {
 	fs.BoolVar(&showVer, "version", false, "")
 	// Upstream addreplacerg (bam_addrprg.c getopt "r:R:m:o:O:h@:uw") also
 	// accepts -O (output format), -@ (threads), and -u (uncompressed BAM).
-	// This port emits BAM single-threaded, so these are accepted no-ops kept
-	// for compatibility (and so bundled clusters parse).
+	// -@ is now honoured: it drives block-parallel BGZF (de)compression of the
+	// input and output. -O (output format) and -u (uncompressed BAM) remain
+	// accepted no-ops kept for compatibility (and so bundled clusters parse).
 	var (
 		arOutFmt  string
 		arThreads int
 		arUncomp  bool
 	)
 	cliflag.StringVar(fs, &arOutFmt, "O", "output-fmt", "", "Output format (accepted)")
-	cliflag.IntVar(fs, &arThreads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &arThreads, "@", "threads", 0, "Worker threads for BGZF (de)compression")
 	fs.BoolVar(&arUncomp, "u", false, "")
 
 	if err := cliflag.Parse(fs, args); err != nil {
@@ -496,7 +499,6 @@ func runAddReplaceRG(args []string) int {
 		return 2
 	}
 	_ = arOutFmt
-	_ = arThreads
 	_ = arUncomp
 	if showHelp {
 		fmt.Print(addReplaceRGUsage)
@@ -520,24 +522,19 @@ func runAddReplaceRG(args []string) int {
 		fmt.Fprintf(os.Stderr, "samtools addreplacerg: bad -m %q (orphan_only|overwrite_all)\n", mode)
 		return 2
 	}
-	in, err := iohelper.OpenReader(fs.Arg(0))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "samtools addreplacerg: %v\n", err)
-		return 1
-	}
-	defer in.Close()
 	out, err := openOut(outPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "samtools addreplacerg: %v\n", err)
 		return 1
 	}
 	defer out.Close()
-	if err := samtools.AddReplaceRG(in, out, samtools.AddReplaceRGOptions{
+	if err := samtools.AddReplaceRGFile(fs.Arg(0), out, samtools.AddReplaceRGOptions{
 		RGLine:            rgLine,
 		RGID:              rgID,
 		Mode:              rgMode,
 		OverwriteHeaderRG: overwriteW,
 		NoPG:              noPG,
+		Threads:           arThreads,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools addreplacerg: %v\n", err)
 		return 1
