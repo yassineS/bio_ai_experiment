@@ -318,15 +318,6 @@ func runWithReader(rd sam.Reader, opts Options) error {
 	perChromRegionHist := map[string][]int64{}
 	regionSummaryRows := map[string]summaryRow{}
 
-	// Pull records once, grouping by chrom. We don't trust that the BAM
-	// is sorted — buffering per-chrom slices keeps the algorithm correct
-	// even on a name-sorted input. Memory is O(records that match
-	// filters) which is acceptable for the typical mosdepth workload.
-	byChrom, presentChroms, err := groupRecords(rd, opts)
-	if err != nil {
-		return err
-	}
-
 	// summaryChroms is the subset of references that get a summary row and a
 	// distribution entry. Upstream mosdepth resolves each target's tid from
 	// the BAM index and skips references with no alignments before
@@ -339,15 +330,16 @@ func runWithReader(rd sam.Reader, opts Options) error {
 	// See docs/UPSTREAM_BUGS.md ("mosdepth — zero-coverage chromosomes ...").
 	summaryChroms := make([]string, 0, len(hdr.Refs))
 
-	for _, r := range hdr.Refs {
-		if opts.Chrom != "" && r.Name != opts.Chrom {
-			continue
-		}
-		hasReads := presentChroms[r.Name]
+	// processChrom builds one reference's accumulator from recs, records its
+	// summary/distribution state (when hasReads), and emits its per-base,
+	// quantized, regions and thresholds output. It is the shared per-reference
+	// body used by both the streaming (coordinate-sorted) and buffered drivers;
+	// factoring it out keeps their output byte-for-byte identical. recs is
+	// consumed and may be freed by the caller afterwards.
+	processChrom := func(r sam.Reference, recs []*sam.Record, hasReads bool) error {
 		if hasReads {
 			summaryChroms = append(summaryChroms, r.Name)
 		}
-		recs := byChrom[r.Name]
 		accum := newCovAccum(int(r.Length))
 		accum.addRecords(recs, opts.FastMode, opts.FragmentMode)
 
@@ -513,6 +505,38 @@ func runWithReader(rd sam.Reader, opts Options) error {
 		}
 		// Free the accumulator's events explicitly to keep memory bounded.
 		accum.events = nil
+		return nil
+	}
+
+	// Drive processChrom in @SQ order. For a coordinate-sorted input the
+	// records for each reference arrive contiguously, so we stream them into
+	// the current reference's slice and emit as soon as the reference changes —
+	// holding only one chromosome's records at a time (peak memory O(largest
+	// chrom) rather than O(whole file)). For name-sorted / unsorted / SAM input
+	// we fall back to buffering every record up front, which keeps the
+	// per-reference algorithm correct regardless of stream order. Both paths
+	// feed processChrom the same recs in the same order, so their output is
+	// byte-for-byte identical.
+	if headerIsCoordinateSorted(hdr) {
+		if err := streamByChrom(rd, hdr, opts, processChrom); err != nil {
+			return err
+		}
+	} else {
+		byChrom, presentChroms, gerr := groupRecords(rd, opts)
+		if gerr != nil {
+			return gerr
+		}
+		for _, r := range hdr.Refs {
+			if opts.Chrom != "" && r.Name != opts.Chrom {
+				continue
+			}
+			recs := byChrom[r.Name]
+			if err := processChrom(r, recs, presentChroms[r.Name]); err != nil {
+				return err
+			}
+			// Release this reference's records now that it has been emitted.
+			delete(byChrom, r.Name)
+		}
 	}
 
 	// Close output writers + build CSI indexes (matching upstream mosdepth,
@@ -719,6 +743,146 @@ func groupRecords(rd sam.Reader, opts Options) (map[string][]*sam.Record, map[st
 		}
 		out[rec.RName] = append(out[rec.RName], rec)
 	}
+}
+
+// headerIsCoordinateSorted reports whether the @HD line declares SO:coordinate.
+// Only a coordinate-sorted stream guarantees that each reference's records
+// arrive contiguously and in @SQ order, which is what the streaming driver in
+// streamByChrom relies on; any other value (queryname, unsorted, unknown, or a
+// missing @HD line) routes to the buffered fallback so correctness is preserved.
+func headerIsCoordinateSorted(hdr *sam.Header) bool {
+	for _, f := range hdr.HDFields {
+		if f.Tag == "SO" {
+			return f.Value == "coordinate"
+		}
+	}
+	return false
+}
+
+// streamByChrom drives processChrom in @SQ order for a coordinate-sorted input
+// without buffering the whole file. It reads records one at a time, gathering
+// each reference's kept records into a single slice, and calls processChrom the
+// moment the stream moves on to a later reference — so at most one chromosome's
+// records are resident at a time. References that carry no records (whether
+// zero-coverage or excluded by --chrom) are still visited, matching the
+// buffered path, so every reference receives its per-base / regions emission.
+//
+// The kept records, the present (index-presence) flag, and the @SQ visitation
+// order are computed exactly as groupRecords + the buffered loop would, so the
+// output is byte-for-byte identical to the fallback path. A record whose
+// reference index moves backwards would violate the coordinate-sort assumption;
+// since headerIsCoordinateSorted gated entry, that indicates a mislabelled file
+// and is reported as an error rather than silently mis-emitted.
+func streamByChrom(rd sam.Reader, hdr *sam.Header, opts Options, processChrom func(sam.Reference, []*sam.Record, bool) error) error {
+	keep := keepRecord
+	if mapqFastPath(opts) {
+		keep = keepRecordNoMapq
+	}
+
+	// nextRef is the index into hdr.Refs of the next reference we have yet to
+	// emit. flushTo emits every reference in [nextRef, limit) that passes the
+	// --chrom gate, using the pending buffer only for the reference whose index
+	// == the buffer's owner (curIdx); all others are zero-coverage.
+	nextRef := 0
+	var curRecs []*sam.Record
+	curPresent := false
+	curIdx := -1 // hdr.Refs index that curRecs belongs to; -1 when none pending.
+	// lastName caches the previous record's RNAME → @SQ index so the common
+	// case (a long contiguous run of records on one reference) avoids the O(n)
+	// RefIndex lookup per record.
+	lastName := ""
+	lastIdx := -1
+
+	// emitZeroUpTo emits zero-coverage references in [nextRef, limit).
+	emitZeroUpTo := func(limit int) error {
+		for ; nextRef < limit; nextRef++ {
+			r := hdr.Refs[nextRef]
+			if opts.Chrom != "" && r.Name != opts.Chrom {
+				continue
+			}
+			if err := processChrom(r, nil, false); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	flush := func(ownerIdx int) error {
+		// Emit any zero-coverage references strictly before the owner.
+		if err := emitZeroUpTo(ownerIdx); err != nil {
+			return err
+		}
+		r := hdr.Refs[ownerIdx]
+		if opts.Chrom == "" || r.Name == opts.Chrom {
+			if err := processChrom(r, curRecs, curPresent); err != nil {
+				return err
+			}
+		}
+		curRecs = nil
+		curPresent = false
+		curIdx = -1
+		nextRef = ownerIdx + 1
+		return nil
+	}
+
+	for {
+		rec, err := rd.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("mosdepth: read record: %w", err)
+		}
+		// Records without a placed reference (unmapped / RNAME "*") cannot
+		// contribute to any reference's depth and are dropped, matching
+		// groupRecords. In a coordinate-sorted file these sort to the end.
+		if rec.Pos <= 0 || rec.RName == "" || rec.RName == "*" {
+			continue
+		}
+		var idx int
+		if rec.RName == lastName {
+			idx = lastIdx
+		} else {
+			idx = hdr.RefIndex(rec.RName)
+			lastName = rec.RName
+			lastIdx = idx
+		}
+		if idx < 0 {
+			// Reference not in the header; skip like an unknown RNAME.
+			continue
+		}
+		if idx != curIdx {
+			// Moving on to a new reference. Emit the pending owner (and the
+			// zero-coverage gap before it) first.
+			if curIdx >= 0 {
+				if idx < curIdx {
+					return fmt.Errorf("mosdepth: input declares SO:coordinate but reference %q appears out of @SQ order", rec.RName)
+				}
+				if err := flush(curIdx); err != nil {
+					return err
+				}
+			}
+			if idx < nextRef {
+				return fmt.Errorf("mosdepth: input declares SO:coordinate but reference %q appears out of @SQ order", rec.RName)
+			}
+			curIdx = idx
+		}
+		// Index-presence gate (before filters), matching groupRecords.
+		if opts.Chrom == "" || rec.RName == opts.Chrom {
+			curPresent = true
+		}
+		if !keep(rec, opts) {
+			continue
+		}
+		curRecs = append(curRecs, rec)
+	}
+	// Flush the final pending reference and any trailing zero-coverage refs.
+	if curIdx >= 0 {
+		if err := flush(curIdx); err != nil {
+			return err
+		}
+	}
+	return emitZeroUpTo(len(hdr.Refs))
 }
 
 // keepRecord applies every per-read filter configured on opts — including the
