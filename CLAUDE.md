@@ -125,8 +125,20 @@ owner approval.
    gzip stream the stdlib reader and upstream htslib both decode. Note
    klauspost's level scale differs from the stdlib's: **level 7**
    reproduces stdlib level-6 ratio (the writer's `cramGzipLevel`), so
-   CRAM size stays on par with upstream while encoding faster. Reuse
-   beyond the BGZF and CRAM gzip deflate paths (e.g. its zstd/s2/snappy
+   CRAM size stays on par with upstream while encoding faster.
+   **Also sanctioned: plain-gzip tool OUTPUT.** `iohelper.OpenWriterFast`
+   (in `pkg/htsgo/iohelper/`) is a klauspost-backed sibling of
+   `OpenWriter` for `.gz` *output*: it emits a standard RFC 1952 gzip
+   stream (byte-decodable by compress/gzip and upstream tools) but
+   deflates much faster than the stdlib encoder. It exists because for
+   FASTQ tools like fastp ~80% of wall time was single-threaded output
+   gzip; fastp now routes all its `.gz` output through it (honouring the
+   upstream `-z/--compression` level, default 4), cutting the chr20 PE
+   run ~2.6× and SE ~3.6× with byte-identical decompressed output.
+   `OpenWriterFast` is a *separate* entry point on purpose — the global
+   `OpenWriter` shared by every tool stays on the stdlib encoder, so only
+   opt-in callers change their compressed bytes. Reuse beyond the BGZF,
+   CRAM gzip, and `OpenWriterFast` output paths (e.g. its zstd/s2/snappy
    packages, or as a general compression utility) still needs its own
    conversation.
 

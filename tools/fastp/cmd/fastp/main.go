@@ -235,6 +235,8 @@ func main() {
 		splitNumber       int
 		splitByLines      int
 		splitPrefixDigits int
+		// Output gzip compression level (-z/--compression), upstream default 4.
+		compression int
 	)
 
 	// Input/Output.
@@ -348,6 +350,9 @@ func main() {
 	cliflag.IntVar(fs, &splitNumber, "s", "split", 0, "Split output into this many files (2-999)")
 	cliflag.IntVar(fs, &splitByLines, "S", "split_by_lines", 0, "Split output by max lines per file (>=1000, multiple of 4)")
 	cliflag.IntVar(fs, &splitPrefixDigits, "d", "split_prefix_digits", 4, "Zero-pad width for split file prefixes (1-10, default 4)")
+
+	// Output gzip compression level (upstream -z, default 4; 1 fastest, 9 smallest).
+	cliflag.IntVar(fs, &compression, "z", "compression", 4, "Compression level for gzip output (1-9, default 4)")
 
 	// Multi-threading
 	cliflag.IntVar(fs, &threads, "w", "threads", 1, "Number of threads (default: 1)")
@@ -494,11 +499,18 @@ func main() {
 		SplitNumber:             splitNumber,
 		SplitByLines:            splitByLines,
 		SplitPrefixDigits:       splitPrefixDigits,
+		CompressLevel:           compression,
 		Threads:                 threads,
 		HTMLReport:              htmlReport,
 		JSONReport:              jsonReport,
 		DetectAdapterPE:         detectAdapterForPE,
 		DetectAdapterSE:         detectAdapter, // legacy --detect-adapter triggers SE detection
+	}
+
+	// Compression level bounds mirror upstream options.cpp:284.
+	if compression < 1 || compression > 9 {
+		fmt.Fprintln(os.Stderr, "compression level (--compression) should be between 1 ~ 9, 1 for fastest, 9 for smallest")
+		os.Exit(1)
 	}
 
 	// Splitting mode: --split / --split_by_lines route output across
@@ -537,15 +549,15 @@ func main() {
 			// fallback); out1/out2 receive unmerged pairs when given.
 			var mergeOutW io.WriteCloser
 			if mergedOut != "" {
-				mergeOutW, err = iohelper.OpenWriter(mergedOut)
+				mergeOutW, err = iohelper.OpenWriterFast(mergedOut, compression)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Error creating merged output file: %v\n", err)
 					os.Exit(1)
 				}
 				defer mergeOutW.Close()
 			}
-			out1W := openOptionalWriter(out1File)
-			out2W := openOptionalWriter(out2File)
+			out1W := openOptionalWriter(out1File, compression)
+			out2W := openOptionalWriter(out2File, compression)
 			defer out1W.Close()
 			defer out2W.Close()
 			var mw io.Writer
@@ -554,14 +566,14 @@ func main() {
 			}
 			stats, err = fastp.ProcessPairedEndMerge(input1, input2, out1W, out2W, mw, encoding, opts)
 		} else {
-			output1, oerr := iohelper.OpenWriter(out1File)
+			output1, oerr := iohelper.OpenWriterFast(out1File, compression)
 			if oerr != nil {
 				fmt.Fprintf(os.Stderr, "Error creating output file 1: %v\n", oerr)
 				os.Exit(1)
 			}
 			defer output1.Close()
 
-			output2, oerr := iohelper.OpenWriter(out2File)
+			output2, oerr := iohelper.OpenWriterFast(out2File, compression)
 			if oerr != nil {
 				fmt.Fprintf(os.Stderr, "Error creating output file 2: %v\n", oerr)
 				os.Exit(1)
@@ -582,7 +594,7 @@ func main() {
 		if splitEnabled {
 			stats, err = fastp.ProcessSingleEndSplit(input, outputFile, encoding, opts)
 		} else {
-			output, oerr := iohelper.OpenWriter(outputFile)
+			output, oerr := iohelper.OpenWriterFast(outputFile, compression)
 			if oerr != nil {
 				fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", oerr)
 				os.Exit(1)
@@ -652,14 +664,15 @@ func validateSplit(splitNumber, splitByLines, digits int, merge bool) error {
 	return nil
 }
 
-// openOptionalWriter opens path for writing, or returns a no-op writer
-// when path is empty. Used in merge mode where --out1/--out2 are optional
-// (they only carry unmerged pairs).
-func openOptionalWriter(path string) io.WriteCloser {
+// openOptionalWriter opens path for writing (with klauspost gzip at the given
+// level for .gz destinations), or returns a no-op writer when path is empty.
+// Used in merge mode where --out1/--out2 are optional (they only carry unmerged
+// pairs).
+func openOptionalWriter(path string, level int) io.WriteCloser {
 	if path == "" {
 		return nopWriteCloser{io.Discard}
 	}
-	w, err := iohelper.OpenWriter(path)
+	w, err := iohelper.OpenWriterFast(path, level)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating output file %q: %v\n", path, err)
 		os.Exit(1)

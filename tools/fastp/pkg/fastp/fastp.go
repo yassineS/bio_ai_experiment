@@ -146,6 +146,12 @@ type ProcessOptions struct {
 	SplitByLines      int // --split_by_lines: max lines per output file.
 	SplitPrefixDigits int // --split_prefix_digits: zero-pad width (default 4).
 
+	// Output gzip compression level for .gz outputs, upstream -z/--compression
+	// (1..9, 1 fastest, 9 smallest; upstream default 4). It is applied by the
+	// klauspost gzip encoder used for fastp's .gz output. 0 selects the encoder
+	// default.
+	CompressLevel int
+
 	// Multi-threading
 	Threads int
 
@@ -211,6 +217,7 @@ func DefaultProcessOptions() ProcessOptions {
 		SplitNumber:             0,
 		SplitByLines:            0,
 		SplitPrefixDigits:       4,
+		CompressLevel:           4,
 		Threads:                 1,
 		HTMLReport:              "",
 		JSONReport:              "",

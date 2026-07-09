@@ -47,11 +47,12 @@ import (
 // the worker-thread count (-w/--thread) that governs the pack-to-thread
 // distribution. ByFileLines selects the --split_by_lines rollover rule.
 type SplitConfig struct {
-	Size        int
-	Digits      int
-	Number      int // 0 means split-by-lines (no file-count cap).
-	Threads     int
-	ByFileLines bool
+	Size          int
+	Digits        int
+	Number        int // 0 means split-by-lines (no file-count cap).
+	Threads       int
+	ByFileLines   bool
+	CompressLevel int // gzip level for .gz split outputs (upstream -z/--compression).
 }
 
 // resolveSplitConfig computes the SplitConfig from the user options and the
@@ -72,7 +73,7 @@ func resolveSplitConfig(opts ProcessOptions, totalRecords int) SplitConfig {
 		if size < 1 {
 			size = 1
 		}
-		return SplitConfig{Size: size, Digits: digits, Number: 0, Threads: threads, ByFileLines: true}
+		return SplitConfig{Size: size, Digits: digits, Number: 0, Threads: threads, ByFileLines: true, CompressLevel: opts.CompressLevel}
 	}
 	// --split N by file number.
 	n := opts.SplitNumber
@@ -88,7 +89,7 @@ func resolveSplitConfig(opts ProcessOptions, totalRecords int) SplitConfig {
 	if size <= 0 {
 		size = 1
 	}
-	return SplitConfig{Size: size, Digits: digits, Number: n, Threads: threads, ByFileLines: false}
+	return SplitConfig{Size: size, Digits: digits, Number: n, Threads: threads, ByFileLines: false, CompressLevel: opts.CompressLevel}
 }
 
 // splitPackSize is upstream fastp's PACK_SIZE (common.h:34). The reader emits
@@ -330,7 +331,7 @@ func (sw *splitWriter) assignFiles() ([]int, []int) {
 // writeFile writes the records destined for split file index f.
 func (sw *splitWriter) writeFile(f int, records []*fastq.Record) error {
 	name := splitFileName(sw.basePath, f, sw.cfg.Digits)
-	wc, err := iohelper.OpenWriter(name)
+	wc, err := iohelper.OpenWriterFast(name, sw.cfg.CompressLevel)
 	if err != nil {
 		return fmt.Errorf("open split file %q: %w", name, err)
 	}
