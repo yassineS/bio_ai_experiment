@@ -474,6 +474,52 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   own CRAM, and encode stayed *faster* (0.15 s vs 0.25 s). The deflate formats
   (VCF.gz/BCF/BGZF) remain ~6% larger (klauspost vs libdeflate — a deliberate
   speed/ratio trade, see CLAUDE.md); BAM is already smaller than upstream.
+- **Perf-phase backlog (2026-07 realbench triage).** The four remaining
+  realbench perf/RSS residuals were triaged against the code; the outcome
+  splits into landed byte-safe wins and measured-in-the-perf-phase items:
+  - **bedtools wall (fisher 0.09× / subtract 0.31× / window 0.30× / merge
+    0.45×)** — these are **small-input (~5 ms) ratios dominated by process
+    startup**, not algorithm. `bedfisher` already uses the incremental
+    sliding-2×2 hypergeometric recurrence (the "recomputes log-factorials"
+    hint was wrong) and `bedmerge` is already a single linear streaming sweep —
+    both **noise**, to be re-measured on real sizes. **`bedsubtract`'s** O(nA·nB)
+    per-A full B scan **was fixed** (a `sort.Search` overlap-window bound,
+    byte-neutral — a latent scaling win regardless of the small-input ratio).
+    `bedwindow`'s equivalent bound is deferred because its hit order is the
+    UCSC bin-traversal order (file order as tie-break), so a start-sorted bound
+    must rebuild that ordering — needs the perf harness to justify + validate.
+  - **single-thread BGZF-inflate ~2×** — a genuine **libdeflate-SIMD/asm-class
+    floor** (`docs/METRICS.md:217-220`); closing it needs cgo (excluded by the
+    single-static-binary mandate) or a large asm inflate port. The klauspost
+    reader is already at its fast path (pooled `Reset`, `*bytes.Reader`
+    specialisation, no redundant `bufio`). **Sanctioned mitigation is `-@`
+    parallel inflate; `samtools fastq` was the last decode-bound read cell not
+    honouring it and is now wired** (byte-identical output). Two per-block
+    micro-allocs (reuse the `bytes.Reader` via `Reset`; an XLEN scratch buffer)
+    remain as GC-only, byte-neutral wins to land+measure in the perf phase.
+  - **`samtools sort`/`sort -n` RSS (1.65×/1.8×)** — NOT a Go-runtime floor:
+    it is GC heap headroom over the ~768 MiB packed-body live set (the #475
+    arena was a dead end because the bytes stay live). The lever is a scoped
+    `debug.SetGCPercent` (the proven consensus/norm/gtcheck technique), which
+    `sort` does not yet apply; it is byte-neutral but the constant must be
+    tuned against wall in the perf phase. Driving below upstream's ~872 MB
+    budget floor stays deferred (shrinking the 768 MiB buffer is a known
+    wall/shard regression). `sort -n`'s extra ~0.15× is a merge-fan-in
+    resident-set effect (name-scrambled input keeps all shard readers live).
+  - **CRAM decode wall (0.18×, CPU 0.07)** — a pure-Go entropy-codec floor
+    (rANS 4x8/4x16 already tight: pooled no-zero order-1 tables, no per-symbol
+    heap alloc). Path to <1× is asm rANS (owner-gated) or auto-enabling the
+    existing byte-exact `-@` parallel decode (a policy call, withheld only for
+    single-thread bench fairness) — **deferred with plan**.
+  - **CRAM encode RSS (10.46×)** — NOT a codec floor: unbounded encode-side
+    concurrency (up to 8 in-flight containers, each a ~10 k fat-`sam.Record`
+    batch) × payload duplication (series→block→body→out) plus the
+    codec-selection round-trip. Byte-safe cuts (cap/right-size `encodeThreads`
+    with a scoped soft memory limit; drop the body→out copy; pool
+    `seriesBuffers`; trim the selection copies) are **round-trip-identical and
+    provable now**,
+    but their RSS payoff is a perf-phase measurement — **land+measure there**;
+    any residual is the shared fat-`sam.Record` cross-cutting item.
 - **`bcftools isec` "15× wall" was an artifact — FIXED** (commit `ff46358`).
   `isec -p` writes its projection VCFs + `sites.txt` to disk; the large-tier
   bench ran with `TMPDIR` on the slow Docker bind mount, and our plain-VCF writer
