@@ -1165,7 +1165,7 @@ func runFastq(args []string) int {
 	cliflag.BoolVar(fs, &noCO, "t", "no-CO", false, "No @CO emission (no-op)")
 	cliflag.StringVar(fs, &compLevel, "c", "compress-level", "", "Gzip level for .gz outputs")
 	cliflag.BoolVar(fs, &useOQ, "O", "use-qq", false, "Use OQ aux tag for quality")
-	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "BGZF input decode worker count")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "v", false, "")

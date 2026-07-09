@@ -59,7 +59,8 @@ type FastqOptions struct {
 	// NoCO is accepted for upstream compatibility — we never emit @CO
 	// lines anyway.
 	NoCO bool
-	// Threads is accepted for compatibility; v1 is single-threaded.
+	// Threads sets the parallel BGZF-input inflate worker count (-@/--threads).
+	// <=0 means single-threaded. Output is byte-identical for any value.
 	Threads int
 }
 
@@ -83,7 +84,11 @@ type FastqCounts struct {
 // Fastq performs the conversion.
 func Fastq(in io.Reader, opts FastqOptions) (FastqCounts, error) {
 	var counts FastqCounts
-	rd, err := alnio.NewReader(in)
+	// Honour -@/--threads for parallel BGZF-input inflate (the fastq read is
+	// decode-bound on BAM input). Only block inflation is parallelised, so the
+	// decoded records — and hence the FASTQ output — are byte-identical for any
+	// thread count. Threads<=0 stays single-threaded (ReadDecodeThreads).
+	rd, err := alnio.NewReaderThreaded(in, "", ReadDecodeThreads(opts.Threads))
 	if err != nil {
 		return counts, err
 	}
