@@ -87,6 +87,47 @@ type Reader struct {
 	// data line in Variant.RawLine and parse only the sort-key columns
 	// (CHROM/POS/REF/ALT). See KeepRawLine.
 	keepRawLine bool
+	// intern is a small string-interning table used only on the ReadInto path.
+	// ReadInto's Chrom/Ref/Alt (and Filter) strings alias the reused line buffer
+	// and become invalid on the next read, so a caller that retains them across
+	// reads (e.g.
+	// the vcftools streaming-stats accumulators, which store v.Chrom / the allele
+	// strings per site) would otherwise hold dangling aliases. Interning collapses
+	// each distinct value to a single stable, owned string: the whole-file set of
+	// chromosome names collapses to a handful of entries, and the common short
+	// alleles (A/C/G/T, ".") to a fixed few, so retained copies stay valid without
+	// per-site allocation. The Read (owned) path already materialises fresh strings
+	// and does not use this. See internStr.
+	intern map[string]string
+}
+
+// internStr returns an owned, stable copy of s, reusing a single backing string
+// per distinct value via the reader's intern table. The argument s aliases the
+// reused line buffer (ReadInto path); the returned string owns its own memory and
+// is safe to retain across subsequent reads. The table is bounded in practice by
+// the small cardinality of the interned fields (chromosome names and short
+// alleles), so it does not grow with the number of records.
+func (r *Reader) internStr(s string) string {
+	if v, ok := r.intern[s]; ok {
+		return v
+	}
+	// string(...) forces a fresh allocation that owns its bytes, breaking the
+	// alias into r.lineBuf before we store it as both key and value.
+	owned := string([]byte(s))
+	if r.intern == nil {
+		r.intern = make(map[string]string)
+	}
+	r.intern[owned] = owned
+	return owned
+}
+
+// internSlice interns each element of s in place using the supplied intern
+// function, so a slice of aliasing strings (e.g. v.Alt on the ReadInto path)
+// becomes a slice of stable owned strings that survive the next read.
+func internSlice(intern func(string) string, s []string) {
+	for i := range s {
+		s[i] = intern(s[i])
+	}
 }
 
 // KeepRawSamples toggles "shallow sample" parsing: when on, Read/ReadInto parse
@@ -228,13 +269,21 @@ func (r *Reader) readInto(v *Variant, owned bool) error {
 			// caller must not retain v (or its strings) past the next read.
 			line = unsafe.String(unsafe.SliceData(r.lineBuf), len(r.lineBuf))
 		}
-		return r.parseLine(line, v)
+		return r.parseLine(line, v, owned)
 	}
 }
 
 // parseLine fills v from a single VCF data line, reusing v's existing maps and
-// slices. The string fields reference line, which is valid until the next read.
-func (r *Reader) parseLine(line string, v *Variant) error {
+// slices. On the Read (owned) path line is a freshly-allocated owned string, so
+// all of v's fields own their backing. On the ReadInto path line aliases the
+// reused buffer; parseLine then interns the fields a caller is documented as
+// allowed to retain across reads (CHROM, REF, and each ALT allele) so those
+// specific strings become stable owned copies. ID is not interned: no consumer
+// retains it across sites and rsIDs are ~unique, so interning it would grow the
+// table without bound for no benefit. The remaining aliasing fields (ID, INFO
+// values, FILTER, FORMAT, per-sample data) keep ReadInto's discard-before-
+// next-read contract.
+func (r *Reader) parseLine(line string, v *Variant, owned bool) error {
 	r.fieldsBuf = splitInto(r.fieldsBuf, line, '\t')
 	fields := r.fieldsBuf
 	if len(fields) < 8 {
@@ -251,6 +300,11 @@ func (r *Reader) parseLine(line string, v *Variant) error {
 		v.Pos = pos
 		v.Ref = fields[3]
 		v.Alt = splitInto(v.Alt, fields[4], ',')
+		if !owned {
+			v.Chrom = r.internStr(v.Chrom)
+			v.Ref = r.internStr(v.Ref)
+			internSlice(r.internStr, v.Alt)
+		}
 		v.RawLine = line
 		v.ID = ""
 		v.Qual = 0
@@ -269,6 +323,16 @@ func (r *Reader) parseLine(line string, v *Variant) error {
 	v.ID = fields[2]
 	v.Ref = fields[3]
 	v.Alt = splitInto(v.Alt, fields[4], ',')
+	if !owned {
+		// ReadInto path: intern the fields a caller may retain across reads so
+		// they become stable owned strings rather than aliases into r.lineBuf.
+		// ID is deliberately not interned: no consumer retains v.ID by reference
+		// across sites, and rsIDs are ~unique per site, so interning it would grow
+		// the table O(n_sites) for no benefit.
+		v.Chrom = r.internStr(v.Chrom)
+		v.Ref = r.internStr(v.Ref)
+		internSlice(r.internStr, v.Alt)
+	}
 	if fields[5] == "." {
 		v.Qual = -1
 	} else {
@@ -279,6 +343,14 @@ func (r *Reader) parseLine(line string, v *Variant) error {
 		v.Qual = qual
 	}
 	v.Filter = parseFilterInto(v.Filter, fields[6])
+	if !owned {
+		// FILTER is retained across reads by the --FILTER-summary accumulator
+		// (which keys a map on the joined FILTER string; a single-tag join
+		// returns the aliasing element verbatim), so intern its tags too. FILTER
+		// tags have tiny cardinality (PASS/./named filters), so this collapses to
+		// a handful of stable strings.
+		internSlice(r.internStr, v.Filter)
+	}
 	v.InfoOrder, v.Info = parseInfoInto(v.InfoOrder, v.Info, fields[7])
 
 	if len(fields) > 8 && r.keepRawTail {

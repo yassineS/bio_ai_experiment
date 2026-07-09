@@ -551,6 +551,15 @@ type positionSet map[string]map[int]bool
 type variantSource interface {
 	Header() *vcf.Header
 	Read() (*vcf.Variant, error)
+	// ReadInto parses the next variant into dst, reusing dst's buffers where the
+	// underlying source supports it (the VCF source delegates to
+	// vcf.Reader.ReadInto; the BCF source copies its per-record decode into dst).
+	// The retained-across-reads string fields (CHROM/REF/ID/ALT and the alleles
+	// the streaming-stats accumulators keep) are interned to stable owned strings,
+	// so dst's Chrom/Ref/ID/Alt survive subsequent reads; the remaining aliasing
+	// fields must be treated as discard-before-next-read. It returns io.EOF at end
+	// of input, like Read.
+	ReadInto(dst *vcf.Variant) error
 	Close() error
 }
 
@@ -562,9 +571,10 @@ type vcfVariantSource struct {
 	hdr *vcf.Header
 }
 
-func (s *vcfVariantSource) Header() *vcf.Header         { return s.hdr }
-func (s *vcfVariantSource) Read() (*vcf.Variant, error) { return s.r.Read() }
-func (s *vcfVariantSource) Close() error                { return nil }
+func (s *vcfVariantSource) Header() *vcf.Header             { return s.hdr }
+func (s *vcfVariantSource) Read() (*vcf.Variant, error)     { return s.r.Read() }
+func (s *vcfVariantSource) ReadInto(dst *vcf.Variant) error { return s.r.ReadInto(dst) }
+func (s *vcfVariantSource) Close() error                    { return nil }
 
 // bcfVariantSource adapts a `*bcf.Reader` to the variantSource
 // interface. It carries `closers` for the file handle (and any
@@ -583,6 +593,22 @@ func (s *bcfVariantSource) Read() (*vcf.Variant, error) {
 		return nil, err
 	}
 	return rec.ToVariant(s.r.Header()), nil
+}
+
+// ReadInto decodes the next BCF record into dst. The BCF decoder builds a fresh
+// Variant per record via ToVariant, so this shallow-copies that into dst — dst's
+// fields therefore own their backing exactly as the Read path does, which keeps
+// the streaming-stats accumulators safe when the caller reuses one dst across
+// sites. (Unlike the VCF source there is no buffer aliasing to guard against;
+// this method exists so the BCF source satisfies the variantSource interface and
+// the shared streaming loop can drive either source uniformly.)
+func (s *bcfVariantSource) ReadInto(dst *vcf.Variant) error {
+	rec, err := s.r.Read()
+	if err != nil {
+		return err
+	}
+	*dst = *rec.ToVariant(s.r.Header())
+	return nil
 }
 func (s *bcfVariantSource) Close() error {
 	// closers is stored in inner-to-outer order ([bz, f]): bz reads
@@ -1165,8 +1191,35 @@ func Run(input io.Reader, params *Params) error {
 	thinCounter := 0
 	var allVariants []*vcf.Variant // For format conversions that need all data
 
+	// Streaming vs retaining read strategy. Most consumers — the streaming-stats
+	// cells and the incremental recode/LD/relatedness/... writers — process each
+	// site and discard it before the next read, so they can reuse a single Variant
+	// via ReadInto. ReadInto reuses the reader's per-record buffers and maps
+	// instead of allocating ~19 objects per site, which keeps the Go heap arena
+	// (and thus RSS) small over an 86k-site scan while producing byte-identical
+	// output. The fields the stats accumulators retain across sites
+	// (CHROM/REF/ID/ALT alleles and FILTER) are interned to stable owned strings
+	// inside ReadInto, so that reuse is safe.
+	//
+	// Two families retain data across reads that ReadInto's interning does NOT
+	// cover, so they take the owned-copy Read path:
+	//   - --012/--plink/--plink-tped buffer every kept variant in allVariants
+	//     (whole records, incl. the reused Info/Sample maps).
+	//   - the --diff switch-error runner keeps each individual's previous phased
+	//     genotype alleles (substrings of the reused per-sample Data values) to
+	//     compare against the next site.
+	retainVariants := params.Output012 || params.OutputPlink || params.OutputPlinkTped ||
+		params.Diff != "" || params.DiffBCF != ""
+	var reuse vcf.Variant
+
 	for {
-		variant, err := reader.Read()
+		var variant *vcf.Variant
+		if retainVariants {
+			variant, err = reader.Read()
+		} else {
+			err = reader.ReadInto(&reuse)
+			variant = &reuse
+		}
 		if err == io.EOF {
 			break
 		}
