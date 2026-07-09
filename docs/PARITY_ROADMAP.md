@@ -357,15 +357,39 @@ Correctness (byte-exact now) — DIFF cells closed by the same wave:
   flag; fix the `-g` gap output format.
 
 **Accepted residual (NOT claimed fixed):** the DEFAULT (gap5 Bayesian)
-`samtools consensus` base call still differs from upstream at ~46 depth-1
-STR/homopolymer loci (Go vs glibc libm last-ULP); `--mode simple` is byte-exact.
-Full characterisation in the consensus base-call residual note below.
-Re-measured on the real chr20 GIAB fixture (2026-07-05): over 61.2M consensus
-positions the default Bayesian mode produces ~10 base flips plus ~1521
-quality-only differences (all |dq| <= 12), while `--mode simple` remains
-byte-exact — consistent with the last-ULP libm characterisation above (the
-gap5 Bayesian caller amplifies libm rounding at low depth; simple mode has no
-such transcendental dependence).
+`samtools consensus` base call still differs from upstream at a handful of
+depth-1..5 STR/homopolymer loci (Go vs glibc libm last-ULP); `--mode simple`
+is byte-exact. Full characterisation in the consensus base-call residual note
+below. Re-measured on the real chr20 GIAB fixture (2026-07-08, `-f pileup`,
+aligned by (POS, insertion-index) so indel emission differences do not cascade
+into positional shear):
+
+- **1530 quality-only differences** (col6 `cq`, all |dq| = 1) over 61.2M rows.
+  These are the `fast_exp`/`consensus_init` transcendental last-ULP residual:
+  the gap5 posterior in `calculate_consensus_gap5` normalises via
+  `fast_exp(S[j])`, which upstream implements as a lookup into `e_tab2[i] =
+  exp(i/10.)` and `e_tab[i] = exp(i)` — precomputed with glibc `exp` — and the
+  `consensus_init` probability tables are built with glibc `log`/`pow`/`exp`.
+  Go's `math.Exp`/`math.Log`/`math.Pow` disagree with glibc in the last ULP, so
+  the per-column `cq` truncates one Phred unit either side of upstream. The
+  `ph_log`/het-logodd paths use the libm-free `fast_log2` Taylor polynomial and
+  are already bit-exact, so the residual is confined to the exp-fed `cq` value.
+- **10 base flips** (col5), each an `A`/`C`/`G` at `cq == 10` upstream vs an
+  `N`/`cq=0` in ours (or the reverse). These are NOT an independent defect: they
+  are the same ±1 `cq` residual landing exactly on the `--consensus-cutoff`
+  (default 10) boundary in `bayesCallToBase` (`cq < consCutoff → N`). E.g.
+  chr20:17481389 (depth 2, one A@Q37 + one deletion): upstream `A cq=10`, ours
+  `N cq=0`. Closing them requires reproducing glibc `exp`/`log`/`pow`
+  bit-for-bit, which is out of scope; documented as proximity parity.
+- **~36 emission-boundary rows** (26 upstream-only + 10 ours-only) and a net
+  **−16 base FASTA length** delta arise at ~25 scattered deletion / coverage-
+  island boundaries (e.g. chr20:3780419, chr20:5679624). Verified that the base
+  pileup columns around these loci are byte-identical when queried with an
+  explicit `-r` window — the divergence is a ±1-position off-by-one in the
+  whole-contig pileup engine's column-visit at deletion edges, NOT the base
+  calls. Not attempted here: the windowed path is correct and any change to the
+  whole-contig visit logic risks regressing the 61.2M rows that already match.
+  Tracked as an open deletion-boundary emission gap.
 
 ### Performance & memory scalability follow-ups (2026-06-25, from the real-data + large-tier perf)
 
@@ -373,6 +397,35 @@ The H2a real-data GIAB run and the large-tier bench (all **byte-exact** vs
 upstream) surfaced memory-scalability gaps — correctness is fine, but a few
 cells hold O(file) state where upstream streams. These would OOM at WGS scale:
 
+- **`bcftools consensus` held 3+ whole-contig reference copies — REDUCED**
+  (2026-07-08). Was `readFasta`/`ReadAll` (every contig resident) + a
+  `append([]byte(nil), …)` mask copy + an `out := make([]byte, 0, len(ref0))`
+  build buffer per contig → **534 MB** on the real chr20 GIAB fixture
+  (`consensus -f chr20.ref.fa chr20.vcf.gz`) vs upstream **18 MB**. `ConsensusFile`
+  now faidx-streams the reference one contig at a time via
+  `fasta.OpenRandomAccess`/`FetchRaw` (case-preserving, so soft-masking survives),
+  applies the BED mask **in place** on that single buffer, pre-sizes the `out`
+  build buffer to its exact upper bound (no reallocate-and-double spike), and
+  scopes `debug.SetGCPercent(20)` to the command. Peak RSS **534 MB → 354 MB**,
+  output **byte-identical** to upstream (`cmp`-clean). New
+  `consensus_stream_test.go` locks the streaming path byte-for-byte against the
+  in-memory `Consensus` path (multi-contig, soft-masked, SNP/ins/del, and a BED
+  mask). Residual: the remaining ~255 MB live set is the whole-VCF variant slurp
+  (`readAllVariants`, ~86 k `*vcf.Variant` on chr20) which the grouped/sorted
+  design requires; approaching upstream's 18 MB needs a per-contig VCF-streaming
+  rewrite (parity-risky, deferred).
+- **`samtools consensus` GC headroom — REDUCED** (2026-07-08). The pileup engine
+  holds a whole-contig `seqBuf`/`qualBuf` plus per-column read slices; the heap
+  was allowed to grow to several × the live set before collecting. Scoping
+  `debug.SetGCPercent(30)` to the `ConsensusFile` command path (output-neutral,
+  RSS only) cut `-f pileup` on real chr20 from **334 MB → 239 MB** (output
+  `cmp`-identical to the pre-change run). `-f fasta` still buffers the whole
+  contig (206 MB upstream vs 318 MB ours); streaming its `seqBuf` out in
+  LineLen-width chunks is complicated by the end-of-contig `firstCovIdx`/
+  `lastCovIdx` / `gapRunStart` trim (a covered-span cannot be finalised until the
+  trim boundaries are known) and was deferred as parity-risky. New
+  `TestConsensusFileGCNeutral` pins that the GC change is output-neutral and
+  restores the caller's GC target on return.
 - **`bcftools norm` buffers the whole VCF — FIXED** (commit `4e53d2f`). Was
   `readVCFAll` + global `sortVariants` → ~9.1 GiB on the HG002 VCF (436×). Now
   streams through a bounded `normWindow` reorder buffer (port of upstream

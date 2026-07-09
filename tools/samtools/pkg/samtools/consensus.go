@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -306,6 +307,16 @@ func ConsensusFile(opts ConsensusOptions, out io.Writer, errOut io.Writer) error
 		return fmt.Errorf("samtools consensus: no input file")
 	}
 	_ = errOut
+
+	// Trim GC headroom for the consensus command path. The pileup engine
+	// allocates a whole-contig seqBuf/qualBuf plus per-column read slices and
+	// would otherwise let the heap grow to several times the live set before
+	// collecting. A tighter GC target keeps peak RSS closer to the live
+	// working set; it is output-neutral (RSS only). Restore the previous
+	// value on return so we do not perturb other subcommands sharing the
+	// process.
+	prevGC := debug.SetGCPercent(30)
+	defer debug.SetGCPercent(prevGC)
 
 	if len(opts.Regions) > 0 && !opts.AllPositions && !opts.AllContigs && opts.Input != "-" {
 		rr, rerr := openBAMRegionReader(opts.Input, opts.Regions)

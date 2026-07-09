@@ -672,31 +672,34 @@ func (e *hapEngine) applyCDSSamples(ht *hapTranscript, icds int, rec *hapRecord)
 	return nil
 }
 
-// testUTR stages 5'/3' UTR consequences. Ports test_utr.
+// testUTR stages 5'/3' UTR consequences. Ports test_utr. It iterates the
+// flattened idx_utr-ordered UTR index (start asc, end desc), not the
+// per-transcript UTR lists, so overlapping transcripts contribute their
+// UTR consequences in UTR-position order — matching upstream's regidx
+// walk and the resulting INFO/BCSQ entry order.
 func (e *hapEngine) testUTR(rec *hapRecord) bool {
 	hit := false
-	for _, t := range e.idx.ByChrom[rec.v.Chrom] {
-		for _, u := range t.UTRs {
-			if !overlapsPad(rec.pos, rec.rlen, u.Start-1, u.End-1) {
+	for _, u := range e.idx.UTRRegions[rec.v.Chrom] {
+		if !overlapsPad(rec.pos, rec.rlen, u.Start-1, u.End-1) {
+			continue
+		}
+		t := u.Tr
+		ht := e.getTranscriptForSplice(t)
+		for ial := 1; ial < len(rec.alt); ial++ {
+			if rec.alt[ial] == "" || rec.alt[ial][0] == '<' || rec.alt[ial] == "*" {
 				continue
 			}
-			ht := e.getTranscriptForSplice(t)
-			for ial := 1; ial < len(rec.alt); ial++ {
-				if rec.alt[ial] == "" || rec.alt[ial][0] == '<' || rec.alt[ial] == "*" {
-					continue
-				}
-				s := e.newHapSplice(ht, rec, ial)
-				ret := s.run(u.Start-1, u.End-1)
-				if ret != spliceInside && ret != spliceOverlap {
-					continue
-				}
-				typ := uint32(csqUTR3)
-				if u.Prime5 {
-					typ = csqUTR5
-				}
-				e.stageOneCsq(rec, typ, t, ial)
-				hit = true
+			s := e.newHapSplice(ht, rec, ial)
+			ret := s.run(u.Start-1, u.End-1)
+			if ret != spliceInside && ret != spliceOverlap {
+				continue
 			}
+			typ := uint32(csqUTR3)
+			if u.Prime5 {
+				typ = csqUTR5
+			}
+			e.stageOneCsq(rec, typ, t, ial)
+			hit = true
 		}
 	}
 	return hit

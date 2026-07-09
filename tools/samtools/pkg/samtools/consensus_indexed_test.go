@@ -3,6 +3,7 @@ package samtools
 import (
 	"bytes"
 	"os"
+	"runtime/debug"
 	"testing"
 )
 
@@ -136,5 +137,46 @@ func TestConsensusFallsBackWithoutIndex(t *testing.T) {
 
 	if got.String() != want.String() {
 		t.Errorf("fallback output differs from linear\n got: %q\nwant: %q", got.String(), want.String())
+	}
+}
+
+// TestConsensusFileGCNeutral verifies the debug.SetGCPercent tuning inside
+// ConsensusFile is output-neutral and correctly scoped: the process GC target
+// is restored to its previous value on return, and running the same input
+// under different starting GC targets yields byte-identical output. This locks
+// the memory-only nature of the GC-headroom change added for the consensus
+// perf work (RSS lever only; must never perturb the emitted bytes).
+func TestConsensusFileGCNeutral(t *testing.T) {
+	bam := makeIndexedBAM(t, writeSAMFile(t, consensusIndexedSAM))
+	run := func() string {
+		var buf bytes.Buffer
+		opts := ConsensusOptions{
+			Input:   bam,
+			Format:  ConsensusPileup,
+			Mode:    ConsensusModeBayesian,
+			Regions: []string{"chr1"},
+		}
+		if err := ConsensusFile(opts, &buf, nil); err != nil {
+			t.Fatalf("ConsensusFile: %v", err)
+		}
+		return buf.String()
+	}
+
+	// GC target must be restored after ConsensusFile returns.
+	sentinel := debug.SetGCPercent(123)
+	_ = run()
+	restored := debug.SetGCPercent(sentinel)
+	if restored != 123 {
+		t.Errorf("ConsensusFile did not restore GC percent: got %d, want 123", restored)
+	}
+
+	// Output must be identical regardless of the caller's starting GC target.
+	debug.SetGCPercent(400)
+	a := run()
+	debug.SetGCPercent(10)
+	b := run()
+	debug.SetGCPercent(sentinel)
+	if a != b {
+		t.Errorf("ConsensusFile output depends on starting GC target:\n gc=400: %q\n gc=10:  %q", a, b)
 	}
 }
