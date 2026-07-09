@@ -503,15 +503,19 @@ func TestSamtoolsBcftoolsCellArgWiring(t *testing.T) {
 		}
 	}
 
-	// csq must be ours-only: upstream csq exits 255 on standard GENCODE GFF3
-	// (bare Ensembl IDs), so there is no comparable upstream output. Ours
-	// parses it and emits BCSQ annotations, so the cell runs ours-only.
+	// csq compares ours vs upstream on the csq-normalised GFF: upstream exits
+	// 255 on a bare GENCODE GFF3, so the cell derives a `biotype=`-injected
+	// GFF (NormGFF, mirroring misc/gff2gff) and feeds the SAME normalised GFF
+	// to both sides for a byte-exact parity comparison.
 	if c := byName["bcftools_csq"]; true {
-		if c.Post != PostOursOnly {
-			t.Errorf("bcftools_csq must be PostOursOnly (upstream fails on GENCODE GFF3), got Post=%d", c.Post)
+		if c.Post != PostStdout {
+			t.Errorf("bcftools_csq must be PostStdout (compares ours vs upstream on the normalised GFF), got Post=%d", c.Post)
 		}
-		if c.Need&NeedGFF == 0 {
-			t.Errorf("bcftools_csq must require NeedGFF")
+		if c.Need&NeedGFF == 0 || c.Need&NeedNormGFF == 0 {
+			t.Errorf("bcftools_csq must require NeedGFF and NeedNormGFF")
+		}
+		if !contains(c.OurArgs, phNormGFF) {
+			t.Errorf("bcftools_csq must pass the normalised GFF (%s), got %v", phNormGFF, c.OurArgs)
 		}
 	}
 }

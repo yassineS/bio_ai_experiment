@@ -28,6 +28,7 @@ const (
 	NeedFixmateBAM                         // a name-sort|fixmate -m|coord-sort BAM (markdup input)
 	NeedBedGraph                           // a 4-col BedGraph derived from the intervals BED (unionbedg)
 	NeedSampleRename                       // a one-line sample-rename file (bcftools reheader -s)
+	NeedNormGFF                            // a csq-normalised GFF (biotype= injected) derived from GFF
 )
 
 // PostKind names how a cell's primary output is turned into a comparable text
@@ -126,6 +127,7 @@ const (
 	phFastqPlain   = "{fastqplain}"
 	phBED          = "{bed}"
 	phGFF          = "{gff}"
+	phNormGFF      = "{normgff}"
 	phBED4         = "{bed4}"
 	phBEDPE        = "{bedpe}"
 	phWindow       = "{window}"
@@ -179,6 +181,13 @@ type Inputs struct {
 	FixmateBAM   string
 	BedGraph     string
 	SampleRename string
+	// NormGFF is a csq-normalised copy of GFF written at run start (see
+	// deriveInputs): it injects the `biotype=` attribute (from
+	// transcript_type/gene_type) that upstream `bcftools csq` requires,
+	// mirroring reference_code/bcftools/misc/gff2gff. Upstream exits 255 on
+	// a bare GENCODE GFF3 without it; feeding the SAME normalised GFF to
+	// both sides lets the csq cell compare ours vs upstream byte-for-byte.
+	NormGFF string
 }
 
 // have reports whether a single InputKind bit's file is present.
@@ -216,6 +225,8 @@ func (in Inputs) have(bit InputKind) bool {
 		return in.BedGraph != ""
 	case NeedSampleRename:
 		return in.SampleRename != ""
+	case NeedNormGFF:
+		return in.NormGFF != ""
 	}
 	return true
 }
@@ -240,6 +251,7 @@ func (in Inputs) missing(need InputKind) string {
 		NeedFixmateBAM:   "-bam (fixmate'd)",
 		NeedBedGraph:     "-bed (bedgraph)",
 		NeedSampleRename: "-vcf (sample-rename)",
+		NeedNormGFF:      "-gff (csq-normalised)",
 	} {
 		if need&bit != 0 && !in.have(bit) {
 			return name
@@ -266,6 +278,7 @@ func substituteArgs(args []string, in Inputs, out, outDir string) []string {
 		phFastqPlain, in.FastqPlain,
 		phBED, in.BED,
 		phGFF, in.GFF,
+		phNormGFF, in.NormGFF,
 		phBED4, in.BED4,
 		phBEDPE, in.BEDPE,
 		phWindow, in.Window,

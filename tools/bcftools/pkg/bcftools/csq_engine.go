@@ -865,6 +865,19 @@ func kputVcsq(c *vcsq) string {
 		}
 	}
 
+	// Append &NMD_transcript for NMD-biotype transcripts on any
+	// consequence other than a bare intron / non_coding. Ports csq.c
+	// kput_vcsq's `(csq->biotype==GF_NMD) && (csq_type & CSQ_PRN_NMD)`
+	// block (CSQ_PRN_NMD == ~(CSQ_INTRON|CSQ_NON_CODING)); the biotype
+	// string is canonicalised to "NMD" by classifyBiotype.
+	const prnNMD = ^uint32(csqIntron | csqNonCoding)
+	if c.biotype == "NMD" && typ&prnNMD != 0 {
+		if !first {
+			sb.WriteByte('&')
+		}
+		sb.WriteString("NMD_transcript")
+	}
+
 	sb.WriteByte('|')
 	sb.WriteString(c.gene)
 

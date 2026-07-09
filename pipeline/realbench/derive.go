@@ -80,6 +80,18 @@ func deriveInputs(in Inputs, dir, samtoolsBin string) (Inputs, error) {
 		}
 	}
 
+	// csq-normalised GFF: inject the `biotype=` attribute upstream `bcftools
+	// csq` needs (upstream exits 255 without it on a bare GENCODE GFF3). The
+	// same plain-text normalised GFF feeds both ours and upstream so the csq
+	// cell is a fair byte-exact parity comparison. Best-effort: a failure
+	// leaves NormGFF empty and the csq cell SKIPs (NeedNormGFF).
+	if in.GFF != "" {
+		normGFF := filepath.Join(dir, "derived.csqnorm.gff")
+		if err := normaliseGFFForCsq(in.GFF, normGFF); err == nil {
+			in.NormGFF = normGFF
+		}
+	}
+
 	if in.BED == "" {
 		return in, nil
 	}
@@ -138,6 +150,121 @@ func decompressFastq(src, dst string) error {
 		return err
 	}
 	return w.Flush()
+}
+
+// normaliseGFFForCsq reads src (transparently gzip/bgzip-decoded) and writes a
+// plain GFF3 to dst with the `biotype=` attribute injected on gene / transcript
+// features that lack it, mirroring reference_code/bcftools/misc/gff2gff. This is
+// the fix upstream `bcftools csq` requires to parse a bare GENCODE GFF3 (it
+// derives the transcript biotype from `transcript_type`, falling back to the
+// parent gene's `gene_type`; genes fall back to `gene_type`). Only the
+// `biotype=` injection is reproduced — the ID/Parent/Name back-fill in gff2gff
+// is unnecessary for GENCODE, which already carries those. `bcftools csq`
+// accepts a plain (uncompressed) GFF, so no bgzip/tabix step is needed.
+func normaliseGFFForCsq(src, dst string) error {
+	r, err := iohelper.OpenReader(src)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	// First pass over a buffered copy is avoided by remembering gene biotypes
+	// as we go: GENCODE emits a gene before its transcripts, so a transcript's
+	// parent gene_type is already known. We still fall back to the
+	// transcript's own gene_type attribute (GENCODE carries it) when the parent
+	// map misses, so a single streaming pass suffices.
+	geneBiotype := map[string]string{}
+
+	f, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	w := bufio.NewWriter(f)
+
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 64*1024*1024)
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.HasPrefix(line, "#") {
+			if _, err := fmt.Fprintln(w, line); err != nil {
+				return err
+			}
+			continue
+		}
+		cols := strings.Split(line, "\t")
+		if len(cols) < 9 {
+			if _, err := fmt.Fprintln(w, line); err != nil {
+				return err
+			}
+			continue
+		}
+		attrs := cols[8]
+		typ := cols[2]
+		isGene := typ == "gene"
+		isTranscript := typ == "transcript" ||
+			(gffAttr(attrs, "Parent") != "" && gffAttr(attrs, "biotype") == "")
+		if !isGene && !isTranscript {
+			if _, err := fmt.Fprintln(w, line); err != nil {
+				return err
+			}
+			continue
+		}
+		if isGene {
+			bt := gffAttr(attrs, "biotype")
+			if bt == "" {
+				bt = gffAttr(attrs, "gene_type")
+			}
+			if bt == "" {
+				bt = gffAttr(attrs, "gene_biotype")
+			}
+			if id := gffAttr(attrs, "ID"); id != "" && bt != "" {
+				geneBiotype[id] = bt
+			}
+			if gffAttr(attrs, "biotype") == "" && bt != "" {
+				attrs += ";biotype=" + bt
+			}
+		} else { // transcript
+			bt := gffAttr(attrs, "biotype")
+			if bt == "" {
+				bt = gffAttr(attrs, "transcript_type")
+			}
+			if bt == "" {
+				bt = gffAttr(attrs, "transcript_biotype")
+			}
+			if bt == "" {
+				if p := gffAttr(attrs, "Parent"); p != "" {
+					bt = geneBiotype[p]
+				}
+			}
+			if bt == "" {
+				bt = gffAttr(attrs, "gene_type")
+			}
+			if gffAttr(attrs, "biotype") == "" && bt != "" {
+				attrs += ";biotype=" + bt
+			}
+		}
+		cols[8] = attrs
+		if _, err := fmt.Fprintln(w, strings.Join(cols, "\t")); err != nil {
+			return err
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return err
+	}
+	return w.Flush()
+}
+
+// gffAttr extracts the value of a `key=value` attribute from a GFF3 column-9
+// attribute string (semicolon-separated). It returns "" when the key is absent.
+func gffAttr(attrs, key string) string {
+	for _, kv := range strings.Split(attrs, ";") {
+		kv = strings.TrimSpace(kv)
+		if strings.HasPrefix(kv, key+"=") {
+			return kv[len(key)+1:]
+		}
+	}
+	return ""
 }
 
 // bedRec is a single parsed BED3 interval.

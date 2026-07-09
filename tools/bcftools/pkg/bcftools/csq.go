@@ -417,6 +417,14 @@ type CSQIndex struct {
 	// from transcript-start order and decides the INFO/BCSQ entry order.
 	SpliceExons map[string][]csqExonRef
 
+	// UTRRegions is the flattened per-contig UTR list of all transcripts,
+	// ordered the way htslib's idx_utr returns overlaps (start ascending,
+	// end descending). test_utr iterates idx_utr, not the per-transcript
+	// UTR lists, so two overlapping transcripts contribute their
+	// 5'/3'_prime_utr consequences in UTR-position order — which differs
+	// from transcript-start order and decides the INFO/BCSQ entry order.
+	UTRRegions map[string][]csqUTRRef
+
 	// Genes holds the parsed gene features in GFF appearance order.
 	// Retained only for --dump-gff (mirrors upstream's gid2gene table).
 	Genes []*CSQGene
@@ -462,9 +470,14 @@ type CSQTranscript struct {
 	Beg int
 	End int
 
-	// Coding reports whether the transcript has any CDS exon. Upstream
-	// distinguishes coding transcripts (intron consequence) from
-	// non-coding ones (non_coding consequence) via GF_is_coding.
+	// Coding reports whether the transcript's biotype is protein-coding,
+	// derived from the biotype string via codingBiotype (mirroring
+	// upstream gff.c gff_parse_biotype + GF_is_coding). It is NOT a
+	// function of CDS presence: a transcript may carry CDS exons yet be
+	// non-coding by biotype (skipped by test_cds), and the intron vs
+	// non_coding consequence at the transcript level is chosen from this
+	// flag. CDS-derived processing (phase trim, UTR derivation, 3' trim,
+	// the splice index) instead keys off actual CDS-exon presence.
 	Coding bool
 
 	// Trim5 / Trim3 mark an incomplete CDS at the 5' / 3' end of the
@@ -485,6 +498,15 @@ type csqExonRef struct {
 	Start int
 	End   int
 	Tr    *CSQTranscript
+}
+
+// csqUTRRef is one UTR span paired with its parent transcript, used to
+// build the flattened idx_utr-ordered UTR index (CSQIndex.UTRRegions).
+type csqUTRRef struct {
+	Start  int
+	End    int
+	Prime5 bool
+	Tr     *CSQTranscript
 }
 
 // CSQExon is one exon (genomic coordinates, 1-based inclusive). For a
@@ -553,6 +575,7 @@ func loadCSQIndexUnified(fastaPath, gffPath, prefixVCF, prefixGFF, prefixFAI str
 		Transcripts: make(map[string]*CSQTranscript),
 		ByChrom:     make(map[string][]*CSQTranscript),
 		SpliceExons: make(map[string][]csqExonRef),
+		UTRRegions:  make(map[string][]csqUTRRef),
 	}
 
 	// Load FASTA.
@@ -739,13 +762,14 @@ func loadCSQIndexUnified(fastaPath, gffPath, prefixVCF, prefixGFF, prefixFAI str
 			return list[i].ID < list[j].ID
 		})
 	}
-	// Flatten coding transcripts' exons into the idx_exon-ordered splice index
+	// Flatten transcripts-with-CDS exons into the idx_exon-ordered splice index
 	// (start ascending, end descending, transcript-ID tie-break). test_splice
-	// only considers coding transcripts (the !tr->ncds skip), so non-coding
-	// transcripts are excluded here.
+	// only considers transcripts that have CDS exons (the `!tr->ncds` skip in
+	// csq.c — keyed off actual CDS presence, NOT the biotype coding flag), so
+	// transcripts without any CDS are excluded here.
 	for chrom, list := range idx.ByChrom {
 		for _, t := range list {
-			if !t.Coding {
+			if len(t.CDSExons) == 0 {
 				continue
 			}
 			for _, ex := range t.Exons {
@@ -763,6 +787,38 @@ func loadCSQIndexUnified(fastaPath, gffPath, prefixVCF, prefixGFF, prefixFAI str
 				return ex[i].End > ex[j].End
 			}
 			return ex[i].Tr.ID < ex[j].Tr.ID
+		})
+	}
+	// Flatten every transcript's UTRs into the idx_utr-ordered UTR index
+	// (start ascending, end descending, transcript-ID tie-break). test_utr
+	// iterates idx_utr, so overlapping transcripts contribute their UTR
+	// consequences in UTR-position order rather than transcript-start
+	// order — matching htslib regidx cmp_regs (beg asc, end desc) and the
+	// resulting INFO/BCSQ entry order.
+	for chrom, list := range idx.ByChrom {
+		for _, t := range list {
+			for _, u := range t.UTRs {
+				idx.UTRRegions[chrom] = append(idx.UTRRegions[chrom],
+					csqUTRRef{Start: u.Start, End: u.End, Prime5: u.Prime5, Tr: t})
+			}
+		}
+	}
+	for chrom := range idx.UTRRegions {
+		ur := idx.UTRRegions[chrom]
+		sort.Slice(ur, func(i, j int) bool {
+			if ur[i].Start != ur[j].Start {
+				return ur[i].Start < ur[j].Start
+			}
+			if ur[i].End != ur[j].End {
+				return ur[i].End > ur[j].End
+			}
+			// Tie-break by transcript ID for a deterministic order. Upstream
+			// returns equal-span UTRs in htslib regidx pointer-address order
+			// (its khash id2tr push order), which is not reproducible without
+			// replicating that hash; the ID tie-break is the closest stable
+			// approximation and matches upstream on the position-ordered
+			// majority.
+			return ur[i].Tr.ID < ur[j].Tr.ID
 		})
 	}
 	return idx, nil
@@ -807,12 +863,262 @@ func stripGFFPrefix(id string) string {
 	return id
 }
 
+// classifyBiotype maps a raw GFF3 biotype string onto its upstream
+// canonical form and coding flag, mirroring bcftools gff.c
+// gff_parse_biotype (raw string -> GF_* enum) followed by
+// gf_type2gff_string (enum -> canonical string) and GF_is_coding (enum
+// -> coding bit). The canonical string is what upstream emits in the
+// BCSQ biotype field and what its csq_push dedup compares on (upstream
+// stores the enum, not the raw string), so e.g. both
+// "protein_coding_CDS_not_defined" and "protein_coding" canonicalise to
+// "protein_coding" and thus collapse to a single BCSQ term.
+//
+// The prefix rules follow upstream exactly: "protein_coding" is a
+// 14-char prefix match (so protein_coding_CDS_not_defined etc. still map
+// to GF_PROTEIN_CODING); "mRNA"/"MRNA" map case-insensitively to
+// GF_PROTEIN_CODING; the *_pseudogene branches are tested before the
+// bare coding IG_*/TR_* branches. When the biotype is unrecognised the
+// raw string is returned unchanged with coding=false, matching the
+// engine's earlier lenient behaviour for biotypes upstream would ignore.
+func classifyBiotype(biotype string) (canonical string, coding bool) {
+	if biotype == "" {
+		return biotype, false
+	}
+	hasPrefix := func(p string) bool { return strings.HasPrefix(biotype, p) }
+	hasPrefixFold := func(p string) bool {
+		return len(biotype) >= len(p) && strings.EqualFold(biotype[:len(p)], p)
+	}
+	switch biotype[0] {
+	case 'p':
+		if hasPrefix("protein_coding") {
+			return "protein_coding", true
+		}
+		if hasPrefix("polymorphic_pseudogene") {
+			return "polymorphic_pseudogene", true
+		}
+		if hasPrefix("processed_transcript") {
+			return "processed_transcript", false
+		}
+		if hasPrefix("processed_pseudogene") {
+			return "processed_pseudogene", false
+		}
+		if hasPrefix("pseudogene") {
+			return "pseudogene", false
+		}
+	case 'a':
+		if hasPrefix("artifact") {
+			return "artifact", false
+		}
+		if hasPrefix("antisense") {
+			return "antisense", false
+		}
+		if hasPrefix("ambiguous_orf") {
+			return "ambiguous_orf", false
+		}
+	case 'I':
+		if hasPrefix("IG_pseudogene") {
+			return "IG_pseudogene", false
+		}
+		if hasPrefix("IG_C_pseudogene") {
+			return "IG_C_pseudogene", false
+		}
+		if hasPrefix("IG_J_pseudogene") {
+			return "IG_J_pseudogene", false
+		}
+		if hasPrefix("IG_V_pseudogene") {
+			return "IG_V_pseudogene", false
+		}
+		if hasPrefix("IG_C") {
+			return "IG_C", true
+		}
+		if hasPrefix("IG_D") {
+			return "IG_D", true
+		}
+		if hasPrefix("IG_J") {
+			return "IG_J", true
+		}
+		if hasPrefix("IG_V") {
+			return "IG_V", true
+		}
+		if hasPrefix("IG_LV") {
+			return "IG_LV", true
+		}
+	case 'T':
+		if hasPrefix("TR_V_pseudogene") {
+			return "TR_V_pseudogene", false
+		}
+		if hasPrefix("TR_J_pseudogene") {
+			return "TR_J_pseudogene", false
+		}
+		if hasPrefix("TR_C") {
+			return "TR_C", true
+		}
+		if hasPrefix("TR_D") {
+			return "TR_D", true
+		}
+		if hasPrefix("TR_J") {
+			return "TR_J", true
+		}
+		if hasPrefix("TR_V") {
+			return "TR_V", true
+		}
+	case 'M':
+		if hasPrefix("Mt_tRNA_pseudogene") {
+			return "MT_tRNA_pseudogene", false
+		}
+		if hasPrefixFold("Mt_tRNA") {
+			return "MT_tRNA", false
+		}
+		if hasPrefixFold("Mt_rRNA") {
+			return "MT_rRNA", false
+		}
+		if hasPrefixFold("MRNA") {
+			return "protein_coding", true
+		}
+	case 'l':
+		if hasPrefix("lincRNA") {
+			return "lincRNA", false
+		}
+		if hasPrefix("lncRNA") {
+			return "lncRNA", false
+		}
+	case 'm':
+		if hasPrefix("macro_lncRNA") {
+			return "macro_lncRNA", false
+		}
+		if hasPrefix("misc_RNA_pseudogene") {
+			return "misc_RNA_pseudogene", false
+		}
+		if hasPrefix("miRNA_pseudogene") {
+			return "miRNA_pseudogene", false
+		}
+		if hasPrefix("miRNA") {
+			return "miRNA", false
+		}
+		if hasPrefix("misc_RNA") {
+			return "misc_RNA", false
+		}
+		if hasPrefixFold("mRNA") {
+			return "protein_coding", true
+		}
+	case 'r':
+		if hasPrefix("rRNA") {
+			return "rRNA", false
+		}
+		if hasPrefix("ribozyme") {
+			return "ribozyme", false
+		}
+		if hasPrefix("retained_intron") {
+			return "retained_intron", false
+		}
+		if hasPrefix("retrotransposed") {
+			return "retrotransposed", false
+		}
+	case 's':
+		if hasPrefix("snRNA") {
+			return "snRNA", false
+		}
+		if hasPrefix("sRNA") {
+			return "sRNA", false
+		}
+		if hasPrefix("scRNA") {
+			return "scRNA", false
+		}
+		if hasPrefix("scaRNA") {
+			return "scaRNA", false
+		}
+		if hasPrefix("snoRNA") {
+			return "snoRNA", false
+		}
+		if hasPrefix("sense_intronic") {
+			return "sense_intronic", false
+		}
+		if hasPrefix("sense_overlapping") {
+			return "sense_overlapping", false
+		}
+	case 't':
+		if hasPrefix("tRNA_pseudogene") {
+			return "Trna_pseudogene", false
+		}
+		if hasPrefix("transcribed_processed_pseudogene") {
+			return "transcribed_processed_pseudogene", false
+		}
+		if hasPrefix("transcribed_unprocessed_pseudogene") {
+			return "transcribed_unprocessed_pseudogene", false
+		}
+		if hasPrefix("transcribed_unitary_pseudogene") {
+			return "transcribed_unitary_pseudogene", false
+		}
+		if hasPrefix("translated_unprocessed_pseudogene") {
+			return "translated_unprocessed_pseudogene", false
+		}
+		if hasPrefix("translated_processed_pseudogene") {
+			return "translated_processed_pseudogene", false
+		}
+	case 'n':
+		if hasPrefix("nonsense_mediated_decay") {
+			return "NMD", true
+		}
+		if hasPrefix("non_stop_decay") {
+			return "non_stop_decay", true
+		}
+	case 'N':
+		if hasPrefix("NMD") {
+			return "NMD", true
+		}
+	case 'k':
+		if hasPrefix("known_ncrna") {
+			return "known_ncRNA", false
+		}
+	case 'u':
+		if hasPrefix("unitary_pseudogene") {
+			return "unitary_pseudogene", false
+		}
+		if hasPrefix("unprocessed_pseudogene") {
+			return "unprocessed_pseudogene", false
+		}
+	case 'L':
+		if hasPrefix("LRG_gene") {
+			return "LRG_gene", false
+		}
+	case '3':
+		if hasPrefixFold("3prime_overlapping_ncRNA") || hasPrefixFold("3_prime_overlapping_ncRNA") {
+			return "3_prime_overlapping_ncRNA", false
+		}
+	case 'd':
+		if hasPrefix("disrupted_domain") {
+			return "disrupted_domain", false
+		}
+	case 'v':
+		if hasPrefix("vaultRNA") {
+			return "vaultRNA", false
+		}
+	case 'b':
+		if hasPrefix("bidirectional_promoter_lncRNA") {
+			return "bidirectional_promoter_lncRNA", false
+		}
+	}
+	return biotype, false
+}
+
 // finalizeTranscript fills in derived fields after the GFF passes:
 // Coding, the transcript span, the incomplete-CDS trim flags, and any
 // UTR regions not explicitly present in the GFF (derived as the parts
-// of full exons that fall outside the CDS span).
+// of full exons that fall outside the CDS span). The Coding flag is
+// derived from the biotype string (upstream GF_is_coding), NOT from CDS
+// presence; the CDS-derived blocks below (phase trim, UTR derivation,
+// 3' trim) instead key off the actual presence of CDS exons, matching
+// upstream gff.c which operates on tr->ncds there.
 func finalizeTranscript(t *CSQTranscript, ref []byte) {
-	t.Coding = len(t.CDSExons) > 0
+	// Canonicalise the biotype string to its upstream form and derive the
+	// coding flag from it (upstream gff.c gff_parse_biotype +
+	// gf_type2gff_string + GF_is_coding). Both the BCSQ biotype field and
+	// the csq_push dedup then operate on the canonical string, so distinct
+	// raw biotypes that share a canonical form (e.g.
+	// protein_coding_CDS_not_defined and protein_coding) collapse exactly
+	// as upstream collapses their shared GF_* enum.
+	t.Biotype, t.Coding = classifyBiotype(t.Biotype)
+	hasCDS := len(t.CDSExons) > 0
 
 	// Trim the GFF3 reading-frame phase off the 5' CDS exon, mirroring
 	// gff.c (the "trim non-coding start" block). After trimming, every
@@ -820,7 +1126,7 @@ func finalizeTranscript(t *CSQTranscript, ref []byte) {
 	// haplotype engine and the per-record classifier both treat the
 	// spliced CDS as frame-aligned. A non-zero leading phase also marks
 	// the CDS as 5' incomplete (TRIM_5PRIME).
-	if t.Coding {
+	if hasCDS {
 		if t.Strand == gff.StrandReverse {
 			last := len(t.CDSExons) - 1
 			ph := t.CDSExons[last].Phase
@@ -857,7 +1163,7 @@ func finalizeTranscript(t *CSQTranscript, ref []byte) {
 	}
 
 	// Derive UTRs from exon minus CDS when none were given explicitly.
-	if len(t.UTRs) == 0 && t.Coding && len(t.Exons) > 0 {
+	if len(t.UTRs) == 0 && hasCDS && len(t.Exons) > 0 {
 		cdsBeg, cdsEnd := t.CDSExons[0].Start, t.CDSExons[len(t.CDSExons)-1].End
 		for _, e := range t.Exons {
 			if e.Start < cdsBeg {
@@ -893,7 +1199,7 @@ func finalizeTranscript(t *CSQTranscript, ref []byte) {
 	// haplotype engine and can emit a spurious stop_lost on its last,
 	// non-stop codon. csq.c:1646-1650 gates check_stop on !TRIM_3PRIME;
 	// the equivalent gate lives in hapInit (csq_engine.go).
-	if t.Coding {
+	if hasCDS {
 		codingLen := -transcriptFirstPhase(t)
 		for _, e := range t.CDSExons {
 			codingLen += e.End - e.Start + 1

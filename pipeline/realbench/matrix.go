@@ -143,13 +143,14 @@ func bcftoolsCells() []CellSpec {
 			OurArgs: []string{"convert", "-O", "v", phVCF}},
 		{Tool: t, Name: "bcftools_consensus", Subcommand: "consensus -f", Need: NeedVCF | NeedRef, Post: PostStdout,
 			OurArgs: []string{"consensus", "-f", phRef, phVCF}},
-		// ours-only: upstream csq exits 255 on standard GENCODE GFF3 (bare
-		// Ensembl IDs; it needs misc/gff2gff-style transcript:/gene: type
-		// prefixes to parse). Ours parses the bare-ID GFF3 directly and emits
-		// correct BCSQ annotations, so there is no comparable upstream output —
-		// this cell is a perf/functionality cell run ours-only.
-		{Tool: t, Name: "bcftools_csq", Subcommand: "csq -g", Need: NeedVCF | NeedRef | NeedGFF, Post: PostOursOnly,
-			OurArgs: []string{"csq", "-p", "a", "-f", phRef, "-g", phGFF, "-O", "v", phVCF}},
+		// csq compares ours vs upstream on the csq-NORMALISED GFF (NormGFF,
+		// derived at run start — it injects the `biotype=` attribute upstream
+		// requires, mirroring misc/gff2gff). Upstream exits 255 on a bare
+		// GENCODE GFF3 without it; feeding the SAME normalised GFF to both
+		// sides makes this a real byte-exact parity cell (the biotype-coding
+		// classification and NMD_transcript labelling now match upstream).
+		{Tool: t, Name: "bcftools_csq", Subcommand: "csq -g", Need: NeedVCF | NeedRef | NeedGFF | NeedNormGFF, Post: PostStdout,
+			OurArgs: []string{"csq", "-p", "a", "-f", phRef, "-g", phNormGFF, "-O", "v", phVCF}},
 		{Tool: t, Name: "bcftools_roh", Subcommand: "roh", Need: NeedVCF, Post: PostStdout,
 			OurArgs: []string{"roh", "-G30", phVCF}},
 		{Tool: t, Name: "bcftools_gtcheck", Subcommand: "gtcheck", Need: NeedVCF, Post: PostStdout,
