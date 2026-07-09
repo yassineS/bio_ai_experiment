@@ -426,6 +426,27 @@ cells hold O(file) state where upstream streams. These would OOM at WGS scale:
   trim boundaries are known) and was deferred as parity-risky. New
   `TestConsensusFileGCNeutral` pins that the GC change is output-neutral and
   restores the caller's GC target on return.
+- **`samtools consensus -f fasta` deletion-edge insertion — FIXED.** An
+  insertion immediately following a deletion (a `…M D I M…` CIGAR, common in
+  CA-microsatellite loci such as ~chr20:3.72 Mb) was dropped entirely: the
+  insertion is anchored to a **deletion** pileup column (a `pileupEventDel`
+  carries the `insAfter`), but `buildInsertionColumnCells` only counted and
+  emitted `insAfter` on base columns, so `maxIns` stayed 0 and the inserted
+  bases vanished — an insertion-length divergence vs upstream while every base
+  column was byte-identical under `-r`. Upstream's `consensus_pileup.c`
+  (`:118-121,162-163,266-270`) takes the insertion length from the CINS op that
+  follows the CDEL without advancing `seq_offset` over the D op, so the
+  insertion is emitted at the last-deleted reference column regardless of the
+  preceding op. Fixed in `consensus.go` by (1) counting `insAfter` on any
+  non-dropped, non-ref-skip event, (2) emitting the inserted base for deletion
+  columns as well as base columns, and (3) using the deletion-anchored query
+  offset `(readBP-2)+nth` (a D anchor consumes no query base) instead of the
+  base-anchored `(readBP-1)+nth`. **Validated byte-exact** against the live
+  upstream binary on a crafted `10M2D3I10M` stack and a mixed del/plain-read
+  column (`ACACACACACTTTACACACACGT`); pinned by
+  `TestConsensus_FASTA_Insertion_AtDeletionEdge`. The `cq` libm last-ULP
+  residual (below) is unaffected — this fix concerns insertion presence/length,
+  not the quality column.
 - **`bcftools norm` buffers the whole VCF — FIXED** (commit `4e53d2f`). Was
   `readVCFAll` + global `sortVariants` → ~9.1 GiB on the HG002 VCF (436×). Now
   streams through a bounded `normWindow` reorder buffer (port of upstream

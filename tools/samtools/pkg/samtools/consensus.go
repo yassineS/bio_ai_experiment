@@ -2037,7 +2037,14 @@ func buildInsertionColumnCells(evs []pileupEvent, recs []*sam.Record, pos1 int) 
 
 	maxIns := 0
 	for _, e := range evs {
-		if e.dropped || e.kind != pileupEventBase {
+		// An insertion can be anchored to a deletion column as well as a base
+		// column: upstream's consensus_pileup.c sets the insertion length from
+		// the CINS op that follows a CDEL (seq_offset is not advanced over the
+		// D op, then the I op advances it — consensus_pileup.c:118-121,162-163,
+		// 266-270). A read with a `...M D I M...` CIGAR therefore carries its
+		// insAfter on a pileupEventDel, so we must count it here too; only
+		// dropped and ref-skip events never contribute an inserted base.
+		if e.dropped || e.kind == pileupEventRefSkip {
 			continue
 		}
 		if len(e.insAfter) > maxIns {
@@ -2091,11 +2098,19 @@ func buildInsertionColumnCells(evs []pileupEvent, recs []*sam.Record, pos1 int) 
 				mapq:      e.mapq,
 				isReverse: e.isReverse,
 			}
-			if e.kind == pileupEventBase && nth <= len(e.insAfter) {
+			if nth <= len(e.insAfter) {
 				ib := upper(e.insAfter[nth-1])
-				// The nth inserted base sits at query offset
-				// (readBP-1)+nth in the read's SEQ.
+				// The nth inserted base's query offset depends on whether the
+				// insertion is anchored to a base or a deletion column. A base
+				// anchor consumes a query base, so the nth inserted base sits
+				// at (readBP-1)+nth. A deletion anchor consumes NO query base
+				// (seq_offset is not advanced over the D op), and its readBP is
+				// the post-gap query position + 1, so the nth inserted base
+				// sits one lower, at (readBP-1)+(nth-1) = (readBP-2)+nth.
 				seqOff := int(e.readBP) - 1 + nth
+				if e.kind == pileupEventDel {
+					seqOff = int(e.readBP) - 2 + nth
+				}
 				var q byte
 				if rec != nil && seqOff >= 0 && seqOff < len(rec.Qual) {
 					q = rec.Qual[seqOff]

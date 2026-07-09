@@ -355,6 +355,37 @@ func TestConsensus_FASTA_Insertion_MarkIns(t *testing.T) {
 	}
 }
 
+// delEdgeInsSAM reproduces the deletion-edge insertion bug: six reads with a
+// `10M 2D 3I 10M` CIGAR — an insertion (TTT) immediately following a 2bp
+// deletion in a CA-microsatellite. The insertion is anchored to a DELETION
+// column (a pileupEventDel carries the insAfter), not a base column, so an
+// earlier revision dropped it entirely. Reference is AC×10 + GT + padding; the
+// reads spell ref[1-10]+TTT+ref[13-22].
+const delEdgeInsSAM = `@HD	VN:1.6
+@SQ	SN:ref	LN:32
+r1	0	ref	1	60	10M2D3I10M	*	0	0	ACACACACACTTTACACACACGT	IIIIIIIIIIIIIIIIIIIIIII
+r2	0	ref	1	60	10M2D3I10M	*	0	0	ACACACACACTTTACACACACGT	IIIIIIIIIIIIIIIIIIIIIII
+r3	0	ref	1	60	10M2D3I10M	*	0	0	ACACACACACTTTACACACACGT	IIIIIIIIIIIIIIIIIIIIIII
+r4	0	ref	1	60	10M2D3I10M	*	0	0	ACACACACACTTTACACACACGT	IIIIIIIIIIIIIIIIIIIIIII
+r5	0	ref	1	60	10M2D3I10M	*	0	0	ACACACACACTTTACACACACGT	IIIIIIIIIIIIIIIIIIIIIII
+r6	0	ref	1	60	10M2D3I10M	*	0	0	ACACACACACTTTACACACACGT	IIIIIIIIIIIIIIIIIIIIIII
+`
+
+// TestConsensus_FASTA_Insertion_AtDeletionEdge pins the deletion-edge
+// insertion fix: an insertion anchored to a deletion column must be emitted
+// with its full length, byte-for-byte with upstream `samtools consensus -f
+// fasta` (which prints ACACACACACTTTACACACACGT). Before the fix the TTT was
+// dropped because only base-anchored insAfter was counted. Validated against
+// the live upstream binary in TestConsensus_FASTA_Insertion_AtDeletionEdge via
+// the crafted 10M2D3I10M stack (see also the *Upstream* suite for real chr20).
+func TestConsensus_FASTA_Insertion_AtDeletionEdge(t *testing.T) {
+	out := runConsensusOnSAM(t, delEdgeInsSAM, ConsensusOptions{Format: ConsensusFASTA})
+	want := ">ref\nACACACACACTTTACACACACGT\n"
+	if out != want {
+		t.Errorf("deletion-edge insertion: got %q want %q", out, want)
+	}
+}
+
 // TestConsensus_Pileup_Insertion_PadRunningMin pins task #49: in
 // `consensus -f pileup --mode simple` the '*' pad emitted for a read that
 // LACKS an inserted base in an nth>0 insertion column must carry upstream's
