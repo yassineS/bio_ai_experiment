@@ -34,7 +34,7 @@ Upstream-compatible options (drop-in for skewer 0.2.2):
   -z, --compress       compress output in GZIP format
   -1, --stdout         redirect output to STDOUT (suppresses -o and -z)
   -f, --format <str>   FASTQ quality value format: sanger|solexa|auto (auto)
-  -t, --threads <int>  number of concurrent threads (accepted; single-threaded)
+  -t, --threads <int>  number of concurrent threads
       --quiet          no progress update
 
 Subcommands (extended functionality):

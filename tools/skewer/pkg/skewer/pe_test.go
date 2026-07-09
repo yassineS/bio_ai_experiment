@@ -3,6 +3,8 @@ package skewer
 import (
 	"bufio"
 	"bytes"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fastq"
@@ -25,8 +27,6 @@ func peOpts() TrimOptions {
 		ErrorRate:     0.1,
 		IndelRate:     0.03,
 		PEMatrixMode:  true,
-		// PEBlockSize left 0: keep every pair (the final-block drop is a
-		// drop-in-CLI-only behaviour, validated separately in the real-data run).
 	}
 }
 
@@ -102,32 +102,83 @@ func TestPE_NonOverlapping_PassThrough(t *testing.T) {
 	}
 }
 
-// TestPE_BlockTruncation reproduces upstream's final-block drop: with a block
-// size of 3 and 5 input pairs, only the first 3 (one complete block) survive;
-// the trailing partial block of 2 is silently dropped.
-func TestPE_BlockTruncation(t *testing.T) {
+// synthPEPair builds a deterministic n-pair PE FASTQ. About half the pairs
+// overlap (so they exercise the trim + error-correction path) and half pass
+// through, giving the determinism test a mix of outcomes.
+func synthPEPair(n int) (r1, r2 []byte) {
+	var r1b, r2b bytes.Buffer
+	// One overlapping template (trims 101->99, corrects R1) reused from the
+	// real-record regression, plus a non-overlapping template.
+	ovR1seq := "CGCCTGCACTGCGTCTGGTGTTTCATTTCCTCCCGGCCTCCTCGCCTGCAATGGGTCTGGTGTTTCATTTCCTCCCGGCCTCCTCGCCTGCACTGCGTCTG"
+	ovR1q := "CCCFFFFFHHHHHJJJJJHHHIJJJJJJJJJJJJIJJJJJJJJJJJJJJI;CHHHHHHFFFFFCEDEEDDDEDDDBBBDDBDDDDDDDDAB?CCDCBBDBB"
+	ovR2seq := "GACGCAGTGCAGGCGAGGAGGCCGGGAGGAAATGAAACACCAGACCCAGTGCAGGCGAGGAGGCCGGGAGGAAATGAAACACCAGACCCAGTGCAGGCGAG"
+	ovR2q := "CCCFFFFFHHHHHJJJJJJJJJIIJJIIJGJJJIJJJIJHHHHFFBEDDEEEDDDDD;;<7?@DB;;;@>>0?>:>:@>>9A<8<<288A2@>>CC?####"
+	npR1seq := "GAATAAGGGAATCTGCTGGAAGTCTTTATTTTTAAAAAACACCAAAAGTGGGAAGAAATCAGTGATGAGGGATTTATGAACCAGGATTTTGTGGATTTAAG"
+	npR1q := "@@@FFFFFGFHHGIIIIJJGIJIJHHJJJJJJJJJJJIJJJJIJJJJIFHIJJIJJIIIJIICHIHHHHHHFEFFEEEDDEDBDD?ADDDDACBCDDDDEC"
+	npR2seq := "GTTACAAATTATCACAATGCTTAAATCCACAAAATCCTGGTTCATAAATCCCTCATCACTGATTTCTTCCCACTTTTGGTGTTTTTTAAAAATAAAGACTT"
+	npR2q := "CCCFFFFFGFGHHJJJFIIIJJJIJJIIIIJJJJJJHGGIGHIJIGIJIIIIIJIHIIIJJJJIIIGCHIJJIIJJIIHFHCDDFDDDDDDCBDCDCCCDD"
+	for i := 0; i < n; i++ {
+		tag := string(rune('A'+i%26)) + string(rune('a'+(i/26)%26))
+		if i%2 == 0 {
+			fmt.Fprintf(&r1b, "@ov%s 1\n%s\n+\n%s\n", tag, ovR1seq, ovR1q)
+			fmt.Fprintf(&r2b, "@ov%s 2\n%s\n+\n%s\n", tag, ovR2seq, ovR2q)
+		} else {
+			fmt.Fprintf(&r1b, "@np%s 1\n%s\n+\n%s\n", tag, npR1seq, npR1q)
+			fmt.Fprintf(&r2b, "@np%s 2\n%s\n+\n%s\n", tag, npR2seq, npR2q)
+		}
+	}
+	return r1b.Bytes(), r2b.Bytes()
+}
+
+func runPE(t *testing.T, r1, r2 []byte, threads int) (out1, out2 string, st *TrimStats) {
+	t.Helper()
+	opts := peOpts()
+	opts.Threads = threads
+	var o1, o2 bytes.Buffer
+	st, err := TrimPairedEnd(bufio.NewReader(bytes.NewReader(r1)),
+		bufio.NewReader(bytes.NewReader(r2)), &o1, &o2, nil, fastq.Phred33, opts)
+	if err != nil {
+		t.Fatalf("TrimPairedEnd(threads=%d) failed: %v", threads, err)
+	}
+	return o1.String(), o2.String(), st
+}
+
+// TestPE_KeepsAllPairs confirms FIX A: every input pair is emitted (no
+// final-block drop). With 5 non-overlapping, passing pairs all 5 survive.
+func TestPE_KeepsAllPairs(t *testing.T) {
 	var r1b, r2b bytes.Buffer
 	for i := 0; i < 5; i++ {
-		// Non-overlapping reads that pass through untrimmed, so the only effect
-		// under test is the block-boundary drop.
 		r1b.WriteString("@r" + string(rune('A'+i)) + " 1\n")
 		r1b.WriteString("ACGTACGTACGTACGTACGTACGTACGTACGT\n+\nIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII\n")
 		r2b.WriteString("@r" + string(rune('A'+i)) + " 2\n")
 		r2b.WriteString("TTTTGGGGCCCCAAAATTTTGGGGCCCCAAAA\n+\nIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII\n")
 	}
-
-	opts := peOpts()
-	opts.PEBlockSize = 3
-
-	var o1, o2 bytes.Buffer
-	if _, err := TrimPairedEnd(bufio.NewReader(bytes.NewReader(r1b.Bytes())),
-		bufio.NewReader(bytes.NewReader(r2b.Bytes())), &o1, &o2, nil, fastq.Phred33, opts); err != nil {
-		t.Fatalf("TrimPairedEnd failed: %v", err)
+	o1, o2, _ := runPE(t, r1b.Bytes(), r2b.Bytes(), 1)
+	count1 := strings.Count(o1, "\n") / 4
+	count2 := strings.Count(o2, "\n") / 4
+	if count1 != 5 || count2 != 5 {
+		t.Errorf("keep-all: want 5 records per mate, got pair1=%d pair2=%d", count1, count2)
 	}
+}
 
-	count1 := bytes.Count(o1.Bytes(), []byte("\n")) / 4
-	count2 := bytes.Count(o2.Bytes(), []byte("\n")) / 4
-	if count1 != 3 || count2 != 3 {
-		t.Errorf("block truncation: want 3 records per mate, got pair1=%d pair2=%d", count1, count2)
+// TestPE_ThreadInvariant is the determinism contract: TrimPairedEnd output must
+// be byte-identical across thread counts (and equal the sequential path), and
+// the merged stats must be order-independent.
+func TestPE_ThreadInvariant(t *testing.T) {
+	r1, r2 := synthPEPair(500)
+	base1, base2, baseStats := runPE(t, r1, r2, 1)
+	for _, threads := range []int{2, 4, 8} {
+		o1, o2, st := runPE(t, r1, r2, threads)
+		if o1 != base1 {
+			t.Errorf("threads=%d: R1 output differs from -t1", threads)
+		}
+		if o2 != base2 {
+			t.Errorf("threads=%d: R2 output differs from -t1", threads)
+		}
+		if st.TotalReads != baseStats.TotalReads || st.TrimmedReads != baseStats.TrimmedReads ||
+			st.TrimmedBases != baseStats.TrimmedBases || st.DiscardedReads != baseStats.DiscardedReads ||
+			st.TotalBases != baseStats.TotalBases || st.AdapterFound3 != baseStats.AdapterFound3 {
+			t.Errorf("threads=%d: stats differ from -t1.\nwant %+v\ngot  %+v", threads, baseStats, st)
+		}
 	}
 }

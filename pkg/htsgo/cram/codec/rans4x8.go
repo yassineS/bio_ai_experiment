@@ -3,6 +3,7 @@ package codec
 import (
 	"encoding/binary"
 	"fmt"
+	"sync"
 )
 
 // rANS 4x8 — the entropy coder used by CRAM v3.0 blocks.
@@ -423,16 +424,21 @@ func normaliseFreqsO0(raw []int) []int {
 	}
 }
 
-// normaliseFreqsO1 is the per-context normaliser for rans_compress_O1.
-// Unlike the O0 path it scales with a floating-point factor p (and the
-// retry sets p=0.98 and compounds), and its overshoot test uses `>=`.
-// Callers only invoke it for contexts with a non-zero total.
-func normaliseFreqsO1(raw []int) []int {
+// normaliseFreqsO1Into is the per-context normaliser for rans_compress_O1,
+// writing into a caller-supplied dst (which must be at least len(raw)) instead
+// of allocating a fresh row. Unlike the O0 path it scales with a floating-point
+// factor p (and the retry sets p=0.98 and compounds), and its overshoot test
+// uses `>=`. Callers only invoke it for contexts with a non-zero total. It lets
+// the order-1 encoder reuse one scratch row across all 256 contexts. dst is
+// fully overwritten from raw before any use, so its prior contents do not
+// matter.
+func normaliseFreqsO1Into(raw, dst []int) []int {
 	total := 0
 	for _, v := range raw {
 		total += v
 	}
-	f := append([]int(nil), raw...)
+	f := dst[:len(raw)]
+	copy(f, raw)
 	if total == 0 {
 		return f
 	}
@@ -543,13 +549,52 @@ func ransEncodeO0(in []byte) []byte {
 	return assembleRans(0, tab, body, len(in))
 }
 
+// ransO1Scratch holds the large per-block tables the order-1 encoder needs.
+// The order-1 model is 256 contexts × 256 symbols, so a fresh encode would
+// otherwise allocate ~1.5 MiB of frequency/cumulative tables per block; on a
+// real CRAM the writer compresses thousands of blocks, so those allocations
+// dominate the encoder's GC churn. Pooling one scratch per encode reuses that
+// memory across blocks. Every field is zero-reset before use — the freq/cum
+// tables are additive (built by += over histogram counts), so any stale entry
+// left from a previous block would corrupt the frequency model and break the
+// round-trip, hence reset() clears every table in full.
+type ransO1Scratch struct {
+	rawF [256][256]int
+	f    [256][256]int
+	rawT [256]int
+	cum  [256][256]uint32
+	// norm is a per-context scratch for normaliseFreqsO1Into so it does not
+	// allocate a fresh row on every context.
+	norm [256]int
+}
+
+// reset zeroes every table so a pooled scratch carries no stale counts from a
+// previous block. The zeroing is critical: rawF/rawT accumulate histogram
+// counts and cum/f are rebuilt from them, so a single stale non-zero entry
+// would silently corrupt the frequency model.
+func (s *ransO1Scratch) reset() {
+	s.rawF = [256][256]int{}
+	s.f = [256][256]int{}
+	s.rawT = [256]int{}
+	s.cum = [256][256]uint32{}
+	// norm is fully overwritten by normaliseFreqsO1Into before every read,
+	// so it needs no reset.
+}
+
+// ransO1ScratchPool recycles order-1 encoder scratch across blocks.
+var ransO1ScratchPool = sync.Pool{New: func() any { return new(ransO1Scratch) }}
+
 // ransEncodeO1 implements rans_compress_O1: a per-previous-byte context
 // model over four interleaved quarters.
 func ransEncodeO1(in []byte) []byte {
 	n := len(in)
+	sc := ransO1ScratchPool.Get().(*ransO1Scratch)
+	sc.reset()
+	defer ransO1ScratchPool.Put(sc)
+
 	// Per-context raw counts.
-	var rawF [256][256]int
-	rawT := make([]int, 256)
+	rawF := &sc.rawF
+	rawT := &sc.rawT
 	// Context 0 is the previous byte; the first byte of the stream has
 	// context 0.
 	prev := 0
@@ -567,17 +612,16 @@ func ransEncodeO1(in []byte) []byte {
 		rawT[0]++
 	}
 
-	var f [256][256]int
-	cum := make([][]uint32, 256)
+	f := &sc.f
+	cum := &sc.cum
 	var tab []byte
 	rleI := 0
 	for i := 0; i < 256; i++ {
 		if rawT[i] == 0 {
 			continue
 		}
-		row := normaliseFreqsO1(rawF[i][:])
+		row := normaliseFreqsO1Into(rawF[i][:], sc.norm[:])
 		copy(f[i][:], row)
-		cum[i] = make([]uint32, 256)
 		c := uint32(0)
 		for j := 0; j < 256; j++ {
 			cum[i][j] = c

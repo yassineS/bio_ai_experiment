@@ -30,7 +30,7 @@ type TrimOptions struct {
 	UMIPosition      string  // UMI position: "5prime" or "3prime"
 	PEMatrixMode     bool    // PE matrix mode: require reverse-complement overlap support before trimming (skewer's default -m pe)
 	Adapter3Pair2    string  // 3' adapter for the second mate in PE matrix mode (skewer's -y; empty => share Adapter3)
-	PEBlockSize      int     // upstream block size (nBlockSize); when >0, drop the final partial block to match upstream byte-for-byte (0 = keep all pairs)
+	Threads          int     // number of worker goroutines for PE matrix-mode trimming (0/1 = sequential path)
 }
 
 // DefaultTrimOptions returns default trimming options.
@@ -325,12 +325,30 @@ func TrimPairedEnd(input1, input2 io.Reader, output1, output2, outputSingle io.W
 		}
 	}
 
-	// pendingPair captures a fully-trimmed pair awaiting a block-boundary
-	// flush. Upstream reads in fixed-size blocks (nBlockSize) and silently
-	// drops the records of the final, incomplete block (a data-loss bug in its
-	// parallel reader; see pe.go and the package README). When PEBlockSize > 0
-	// the drop-in CLI reproduces that exactly by only committing a block once it
-	// is full; otherwise (library / structured subcommands) all pairs are kept.
+	// When threading is requested for the PE matrix path (and there is no UMI
+	// extraction, whose per-pair state would need serialising), fan the pure
+	// per-pair CPU work (trimPairWithPE) out over a bounded worker pool and
+	// reassemble the results in strict input order. The output is byte-identical
+	// to the sequential path for any thread count; only wall-time changes.
+	//
+	// Guard: also require a non-empty Adapter3. The parallel collector's
+	// order-independent stats merge only carries trimPairWithPE's AdapterFound3
+	// delta; when Adapter3 == "" trimPairWithPE falls back to per-record
+	// trimRecord, which mutates other stat fields (AdapterFound5/Total/Trimmed)
+	// in the worker-local stats that the merge drops. The CLI never hits this
+	// (upstream_cli.go always sets Adapter3 in PE matrix mode), but a direct
+	// library caller could, so we fall back to the sequential path to keep the
+	// stats-merge invariant intact.
+	if opts.Threads > 1 && opts.PEMatrixMode && opts.UMILength == 0 && opts.Adapter3 != "" {
+		return trimPairedEndParallel(reader1, reader2, writer1, writer2, stats, opts, startTime)
+	}
+
+	// pendingPair captures a fully-trimmed pair ready to be written. Upstream
+	// keeps every pair at every thread count, so ours must too; there is no
+	// block-boundary drop (an earlier PEBlockSize model reproduced a supposed
+	// data-loss quirk of upstream's parallel reader, but upstream in fact emits
+	// all pairs, so we always commit each pair — see FIX A in the perf-threading
+	// work).
 	type pendingPair struct {
 		rec1, rec2 *fastq.Record
 		pos1, pos2 int
@@ -338,8 +356,6 @@ func TrimPairedEnd(input1, input2 io.Reader, output1, output2, outputSingle io.W
 		origLen2   int
 		keep       bool // passes the minLen filter
 	}
-	var block []pendingPair
-	blockSize := opts.PEBlockSize
 
 	commitPair := func(p pendingPair) error {
 		if !p.keep {
@@ -436,19 +452,7 @@ func TrimPairedEnd(input1, input2 io.Reader, output1, output2, outputSingle io.W
 				origLen2: originalLen2,
 				keep:     pos1 >= opts.MinLength && pos2 >= opts.MinLength,
 			}
-			if blockSize > 0 {
-				// Buffer until the current block fills; flush full blocks only,
-				// so the final incomplete block is dropped (upstream parity).
-				block = append(block, p)
-				if len(block) == blockSize {
-					for _, bp := range block {
-						if err := commitPair(bp); err != nil {
-							return stats, err
-						}
-					}
-					block = block[:0]
-				}
-			} else if err := commitPair(p); err != nil {
+			if err := commitPair(p); err != nil {
 				return stats, err
 			}
 			// Progress reporting

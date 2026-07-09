@@ -38,6 +38,15 @@ type Variant struct {
 	// caller that never inspects sample data (e.g. bcftools isec) skip the
 	// expensive map round-trip. Empty for normally-parsed records.
 	RawTail string
+	// RawLine, when non-empty, is the verbatim data line (no trailing newline) a
+	// reader in KeepRawLine mode captured. In that mode only the sort-key columns
+	// (CHROM/POS/REF/ALT) are parsed; the INFO map, FILTER, QUAL and per-sample
+	// data are NOT populated. A caller that only needs to re-order records and
+	// re-emit them unchanged (e.g. bcftools sort -O v) keys the sort on the parsed
+	// columns and writes RawLine back verbatim, avoiding the full parse→re-encode
+	// round-trip and the per-record maps it allocates. Empty for normally-parsed
+	// records.
+	RawLine string
 }
 
 // Sample represents genotype data for a single sample.
@@ -74,6 +83,51 @@ type Reader struct {
 	// sample columns verbatim in Variant.RawTail instead of building per-sample
 	// maps. See KeepRawSamples.
 	keepRawTail bool
+	// keepRawLine, set by KeepRawLine, makes parseLine capture the whole verbatim
+	// data line in Variant.RawLine and parse only the sort-key columns
+	// (CHROM/POS/REF/ALT). See KeepRawLine.
+	keepRawLine bool
+	// intern is a small string-interning table used only on the ReadInto path.
+	// ReadInto's Chrom/Ref/Alt (and Filter) strings alias the reused line buffer
+	// and become invalid on the next read, so a caller that retains them across
+	// reads (e.g.
+	// the vcftools streaming-stats accumulators, which store v.Chrom / the allele
+	// strings per site) would otherwise hold dangling aliases. Interning collapses
+	// each distinct value to a single stable, owned string: the whole-file set of
+	// chromosome names collapses to a handful of entries, and the common short
+	// alleles (A/C/G/T, ".") to a fixed few, so retained copies stay valid without
+	// per-site allocation. The Read (owned) path already materialises fresh strings
+	// and does not use this. See internStr.
+	intern map[string]string
+}
+
+// internStr returns an owned, stable copy of s, reusing a single backing string
+// per distinct value via the reader's intern table. The argument s aliases the
+// reused line buffer (ReadInto path); the returned string owns its own memory and
+// is safe to retain across subsequent reads. The table is bounded in practice by
+// the small cardinality of the interned fields (chromosome names and short
+// alleles), so it does not grow with the number of records.
+func (r *Reader) internStr(s string) string {
+	if v, ok := r.intern[s]; ok {
+		return v
+	}
+	// string(...) forces a fresh allocation that owns its bytes, breaking the
+	// alias into r.lineBuf before we store it as both key and value.
+	owned := string([]byte(s))
+	if r.intern == nil {
+		r.intern = make(map[string]string)
+	}
+	r.intern[owned] = owned
+	return owned
+}
+
+// internSlice interns each element of s in place using the supplied intern
+// function, so a slice of aliasing strings (e.g. v.Alt on the ReadInto path)
+// becomes a slice of stable owned strings that survive the next read.
+func internSlice(intern func(string) string, s []string) {
+	for i := range s {
+		s[i] = intern(s[i])
+	}
 }
 
 // KeepRawSamples toggles "shallow sample" parsing: when on, Read/ReadInto parse
@@ -86,6 +140,18 @@ type Reader struct {
 // parsed line, only the retaining Read path is safe to keep across reads; do not
 // retain a ReadInto Variant's RawTail.
 func (r *Reader) KeepRawSamples(on bool) { r.keepRawTail = on }
+
+// KeepRawLine toggles "raw line" parsing: when on, Read/ReadInto capture the
+// whole verbatim data line in Variant.RawLine and parse only the sort-key
+// columns (CHROM, POS, REF, ALT). The INFO/FILTER/QUAL fields and the per-sample
+// data are left unparsed (Info empty, Qual 0, Filter/Format/Samples empty). It is
+// for callers that re-order records and re-emit them unchanged — bcftools sort
+// -O v — where re-emitting the captured line is byte-identical to a full
+// parse→re-encode for a well-formed record while avoiding that round-trip and its
+// per-record allocations. Because RawLine (and the parsed key columns) alias the
+// reused line buffer on the ReadInto path, only the retaining Read path is safe
+// to keep across reads; a ReadInto caller that buffers records must copy RawLine.
+func (r *Reader) KeepRawLine(on bool) { r.keepRawLine = on }
 
 // NewReader creates a new VCF reader from an io.Reader.
 func NewReader(r io.Reader) *Reader {
@@ -203,13 +269,21 @@ func (r *Reader) readInto(v *Variant, owned bool) error {
 			// caller must not retain v (or its strings) past the next read.
 			line = unsafe.String(unsafe.SliceData(r.lineBuf), len(r.lineBuf))
 		}
-		return r.parseLine(line, v)
+		return r.parseLine(line, v, owned)
 	}
 }
 
 // parseLine fills v from a single VCF data line, reusing v's existing maps and
-// slices. The string fields reference line, which is valid until the next read.
-func (r *Reader) parseLine(line string, v *Variant) error {
+// slices. On the Read (owned) path line is a freshly-allocated owned string, so
+// all of v's fields own their backing. On the ReadInto path line aliases the
+// reused buffer; parseLine then interns the fields a caller is documented as
+// allowed to retain across reads (CHROM, REF, and each ALT allele) so those
+// specific strings become stable owned copies. ID is not interned: no consumer
+// retains it across sites and rsIDs are ~unique, so interning it would grow the
+// table without bound for no benefit. The remaining aliasing fields (ID, INFO
+// values, FILTER, FORMAT, per-sample data) keep ReadInto's discard-before-
+// next-read contract.
+func (r *Reader) parseLine(line string, v *Variant, owned bool) error {
 	r.fieldsBuf = splitInto(r.fieldsBuf, line, '\t')
 	fields := r.fieldsBuf
 	if len(fields) < 8 {
@@ -219,11 +293,46 @@ func (r *Reader) parseLine(line string, v *Variant) error {
 	if err != nil {
 		return fmt.Errorf("invalid position %s: %v", fields[1], err)
 	}
+	if r.keepRawLine {
+		// Raw-line mode: parse only the sort-key columns and keep the whole line
+		// verbatim; leave everything else unparsed/cleared.
+		v.Chrom = fields[0]
+		v.Pos = pos
+		v.Ref = fields[3]
+		v.Alt = splitInto(v.Alt, fields[4], ',')
+		if !owned {
+			v.Chrom = r.internStr(v.Chrom)
+			v.Ref = r.internStr(v.Ref)
+			internSlice(r.internStr, v.Alt)
+		}
+		v.RawLine = line
+		v.ID = ""
+		v.Qual = 0
+		v.Filter = v.Filter[:0]
+		v.InfoOrder = v.InfoOrder[:0]
+		if v.Info != nil {
+			clear(v.Info)
+		}
+		v.Format = v.Format[:0]
+		v.Samples = v.Samples[:0]
+		v.RawTail = ""
+		return nil
+	}
 	v.Chrom = fields[0]
 	v.Pos = pos
 	v.ID = fields[2]
 	v.Ref = fields[3]
 	v.Alt = splitInto(v.Alt, fields[4], ',')
+	if !owned {
+		// ReadInto path: intern the fields a caller may retain across reads so
+		// they become stable owned strings rather than aliases into r.lineBuf.
+		// ID is deliberately not interned: no consumer retains v.ID by reference
+		// across sites, and rsIDs are ~unique per site, so interning it would grow
+		// the table O(n_sites) for no benefit.
+		v.Chrom = r.internStr(v.Chrom)
+		v.Ref = r.internStr(v.Ref)
+		internSlice(r.internStr, v.Alt)
+	}
 	if fields[5] == "." {
 		v.Qual = -1
 	} else {
@@ -234,6 +343,14 @@ func (r *Reader) parseLine(line string, v *Variant) error {
 		v.Qual = qual
 	}
 	v.Filter = parseFilterInto(v.Filter, fields[6])
+	if !owned {
+		// FILTER is retained across reads by the --FILTER-summary accumulator
+		// (which keys a map on the joined FILTER string; a single-tag join
+		// returns the aliasing element verbatim), so intern its tags too. FILTER
+		// tags have tiny cardinality (PASS/./named filters), so this collapses to
+		// a handful of stable strings.
+		internSlice(r.internStr, v.Filter)
+	}
 	v.InfoOrder, v.Info = parseInfoInto(v.InfoOrder, v.Info, fields[7])
 
 	if len(fields) > 8 && r.keepRawTail {
@@ -422,6 +539,15 @@ func (w *Writer) WriteHeader() error {
 // of allocations per record that dominated VCF output.
 func (w *Writer) Write(variant *Variant) error {
 	bw := w.w
+	if variant.RawLine != "" {
+		// Raw-line record (KeepRawLine): the whole data line was captured
+		// verbatim. Re-emitting it is byte-identical to parsing every column and
+		// re-serialising, for a well-formed record.
+		if _, err := bw.WriteString(variant.RawLine); err != nil {
+			return err
+		}
+		return bw.WriteByte('\n')
+	}
 	bw.WriteString(variant.Chrom)
 	bw.WriteByte('\t')
 	w.num = strconv.AppendInt(w.num[:0], int64(variant.Pos), 10)

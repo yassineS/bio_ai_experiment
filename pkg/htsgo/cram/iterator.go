@@ -540,6 +540,13 @@ func regenerateMDNM(recs []*sam.Record, suppress []mdnmSuppress, refBases []byte
 		return
 	}
 	refOffset := int(refStart) - 1
+	// mdScratch is reused across every record of the batch as the MD byte
+	// accumulator. mdnm.ComputeInto copies its result out to a fresh string
+	// before returning, so reusing the backing array here never aliases a
+	// prior record's retained MD:Z value — only the transient scratch is
+	// shared, killing the per-record allocation the regeneration otherwise
+	// makes for every mapped record of every slice.
+	var mdScratch []byte
 	for i, rec := range recs {
 		if rec.IsUnmapped() || rec.RName == "" || rec.RName == "*" || len(rec.Cigar) == 0 {
 			continue
@@ -553,7 +560,7 @@ func regenerateMDNM(recs []*sam.Record, suppress []mdnmSuppress, refBases []byte
 		// to the eager struct splice below — see regenerateMDNMRaw. Branching here
 		// keeps the common eager path literally unchanged.
 		if rec.RawAux != nil {
-			regenerateMDNMRaw(rec, sup, refBases, refOffset)
+			mdScratch = regenerateMDNMRaw(rec, sup, refBases, refOffset, mdScratch)
 			continue
 		}
 		// Direct linear scan over the (small, <=~12-tag) aux list rather than
@@ -577,7 +584,8 @@ func regenerateMDNM(recs []*sam.Record, suppress []mdnmSuppress, refBases []byte
 		if !wantMD && !wantNM {
 			continue
 		}
-		md, nm := mdnm.Compute(rec, refBases, refOffset)
+		md, nm, buf := mdnm.ComputeInto(rec, refBases, refOffset, mdScratch)
+		mdScratch = buf
 		// A fixed two-slot backing (MD, NM) kept on the stack: insertBeforeTrailingRG
 		// only copies from add, never retains it, so this never escapes — replacing
 		// the per-record append-grown scratch slice that allocated once for every
@@ -604,17 +612,20 @@ func regenerateMDNM(recs []*sam.Record, suppress []mdnmSuppress, refBases []byte
 // insertBeforeTrailingRG produces for structs. The MD/NM bytes are serialised
 // through the shared sam.AppendBAMAux, so they equal what the eager struct path
 // would emit through encodeBAMAux for the same values.
-func regenerateMDNMRaw(rec *sam.Record, sup mdnmSuppress, refBases []byte, refOffset int) {
+// mdScratch is reused as mdnm.ComputeInto's MD accumulator across the batch;
+// the (possibly grown) buffer is returned so the caller can feed it back.
+func regenerateMDNMRaw(rec *sam.Record, sup mdnmSuppress, refBases []byte, refOffset int, mdScratch []byte) []byte {
 	hasMD, hasNM, rgStart, err := sam.WalkRawAux(rec.RawAux)
 	if err != nil {
-		return // a malformed block is left untouched, as the eager path would not splice it either.
+		return mdScratch // a malformed block is left untouched, as the eager path would not splice it either.
 	}
 	wantMD := !hasMD && !sup.md
 	wantNM := !hasNM && !sup.nm
 	if !wantMD && !wantNM {
-		return
+		return mdScratch
 	}
-	md, nm := mdnm.Compute(rec, refBases, refOffset)
+	md, nm, buf := mdnm.ComputeInto(rec, refBases, refOffset, mdScratch)
+	mdScratch = buf
 	var add []byte
 	if wantMD {
 		add, _ = sam.AppendBAMAux(add, sam.Aux{Tag: "MD", Type: 'Z', Value: md})
@@ -623,9 +634,10 @@ func regenerateMDNMRaw(rec *sam.Record, sup mdnmSuppress, refBases []byte, refOf
 		add, _ = sam.AppendBAMAux(add, sam.Aux{Tag: "NM", Type: 'i', Value: int64(nm)})
 	}
 	if len(add) == 0 {
-		return
+		return mdScratch
 	}
 	rec.RawAux = spliceRawBeforeRG(rec.RawAux, add, rgStart)
+	return mdScratch
 }
 
 // spliceRawBeforeRG returns raw with add inserted at rgStart (the byte offset of
