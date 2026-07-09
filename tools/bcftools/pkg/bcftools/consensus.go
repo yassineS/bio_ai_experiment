@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -227,38 +228,96 @@ type MaskRegion struct {
 }
 
 // ConsensusFile is the file-aware entry point. It opens path (transparent
-// gzip / BCF), reads the FASTA referenced by fastaPath, and applies the
-// variants to out as wrapped FASTA.
+// gzip / BCF), and applies the variants to out as wrapped FASTA.
+//
+// Unlike Consensus (which needs every reference contig materialised in
+// opts.Reference), ConsensusFile faidx-streams the reference one contig at a
+// time via fasta.RandomAccess. Only the single contig currently being edited
+// is held in memory, so peak RSS is bounded by the largest contig rather than
+// the whole genome plus several working copies. The output is byte-identical
+// to the in-memory path (verified against upstream `bcftools consensus` on
+// GIAB chr20).
 func ConsensusFile(path, fastaPath string, out io.Writer, opts ConsensusOptions) (int, error) {
 	if fastaPath == "" {
 		return 0, fmt.Errorf("bcftools consensus: -f/--fasta-ref is required")
 	}
-	fa, err := readFasta(fastaPath)
+	// Trim GC headroom: the consensus path allocates a couple of
+	// whole-contig []byte buffers per contig and would otherwise let the
+	// heap grow to several times the live set before collecting. A tighter
+	// GC target keeps peak RSS close to the live working set. This is
+	// output-neutral (RSS only). Restore the previous value on return so we
+	// do not perturb long-lived callers/tests.
+	prevGC := debug.SetGCPercent(20)
+	defer debug.SetGCPercent(prevGC)
+
+	ra, err := fasta.OpenRandomAccess(fastaPath)
 	if err != nil {
 		return 0, fmt.Errorf("bcftools consensus: read fasta: %w", err)
 	}
-	opts.Reference = fa
+	defer ra.Close()
+
 	r, err := iohelper.OpenReader(path)
 	if err != nil {
 		return 0, fmt.Errorf("bcftools consensus: open %s: %w", path, err)
 	}
 	defer r.Close()
-	return Consensus(r, out, opts)
+
+	prep, err := prepareConsensus(r, opts)
+	if err != nil {
+		return 0, err
+	}
+
+	bw := bufio.NewWriter(out)
+	applied := 0
+	for _, entry := range ra.Index().Entries() {
+		// FetchRaw returns the contig bytes with the reference's original
+		// letter case preserved (soft-masking survives), matching the
+		// in-memory fasta.Read path byte-for-byte. This is the single
+		// whole-contig allocation; it is mutated in place by applyMask.
+		ref0, err := ra.FetchRaw(entry.Name, 0, entry.Length)
+		if err != nil {
+			return applied, fmt.Errorf("bcftools consensus: fetch %s: %w", entry.Name, err)
+		}
+		// Apply any BED mask in place on the single fetched contig buffer
+		// (no extra whole-contig copy), matching the in-memory path.
+		ref0 = applyMask(ref0, entry.Name, opts.Mask, opts.MaskWith)
+		n, err := writeConsensusContig(bw, prep, entry.Name, ref0, int(entry.Length), opts)
+		if err != nil {
+			return applied, err
+		}
+		applied += n
+	}
+	if prep.cw != nil {
+		prep.cw.flush()
+		prep.cw.closer.Close()
+	}
+	return applied, bw.Flush()
 }
 
-// Consensus streams the VCF in in and writes the modified FASTA to out.
-// The reference sequences in opts.Reference must already be populated.
-func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) (int, error) {
+// consensusPrep holds the per-run state shared across contigs: the grouped
+// variants, the sample/IUPAC selection mode, and the optional chain writer.
+type consensusPrep struct {
+	byChrom      map[string][]*vcf.Variant
+	sampleIdx    int
+	iupacSamples []int
+	lineWidth    int
+	cw           *chainWriter
+}
+
+// prepareConsensus reads and filters the VCF, resolves the sample/IUPAC
+// selection mode, and (when requested) opens the liftover chain file. It is
+// the shared front half of both Consensus and ConsensusFile.
+func prepareConsensus(in io.Reader, opts ConsensusOptions) (*consensusPrep, error) {
 	hdr, variants, err := readAllVariants(in)
 	if err != nil {
-		return 0, fmt.Errorf("bcftools consensus: %w", err)
+		return nil, fmt.Errorf("bcftools consensus: %w", err)
 	}
 	include, exclude, err := compileExpressions(ViewOptions{
 		IncludeExpr: opts.IncludeExpr,
 		ExcludeExpr: opts.ExcludeExpr,
 	}, hdr)
 	if err != nil {
-		return 0, fmt.Errorf("bcftools consensus: %w", err)
+		return nil, fmt.Errorf("bcftools consensus: %w", err)
 	}
 
 	sampleIdx := -1
@@ -270,7 +329,7 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) (int, error) 
 			}
 		}
 		if sampleIdx < 0 {
-			return 0, fmt.Errorf("bcftools consensus: sample %q not found in header", opts.Sample)
+			return nil, fmt.Errorf("bcftools consensus: sample %q not found in header", opts.Sample)
 		}
 	}
 
@@ -313,30 +372,87 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) (int, error) 
 	}
 
 	// Optional liftover chain output. The chain writer is shared across
-	// all sequences so the running chain identifier auto-increments.
+	// all sequences so the running chain identifier auto-increments. The
+	// caller (Consensus / ConsensusFile) is responsible for flushing and
+	// closing it once every contig has been written.
 	var cw *chainWriter
 	if opts.ChainFile != "" {
 		f, err := openChainFile(opts.ChainFile)
 		if err != nil {
-			return 0, fmt.Errorf("bcftools consensus: %w", err)
+			return nil, fmt.Errorf("bcftools consensus: %w", err)
 		}
 		cw = &chainWriter{bw: bufio.NewWriter(f), closer: f}
-		defer func() {
-			cw.flush()
-			cw.closer.Close()
-		}()
 	}
 
+	return &consensusPrep{
+		byChrom:      byChrom,
+		sampleIdx:    sampleIdx,
+		iupacSamples: iupacSamples,
+		lineWidth:    lineWidth,
+		cw:           cw,
+	}, nil
+}
+
+// Consensus streams the VCF in in and writes the modified FASTA to out.
+// The reference sequences in opts.Reference must already be populated. This
+// in-memory entry point is retained for callers (and tests) that already hold
+// the reference records; the file-aware ConsensusFile faidx-streams the
+// reference instead and is preferred for large genomes.
+func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) (int, error) {
+	prep, err := prepareConsensus(in, opts)
+	if err != nil {
+		return 0, err
+	}
 	bw := bufio.NewWriter(out)
 	applied := 0
 	for _, rec := range opts.Reference {
+		// applyMask mutates in place; copy the record's sequence so the
+		// caller's Reference records are left untouched.
 		ref0 := applyMask(append([]byte(nil), rec.Sequence...), rec.ID, opts.Mask, opts.MaskWith)
-		// Build the consensus in a single left-to-right pass: out holds the
-		// finalized output and consumed is the next unconsumed index in ref0, so
-		// the untouched reference tail is copied exactly ONCE (at the end) rather
-		// than the whole sequence being rebuilt for every variant. This is
-		// O(len+variants) instead of the previous O(len*variants).
-		out := make([]byte, 0, len(ref0))
+		n, err := writeConsensusContig(bw, prep, rec.ID, ref0, len(rec.Sequence), opts)
+		if err != nil {
+			return applied, err
+		}
+		applied += n
+	}
+	if prep.cw != nil {
+		prep.cw.flush()
+		prep.cw.closer.Close()
+	}
+	return applied, bw.Flush()
+}
+
+// writeConsensusContig applies the grouped variants for one contig to its
+// reference bytes (ref0, already mask-applied and owned by the caller) and
+// writes the wrapped FASTA record to bw. refLen is the original reference
+// length (used only for the chain output). It returns the number of variants
+// applied on this contig. The build is a single left-to-right pass: out holds
+// the finalised output and consumed is the next unconsumed index in ref0, so
+// the untouched reference tail is copied exactly ONCE (at the end) rather than
+// the whole sequence being rebuilt per variant — O(len+variants).
+func writeConsensusContig(bw *bufio.Writer, prep *consensusPrep, id string, ref0 []byte, refLen int, opts ConsensusOptions) (int, error) {
+	byChrom := prep.byChrom
+	sampleIdx := prep.sampleIdx
+	iupacSamples := prep.iupacSamples
+	lineWidth := prep.lineWidth
+	cw := prep.cw
+
+	applied := 0
+	{
+		// Pre-size out to an upper bound of the final length so the append
+		// loop below never has to reallocate-and-double (which would briefly
+		// hold two whole-contig buffers, ~2x the contig in transient RSS).
+		// The bound is len(ref0) plus the total net insertion length that
+		// could grow the contig: for each grouped variant, max(0, len(alt0) -
+		// len(ref)). This is byte-inert (only the buffer capacity changes) and
+		// keeps peak RSS to a single out buffer plus ref0.
+		growth := 0
+		for _, v := range byChrom[id] {
+			if len(v.Alt) > 0 && len(v.Alt[0]) > len(v.Ref) {
+				growth += len(v.Alt[0]) - len(v.Ref)
+			}
+		}
+		out := make([]byte, 0, len(ref0)+growth)
 		consumed := 0
 		// emitGap appends the reference span ref0[from:to] to out — or, with
 		// -a/--absent set, that many copies of the absent fill char (upstream's
@@ -352,7 +468,7 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) (int, error) 
 			}
 		}
 
-		vars := byChrom[rec.ID]
+		vars := byChrom[id]
 		// Apply in left-to-right order. Indels shift downstream positions,
 		// so we maintain an offset relative to the original reference.
 		sort.SliceStable(vars, func(i, j int) bool { return vars[i].Pos < vars[j].Pos })
@@ -551,12 +667,12 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) (int, error) 
 		emitGap(consumed, len(ref0))
 		seq := out
 		if chain != nil {
-			if err := cw.writeChain(chain, rec.ID, len(rec.Sequence)); err != nil {
+			if err := cw.writeChain(chain, id, refLen); err != nil {
 				return applied, err
 			}
 		}
 
-		name := opts.Prefix + rec.ID
+		name := opts.Prefix + id
 		if _, err := fmt.Fprintf(bw, ">%s\n", name); err != nil {
 			return applied, err
 		}
@@ -573,7 +689,7 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) (int, error) 
 			}
 		}
 	}
-	return applied, bw.Flush()
+	return applied, nil
 }
 
 // selectAllele picks the ALT (or REF) string to inject per opts. Returns
@@ -1069,17 +1185,6 @@ func lowerByte(b byte) byte {
 		return b + 32
 	}
 	return b
-}
-
-// readFasta is a thin wrapper around fasta.Reader.ReadAll that opens the
-// named file through iohelper (transparent gzip / bgzf).
-func readFasta(path string) ([]*fasta.Record, error) {
-	r, err := iohelper.OpenReader(path)
-	if err != nil {
-		return nil, err
-	}
-	defer r.Close()
-	return fasta.NewReader(r).ReadAll()
 }
 
 // LoadMaskBED parses a BED file (one CHROM <tab> BEG <tab> END per line)
