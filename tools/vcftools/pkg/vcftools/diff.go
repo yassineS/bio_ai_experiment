@@ -69,6 +69,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
@@ -194,6 +195,19 @@ type diffRunner struct {
 	// are "2"-only.
 	seenSites map[string]map[int]struct{}
 
+	// Merge-walk cursor over the file-2 sites. Upstream (variant_file_diff.cpp
+	// output_sites_in_files / output_discordance_by_site) performs a
+	// two-pointer merge over both position-sorted streams, so file-2-only
+	// sites are emitted INTERLEAVED with file-1 sites in position order — not
+	// appended after file-1 as an earlier revision did. f2SortedPos holds each
+	// file-2 chromosome's positions in ascending order; f2Cursor is the index
+	// of the next unemitted file-2 site per chromosome; mergeChrom is the
+	// chromosome of the current file-1 run (used to flush a chromosome's
+	// file-2 tail when file-1 moves on).
+	f2SortedPos map[string][]int
+	f2Cursor    map[string]int
+	mergeChrom  string
+
 	// Per-sample discordance accumulators, keyed by the file-1 (canonical)
 	// sample name.
 	indvCommon  map[string]int
@@ -291,9 +305,21 @@ func newDiffRunner(params *Params, samples []string) (*diffRunner, error) {
 		seenSites:       make(map[string]map[int]struct{}),
 		indvCommon:      make(map[string]int),
 		indvDiscord:     make(map[string]int),
+		f2SortedPos:     make(map[string][]int, len(d.sites)),
+		f2Cursor:        make(map[string]int, len(d.sites)),
 	}
 	for _, s := range samples {
 		r.file1SampleSet[s] = struct{}{}
+	}
+
+	// Pre-sort file-2 positions per chromosome for the interleaved merge walk.
+	for c, bucket := range d.sites {
+		positions := make([]int, 0, len(bucket))
+		for p := range bucket {
+			positions = append(positions, p)
+		}
+		sort.Ints(positions)
+		r.f2SortedPos[c] = positions
 	}
 
 	// Optional --diff-indv-map: file-2 ID → renamed-to ID. We apply this
@@ -396,7 +422,18 @@ func loadDiffIndvMap(path string) (map[string]string, error) {
 	return m, nil
 }
 
-// addVariant is called once per file-1 variant after filtering.
+// refIsNull reports whether a REF allele should be treated as "unknown" for
+// the purpose of upstream's POS-equal REF normalisation — an "N", "." or empty
+// REF is replaced by the other file's REF before the match test
+// (variant_file_diff.cpp:199-202, 780-783).
+func refIsNull(ref string) bool {
+	return ref == "N" || ref == "." || ref == ""
+}
+
+// addVariant is called once per file-1 variant after filtering. It drives the
+// two-pointer merge with the file-2 stream: before emitting the file-1 site it
+// flushes any file-2-only sites that sort before it, reproducing upstream's
+// interleaved output ordering.
 func (r *diffRunner) addVariant(v *vcf.Variant) error {
 	if r == nil {
 		return nil
@@ -406,13 +443,56 @@ func (r *diffRunner) addVariant(v *vcf.Variant) error {
 	}
 	r.seenSites[v.Chrom][v.Pos] = struct{}{}
 
+	// Merge walk: when file-1 advances to a new chromosome, flush the previous
+	// chromosome's remaining file-2-only tail first (upstream reaches these via
+	// its file-1-eof / chromosome-change branches).
+	if r.mergeChrom != "" && r.mergeChrom != v.Chrom {
+		if err := r.flushFile2Only(r.mergeChrom, 0, true); err != nil {
+			return err
+		}
+	}
+	r.mergeChrom = v.Chrom
+	// Emit any file-2-only sites on this chromosome that precede the current
+	// file-1 position, in ascending order.
+	if err := r.flushFile2Only(v.Chrom, v.Pos, false); err != nil {
+		return err
+	}
+
 	var rec *diffRecord
 	if bucket, ok := r.data.sites[v.Chrom]; ok {
 		rec = bucket[v.Pos]
 	}
+	// Advance the file-2 cursor past the matched position so it is not later
+	// re-emitted as a file-2-only site.
+	if rec != nil {
+		positions := r.f2SortedPos[v.Chrom]
+		idx := r.f2Cursor[v.Chrom]
+		if idx < len(positions) && positions[idx] == v.Pos {
+			r.f2Cursor[v.Chrom] = idx + 1
+		}
+	}
+
+	// Upstream normalises an "N"/"."/"" REF on either side to the other file's
+	// REF at a POS-equal site before deciding whether the site is a matching
+	// "B" row or a non-matching overlap. refMismatch captures the post-
+	// normalisation "REFs still differ and both are real" case that upstream
+	// treats specially: the .diff.sites row is skipped entirely while
+	// .diff.sites_in_files emits an "O" (overlap) row.
+	ref1, ref2 := "", ""
+	refMismatch := false
+	if rec != nil {
+		ref1, ref2 = v.Ref, rec.ref
+		if refIsNull(ref1) {
+			ref1 = ref2
+		}
+		if refIsNull(ref2) {
+			ref2 = ref1
+		}
+		refMismatch = ref1 != ref2 && !refIsNull(ref1) && !refIsNull(ref2)
+	}
 
 	if r.wSitesInFiles != nil {
-		if err := r.emitSitesInFilesRow(v, rec); err != nil {
+		if err := r.emitSitesInFilesRow(v, rec, ref1, ref2, refMismatch); err != nil {
 			return err
 		}
 	}
@@ -422,23 +502,50 @@ func (r *diffRunner) addVariant(v *vcf.Variant) error {
 	if rec == nil {
 		// File-1-only site. .diff.sites still gets a zero row with
 		// FILES=1, MATCHING_ALLELES=0, all counts 0, discordance -nan
-		// (variant_file_diff.cpp:801-803 emits the row prefix; the
-		// "0" MATCHING_ALLELES literal is line 929 + counts at line 933).
+		// (variant_file_diff.cpp:797-799 emits the row prefix; the
+		// "0" MATCHING_ALLELES literal is line 930 + counts at line 933).
 		if r.wSites != nil {
 			fmt.Fprintf(r.wSites.w, "%s\t%d\t1\t0\t0\t0\t-nan\n", v.Chrom, v.Pos)
 		}
 		return nil
 	}
 
-	// Both files have the site → compute per-site and per-individual
-	// discordance, but only over samples present in both files.
+	if refMismatch {
+		// POS-equal but non-matching REF: upstream logs a one-off warning and
+		// skips the site for .diff.sites and the per-indv / matrix
+		// accumulators (variant_file_diff.cpp:787-791). The .diff.sites_in_files
+		// "O" row was already emitted above.
+		nonMatchingRefWarn()
+		return nil
+	}
+
+	// Both files have the site with matching REF → compute per-site and
+	// per-individual discordance, but only over samples present in both files.
 	siteCommon, siteDiscord := 0, 0
 	// --diff-discordance-matrix counts biallelic loci with matching ALT
-	// alleles only (upstream variant_file_diff.cpp:1122-1129). We pre-
-	// compute the eligibility flag once per site.
+	// alleles only (upstream variant_file_diff.cpp:1122-1129). Its REF skip
+	// (variant_file_diff.cpp:1079) is the SAME as the .diff.sites row's
+	// (refMismatch), so past the refMismatch early-return the matrix is
+	// eligible on REF grounds. We pre-compute the ALT/biallelic flag once.
 	matrixEligible := r.params.DiffDiscordanceMatrix &&
 		isBiallelic(v.Ref, v.Alt) && isBiallelic(rec.ref, rec.rawALTs) &&
 		altsMatchFirst(v.Alt, rec.rawALTs)
+	// The per-individual output (.diff.indv, output_discordance_by_indv) uses a
+	// STRICTER REF skip than the .diff.sites row: it normalises only "N" (not
+	// "."/"") and also skips on a REF-length mismatch
+	// (variant_file_diff.cpp:508-517). So a POS-equal "."-vs-REF (or empty-vs-
+	// REF, or N-normalised length-mismatch) site that .diff.sites counts as a
+	// B row must be excluded from the per-sample totals. by_site-skip already
+	// implies by_indv-skip, so we only need this extra gate here.
+	indvRef1, indvRef2 := v.Ref, rec.ref
+	if indvRef1 == "N" {
+		indvRef1 = indvRef2
+	}
+	if indvRef2 == "N" {
+		indvRef2 = indvRef1
+	}
+	indvSkip := len(indvRef1) != len(indvRef2) ||
+		(indvRef1 != indvRef2 && indvRef1 != "N" && indvRef2 != "N")
 	for _, pair := range r.commonPairs {
 		gt1, ok1 := findSampleGT(v, pair.f1Name)
 		gt2, ok2 := rec.genotypes[pair.f2Name]
@@ -456,19 +563,29 @@ func (r *diffRunner) addVariant(v *vcf.Variant) error {
 			continue
 		}
 		siteCommon++
-		r.indvCommon[pair.f1Name]++
-		if a1 != a2 || b1 != b2 {
+		discord := a1 != a2 || b1 != b2
+		if discord {
 			siteDiscord++
-			r.indvDiscord[pair.f1Name]++
+		}
+		// Per-individual totals honour the stricter by_indv REF skip.
+		if !indvSkip {
+			r.indvCommon[pair.f1Name]++
+			if discord {
+				r.indvDiscord[pair.f1Name]++
+			}
 		}
 	}
 	if r.wSites != nil {
 		// MATCHING_ALLELES is upstream's `alleles_match = (ALT1 == ALT2)
-		// && (REF1 == REF2)` (variant_file_diff.cpp:844). For multi-ALT
-		// sites we compare the joined ALT strings, which matches the
-		// upstream `ALT1 == ALT2` string comparison over the whole list.
+		// && (REF1 == REF2)` (variant_file_diff.cpp:845), evaluated on the
+		// NORMALISED REFs (an "N"/"."/"" REF having been replaced by the
+		// other file's REF). Since this branch is only reached when the
+		// normalised REFs already match, the REF term is always true here;
+		// we keep it explicit to mirror upstream. For multi-ALT sites we
+		// compare the joined ALT strings, matching the upstream `ALT1 ==
+		// ALT2` string comparison over the whole list.
 		matching := 0
-		if v.Ref == rec.ref && strings.Join(v.Alt, ",") == strings.Join(rec.rawALTs, ",") {
+		if ref1 == ref2 && strings.Join(v.Alt, ",") == strings.Join(rec.rawALTs, ",") {
 			matching = 1
 		}
 		fmt.Fprintf(r.wSites.w, "%s\t%d\tB\t%d\t%d\t%d\t%s\n",
@@ -527,26 +644,91 @@ func altsMatchFirst(a, b []string) bool {
 }
 
 // emitSitesInFilesRow writes one row of .diff.sites_in_files for a file-1
-// variant. rec is the matching file-2 record (or nil if file-1-only).
-func (r *diffRunner) emitSitesInFilesRow(v *vcf.Variant, rec *diffRecord) error {
+// variant. rec is the matching file-2 record (or nil if file-1-only). ref1/ref2
+// are the POS-equal REFs after upstream's "N"/"."/"" normalisation, and
+// refMismatch is true when those normalised REFs still differ (both real) —
+// upstream then emits an "O" (overlap) row rather than a "B" row
+// (variant_file_diff.cpp:199-215).
+func (r *diffRunner) emitSitesInFilesRow(v *vcf.Variant, rec *diffRecord, ref1, ref2 string, refMismatch bool) error {
 	pos1 := fmt.Sprintf("%d", v.Pos)
-	ref1 := v.Ref
 	alt1 := "."
 	if len(v.Alt) > 0 {
 		alt1 = strings.Join(v.Alt, ",")
 	}
 	if rec == nil {
 		_, err := fmt.Fprintf(r.wSitesInFiles.w, "%s\t%s\t.\t1\t%s\t.\t%s\t.\n",
-			v.Chrom, pos1, ref1, alt1)
+			v.Chrom, pos1, v.Ref, alt1)
 		return err
 	}
 	alt2 := "."
 	if len(rec.rawALTs) > 0 {
 		alt2 = strings.Join(rec.rawALTs, ",")
 	}
-	_, err := fmt.Fprintf(r.wSitesInFiles.w, "%s\t%s\t%s\tB\t%s\t%s\t%s\t%s\n",
-		v.Chrom, pos1, pos1, ref1, rec.ref, alt1, alt2)
+	inFile := "B"
+	if refMismatch {
+		inFile = "O"
+	}
+	_, err := fmt.Fprintf(r.wSitesInFiles.w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		v.Chrom, pos1, pos1, inFile, ref1, ref2, alt1, alt2)
 	return err
+}
+
+// emitFile2Only writes the file-2-only rows for chromosome c at position p to
+// whichever diff outputs are active. It mirrors the "2"-classified rows in
+// both output_sites_in_files and output_discordance_by_site.
+func (r *diffRunner) emitFile2Only(c string, p int, rec *diffRecord) error {
+	if r.wSitesInFiles != nil {
+		alt2 := "."
+		if len(rec.rawALTs) > 0 {
+			alt2 = strings.Join(rec.rawALTs, ",")
+		}
+		if _, err := fmt.Fprintf(r.wSitesInFiles.w, "%s\t.\t%d\t2\t.\t%s\t.\t%s\n",
+			c, p, rec.ref, alt2); err != nil {
+			return err
+		}
+	}
+	if r.wSites != nil {
+		// File-2-only zero row. Upstream prints "0" for MATCHING_ALLELES on
+		// non-B rows and -nan for the 0/0 discordance
+		// (variant_file_diff.cpp:930-933).
+		if _, err := fmt.Fprintf(r.wSites.w, "%s\t%d\t2\t0\t0\t0\t-nan\n", c, p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// flushFile2Only emits file-2-only rows for chromosome c whose position sorts
+// before beforePos (or all remaining positions when all is true), advancing the
+// per-chromosome cursor. Positions already matched on the file-1 side are
+// skipped via seenSites (the cursor may still point at them after a
+// chromosome-tail flush).
+func (r *diffRunner) flushFile2Only(c string, beforePos int, all bool) error {
+	if r.wSitesInFiles == nil && r.wSites == nil {
+		return nil
+	}
+	positions := r.f2SortedPos[c]
+	idx := r.f2Cursor[c]
+	seen := r.seenSites[c]
+	for idx < len(positions) {
+		p := positions[idx]
+		if !all && p >= beforePos {
+			break
+		}
+		if seen != nil {
+			if _, matched := seen[p]; matched {
+				idx++
+				continue
+			}
+		}
+		if err := r.emitFile2Only(c, p, r.data.sites[c][p]); err != nil {
+			r.f2Cursor[c] = idx
+			return err
+		}
+		idx++
+	}
+	r.f2Cursor[c] = idx
+	return nil
 }
 
 // close flushes per-site outputs, walks file-2 to emit file-2-only rows for
@@ -555,8 +737,12 @@ func (r *diffRunner) close() error {
 	if r == nil {
 		return nil
 	}
-	// File-2-only sites for sites_in_files and .diff.sites. Both outputs
-	// walk the same residual set so we compute it once.
+	// Flush the remaining file-2-only tails. The merge walk in addVariant has
+	// already interleaved every file-2-only site up to the last file-1
+	// position on each visited chromosome; what remains is each chromosome's
+	// trailing file-2 sites plus any chromosome file-1 never reached. We flush
+	// them in sorted chromosome order, and flushFile2Only skips the sites the
+	// walk already emitted via the per-chromosome cursor.
 	if r.wSitesInFiles != nil || r.wSites != nil {
 		chroms := make([]string, 0, len(r.data.sites))
 		for c := range r.data.sites {
@@ -564,37 +750,8 @@ func (r *diffRunner) close() error {
 		}
 		sort.Strings(chroms)
 		for _, c := range chroms {
-			bucket := r.data.sites[c]
-			seen := r.seenSites[c]
-			positions := make([]int, 0, len(bucket))
-			for p := range bucket {
-				if _, ok := seen[p]; ok {
-					continue
-				}
-				positions = append(positions, p)
-			}
-			sort.Ints(positions)
-			for _, p := range positions {
-				rec := bucket[p]
-				if r.wSitesInFiles != nil {
-					alt2 := "."
-					if len(rec.rawALTs) > 0 {
-						alt2 = strings.Join(rec.rawALTs, ",")
-					}
-					if _, err := fmt.Fprintf(r.wSitesInFiles.w, "%s\t.\t%d\t2\t.\t%s\t.\t%s\n",
-						c, p, rec.ref, alt2); err != nil {
-						return err
-					}
-				}
-				if r.wSites != nil {
-					// File-2-only zero row. Upstream prints "0" for
-					// MATCHING_ALLELES on non-B rows and -nan for the
-					// 0/0 discordance (variant_file_diff.cpp:929-933).
-					if _, err := fmt.Fprintf(r.wSites.w, "%s\t%d\t2\t0\t0\t0\t-nan\n",
-						c, p); err != nil {
-						return err
-					}
-				}
+			if err := r.flushFile2Only(c, 0, true); err != nil {
+				return err
 			}
 		}
 	}
@@ -818,6 +975,20 @@ func canonicalBiallelicGT(gt string) (a, b int, missing bool) {
 		a, b = b, a
 	}
 	return a, b, false
+}
+
+// nonMatchingRefOnce guards the one-off "Non-matching REF" warning so it is
+// emitted at most once per process, mirroring upstream's
+// LOG.one_off_warning (variant_file_diff.cpp:789).
+var nonMatchingRefOnce sync.Once
+
+// nonMatchingRefWarn emits upstream's one-off warning that POS-equal sites with
+// differing REF alleles are being skipped in the .diff.sites / .diff.indv
+// discordance outputs.
+func nonMatchingRefWarn() {
+	nonMatchingRefOnce.Do(func() {
+		fmt.Fprintln(os.Stderr, "Non-matching REF. Skipping all such sites.")
+	})
 }
 
 // envDiffWarn writes a one-time stderr warning that the diff file lacks

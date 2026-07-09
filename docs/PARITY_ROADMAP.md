@@ -2929,30 +2929,68 @@ Other (per-output column-set gaps, not flag-count gaps):
   via `%.6g` with `-nan` for 0/0, matching libstdc++'s default
   ostream output. Pinned by five parity tests against upstream
   goldens (`TestParity_DiffSiteDiscordance_{NoMap,WithMap,AltMismatch}`,
-  `TestParity_DiffIndvDiscordance_{NoMap,WithMap}`). Residual
-  deviations from upstream:
-  1. Row ordering within `.diff.sites` follows file-1 streamed
+  `TestParity_DiffIndvDiscordance_{NoMap,WithMap}`) plus the
+  merge-walk ordering suite (`TestDiffMergeWalk_*`). Former residual
+  deviations from upstream — now **closed (wave 23)**:
+  1. ~~Row ordering within `.diff.sites` followed file-1 streamed
      order with file-2-only sites appended in sorted-chrom-then-pos
-     order, rather than upstream's strict merge sort — observable
-     only when the two files have non-overlapping positions
-     interleaved by chromosome.
-  2. **REF-mismatch shared sites**: upstream
+     order, rather than upstream's strict merge sort.~~ **Closed.**
+     `addVariant` now drives a two-pointer merge against a
+     position-sorted file-2 cursor, interleaving file-2-only sites in
+     ascending position order exactly as
+     `variant_file_diff.cpp:60-282,635-806` does (both `.diff.sites`
+     and `.diff.sites_in_files`); `close()` flushes only the trailing
+     tails. Pinned by `TestDiffMergeWalk_Interleave` /
+     `TestDiffMergeWalk_File2OnlyTail`.
+  2. ~~**REF-mismatch shared sites**: upstream
      `variant_file_diff.cpp:787-790` SKIPS B-sites where REFs
-     differ (with a one-off `"Non-matching REF"` warning), treating
-     the site as if it weren't shared. The Go port emits the row
-     with `MATCHING_ALLELES=0` and accumulates discordance over
-     it. Tracked as a separate follow-up.
-  3. **REF=N/`.`/empty normalisation**: upstream replaces
+     differ (with a one-off `"Non-matching REF"` warning); the port
+     emitted the row and accumulated discordance over it.~~ **Closed.**
+     A POS-equal site whose REFs differ (after the normalisation in
+     (3)) now emits NO `.diff.sites` row, contributes nothing to the
+     per-individual / discordance-matrix accumulators, and prints the
+     one-off `"Non-matching REF. Skipping all such sites."` warning;
+     `.diff.sites_in_files` emits the upstream `O` (overlap) row.
+     Pinned by `TestDiffMergeWalk_RefMismatchSkip`.
+  3. ~~**REF=N/`.`/empty normalisation**: upstream replaces
      `REF1` with `REF2` (and vice versa) when one side is `N`,
-     `.`, or empty before the alleles-match check
-     (`variant_file_diff.cpp:780-783`). The Go port does a
-     verbatim string compare. Same follow-up as (2).
-  4. **`-nan` literal portability**: the port hardcodes
-     `"-nan"` for division-by-zero discordance to match
-     libstdc++'s default ostream output on glibc. A future
-     golden regenerated on musl / macOS libc / MSVC could
-     print `nan` or `NaN` instead. Re-running the goldens on
-     a non-glibc system would require updating the literal.
+     `.`, or empty before the alleles-match check; the port did a
+     verbatim string compare.~~ **Closed.** `refIsNull` +
+     the normalisation in `addVariant` reproduce
+     `variant_file_diff.cpp:199-202,780-783`, so an `N`/`.`/empty REF
+     is replaced by the other file's REF before the match test and
+     `MATCHING_ALLELES` reflects the ALT comparison. Pinned by
+     `TestDiffMergeWalk_RefNormalisation`.
+  4. **`-nan` literal portability** (not a defect — correct for the
+     CI/container target): the port hardcodes `"-nan"` for
+     division-by-zero discordance, which is exactly what libstdc++'s
+     default ostream prints on the glibc Linux oracle the
+     upstream-parity CI job runs against (x86-64 `0/double(0)`
+     produces a sign-bit-set NaN). A golden regenerated on
+     musl / macOS libc / MSVC could print `nan` or `NaN`; that is a
+     golden-portability caveat, not a parity gap against the target.
+     Note: upstream vcftools does not build on this darwin/arm64 dev
+     host, so these merge-walk expectations are hand-traced from the
+     C++ source (`TestDiffMergeWalk_*`) with byte-exact-vs-upstream
+     deferred to the Linux CI/container; the five golden-backed
+     parity tests still cover the fully-overlapping cases.
+  5. **Deferred (exotic, non-real-data):** two upstream behaviours the
+     merge-walk rewrite intentionally does not yet reproduce, both
+     outside the row-ordering / REF-mismatch scope and effectively
+     absent from real concordance workloads:
+     (a) `.diff.sites_in_files` `O` (overlap) rows for indels at
+     *distinct* positions — upstream emits one `O` row consuming both
+     entries when `POS1 < POS2 < POS1+len(REF1)` (or the symmetric
+     case, `variant_file_diff.cpp:217-248`); the port instead emits
+     separate `1` and `2` rows. Reproducing it faithfully needs a
+     REF-length-aware overlap peek that only affects `.diff.sites_in_files`
+     (not `.diff.sites`), so it is deferred to avoid desyncing the
+     shared single-pass cursor.
+     (b) The hard-error on files whose chromosome sets cannot be
+     ordered against each other (`variant_file_diff.cpp:264-271,502`);
+     the port emits the unorderable file-2 chromosome in sorted order
+     at `close()` instead of aborting. Both are tracked here rather
+     than silently dropped.
 - ~~**`--freq` / `--counts` float formatting**: the `.frq` allele-frequency
   column printed `%.6f` (`0.500000`), but upstream's `output_frequency`
   (`variant_file_output.cpp:131`) writes each freq straight to a default
