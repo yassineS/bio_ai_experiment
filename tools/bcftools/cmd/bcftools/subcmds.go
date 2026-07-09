@@ -430,7 +430,7 @@ func runReheader(args []string) int {
 		showHelp      bool
 		showVer       bool
 	)
-	cliflag.StringVar(fs, &headerFile, "H", "header", "", "Replacement header file")
+	cliflag.StringVar(fs, &headerFile, "h", "header", "", "Replacement header file")
 	cliflag.StringVar(fs, &samplesFile, "s", "samples", "", "Sample rename file")
 	cliflag.StringVar(fs, &faiFile, "f", "fai", "", "FAI for ##contig rebuild")
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
