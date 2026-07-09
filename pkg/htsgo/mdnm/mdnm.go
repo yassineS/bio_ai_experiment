@@ -42,8 +42,22 @@ import (
 // the reference to fully cover the alignment should ensure ref spans
 // [rec.Pos, rec.Pos+referenceLength) before calling.
 func Compute(rec *sam.Record, ref []byte, refOffset int) (md string, nm int) {
+	md, nm, _ = ComputeInto(rec, ref, refOffset, nil)
+	return md, nm
+}
+
+// ComputeInto is Compute with a caller-supplied scratch buffer for the MD
+// byte accumulation. It behaves exactly like Compute — the returned md is a
+// fresh string copied out of the buffer — but lets a hot caller (the CRAM
+// decoder's per-slice MD/NM regeneration) reuse one buffer across thousands of
+// records instead of allocating a new one per record. scratch may be nil (a
+// buffer is then allocated); it is truncated to zero length before use, so its
+// prior contents are irrelevant, and its backing array is not retained by the
+// md result. The (possibly grown) buffer is returned as buf so the caller can
+// feed it back on the next call and keep the larger capacity.
+func ComputeInto(rec *sam.Record, ref []byte, refOffset int, scratch []byte) (md string, nm int, buf []byte) {
 	var (
-		mdBuf   []byte
+		mdBuf   = scratch[:0]
 		matched int
 		qpos    int
 		rpos    = int(rec.Pos) - 1 - refOffset // index into ref of the alignment start.
@@ -82,7 +96,7 @@ func Compute(rec *sam.Record, ref []byte, refOffset int) (md string, nm int) {
 			}
 			if truncated {
 				flushRun()
-				return string(mdBuf), nm
+				return string(mdBuf), nm, mdBuf
 			}
 			rpos += oplen
 			qpos += oplen
@@ -104,7 +118,7 @@ func Compute(rec *sam.Record, ref []byte, refOffset int) (md string, nm int) {
 				// reference; upstream breaks out of the CIGAR loop, and the
 				// trailing flush still appends the "0" terminator.
 				flushRun()
-				return string(mdBuf), nm
+				return string(mdBuf), nm, mdBuf
 			}
 		case sam.CigarInsertion:
 			nm += oplen
@@ -118,7 +132,7 @@ func Compute(rec *sam.Record, ref []byte, refOffset int) (md string, nm int) {
 		}
 	}
 	flushRun()
-	return string(mdBuf), nm
+	return string(mdBuf), nm, mdBuf
 }
 
 // upperByte folds an ASCII byte to uppercase. Non-letters pass through.

@@ -19,9 +19,15 @@ import (
 // coordinate-sorted BAM (where coordinates means (refID, 0-based pos)).
 func BuildBAI(br *sam.BAMReader, numRefs int) (*BAIIndex, error) {
 	bld := NewBAIBuilder(numRefs)
+	// The BAI build only needs refID (via RName), pos, flag and CIGAR — exactly
+	// the fields ReadDepthInto decodes. Using it here skips the read-name, SEQ,
+	// QUAL and aux parsing (the dominant per-record decode cost) and reuses the
+	// record's backing buffers across the whole stream, so the index build is
+	// allocation-free per record. The emitted BAI is byte-identical.
+	var rec sam.Record
 	for {
 		vBeg := br.VirtualOffset()
-		rec, err := br.Read()
+		err := br.ReadDepthInto(&rec, false)
 		if err == io.EOF {
 			break
 		}
