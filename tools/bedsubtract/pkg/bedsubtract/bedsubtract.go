@@ -108,11 +108,17 @@ func subtractOne(a *row, bs []*row, opts Options) (segs []*row, drop bool) {
 	// Collect eligible B intervals (chromosome already matches).
 	var eligible []*row
 	aLen := a.length()
-	for _, b := range bs {
+	// bs is sorted by start (see Run), so no interval at or beyond the first
+	// index whose start >= a.end can overlap a. Bound the scan there instead of
+	// walking the whole per-chromosome list — byte-neutral (every skipped tail
+	// element would fail the `b.start >= a.end` test below anyway) but turns the
+	// per-A cost from O(len(bs)) into O(log len(bs) + hits).
+	hi := sort.Search(len(bs), func(i int) bool { return bs[i].start >= a.end })
+	for _, b := range bs[:hi] {
 		if !strandMatch(a, b, opts) {
 			continue
 		}
-		if b.end <= a.start || b.start >= a.end {
+		if b.end <= a.start {
 			continue
 		}
 		// Compute overlap.
