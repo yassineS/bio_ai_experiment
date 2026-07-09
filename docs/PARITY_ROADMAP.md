@@ -5572,10 +5572,41 @@ SO-term precedence ordering.
   consequences (`103G>A+108T>A`), the `@pos` reference pointers, the
   `*`-upstream-stop prefix, and the true frameshift / inframe /
   elongation / truncation / start_retained / stop_retained calls from
-  the translated `dlen`. The GFF3 CDS reading-frame phase is now
-  trimmed off the 5' CDS exon at index-build time (mirroring `gff.c`),
-  so the spliced CDS is frame-aligned for both the engine and the
-  per-record classifier. *Passes byte-for-byte:* `csq.1.out`,
+  the translated `dlen`. The GFF3 CDS reading-frame **phase-for-frame**
+  handling is byte-exact with upstream: the leading phase is trimmed off
+  the 5' CDS exon at index-build time (mirroring `gff.c`
+  `tscript_init_cds`), so the spliced CDS is frame-aligned for both the
+  engine and the per-record classifier — verified with **0 phase diffs**
+  on the real GENCODE chr20 GFF3. Two upstream robustness behaviours in
+  `tscript_init_cds` are now also matched:
+  - **Per-exon phase-consistency validation.** When a CDS exon's stored
+    phase disagrees with the frame implied by the cumulative CDS length
+    (`phase != len%3`), the default (no `--force`) hard-errors with the
+    byte-exact `Error: GFF3 assumption failed for transcript … CDS=…:
+    phase!=len%3 …` message; `--force` downgrades this to the byte-exact
+    `Warning: The GFF has inconsistent phase column …, skipping` and
+    drops the transcript's CDS so overlapping variants degrade to an
+    intron consequence — matching upstream. `-v/--verbose` only gates
+    the warning text; it does **not** downgrade the error (only `--force`
+    does). See `csq_phase_test.go`.
+  - **Multi-exon 5' phase walk-back.** A reverse-strand 5' incomplete
+    CDS whose leading phase exceeds the 5' exon length is now trimmed
+    back across **multiple** exons (upstream's `STRAND_REV` `while` loop),
+    not just the single 5' exon. The final trim subtracts the residual
+    exon's own GFF phase (gff.c:780), matching upstream on the crafted
+    reverse-strand walk-back fixtures tested (`csq_phase_test.go` includes
+    a non-masking case where the residual exon's phase differs from the
+    loop residual). GENCODE chr20 never triggers
+    it (no phase-consistent transcript needs the walk-back), so real
+    chr20 output is unchanged. A minor stderr-only residual remains: the
+    verbose `Note: truncated transcript … with incomplete CDS` line is
+    not emitted (it does not affect VCF output).
+
+  The remaining real-chr20 residuals vs upstream are the #473
+  consequence-ordering ties (equal-span TEC / splice consequences whose
+  order depends on htslib's regidx pointer-address / khash order, which
+  we approximate with a deterministic transcript-ID tie-break) — not
+  phase differences. *Passes byte-for-byte:* `csq.1.out`,
   `csq.oob-codon.out`, `csq.splice.issue-2543.1.out` — see
   `csq_golden_test.go::TestCSQGoldenINFO`.
 - **Slice 4 — GFF/output tail. DONE.** The

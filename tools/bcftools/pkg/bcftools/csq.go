@@ -38,6 +38,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 
@@ -162,7 +163,8 @@ func CSQFile(vcfPath string, w io.Writer, opts CSQOptions) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	idx, err := loadCSQIndexUnified(opts.FastaRef, opts.GFFAnnot, prefixVCF, prefixGFF, prefixFAI)
+	idx, err := loadCSQIndexUnified(opts.FastaRef, opts.GFFAnnot, prefixVCF, prefixGFF, prefixFAI,
+		csqPhaseCheck{Force: opts.Force, Verbosity: opts.Verbosity})
 	if err != nil {
 		return 0, err
 	}
@@ -561,15 +563,32 @@ func unifyChrName(chr, srcPfx, dstPfx string) string {
 	return chr
 }
 
+// csqPhaseCheck carries the --force / --verbosity settings that govern
+// the per-CDS reading-frame phase-consistency check performed while
+// finalising each transcript (mirroring upstream gff.c
+// tscript_init_cds). Force turns the hard "inconsistent phase" error
+// into a warn-and-skip; Verbosity gates whether the warning prints.
+type csqPhaseCheck struct {
+	Force     bool
+	Verbosity int
+}
+
+// defaultCSQPhaseCheck matches upstream's csq defaults (force off,
+// verbosity 1) so the phase-consistency check errors out on a bad GFF
+// unless the caller opts into --force. Test helpers that don't care
+// about phase validation use this via loadCSQIndex.
+func defaultCSQPhaseCheck() csqPhaseCheck { return csqPhaseCheck{Force: false, Verbosity: 1} }
+
 // loadCSQIndex reads the FASTA + GFF and constructs the cross-reference.
 func loadCSQIndex(fastaPath, gffPath string) (*CSQIndex, error) {
-	return loadCSQIndexUnified(fastaPath, gffPath, "", "", "")
+	return loadCSQIndexUnified(fastaPath, gffPath, "", "", "", defaultCSQPhaseCheck())
 }
 
 // loadCSQIndexUnified is loadCSQIndex with --unify-chr-names prefixes.
 // All GFF / FASTA contig keys are rewritten into VCF-prefix form so
-// the engine's per-record lookups can use rec.Chrom directly.
-func loadCSQIndexUnified(fastaPath, gffPath, prefixVCF, prefixGFF, prefixFAI string) (*CSQIndex, error) {
+// the engine's per-record lookups can use rec.Chrom directly. pc carries
+// the --force / --verbosity settings for the phase-consistency check.
+func loadCSQIndexUnified(fastaPath, gffPath, prefixVCF, prefixGFF, prefixFAI string, pc csqPhaseCheck) (*CSQIndex, error) {
 	idx := &CSQIndex{
 		Refs:        make(map[string][]byte),
 		Transcripts: make(map[string]*CSQTranscript),
@@ -734,9 +753,44 @@ func loadCSQIndexUnified(fastaPath, gffPath, prefixVCF, prefixGFF, prefixFAI str
 
 	// Finalise each transcript: sort exons, derive missing UTRs and
 	// transcript span, set Coding / Trim flags, then index by contig.
-	for _, t := range idx.Transcripts {
+	//
+	// Iterate in a deterministic transcript-ID order. Upstream walks the
+	// khash id2tr in unspecified order, but the phase-consistency check
+	// below can hard-error naming a specific transcript, so a stable order
+	// makes our error message reproducible run-to-run.
+	tids := make([]string, 0, len(idx.Transcripts))
+	for tid := range idx.Transcripts {
+		tids = append(tids, tid)
+	}
+	sort.Strings(tids)
+	// wrongPhaseWarned mirrors gff->warned.wrong_phase: the warn-and-skip
+	// message prints once at verbosity 1 and every time at verbosity > 1.
+	wrongPhaseWarned := 0
+	for _, tid := range tids {
+		t := idx.Transcripts[tid]
 		sort.Slice(t.CDSExons, func(i, j int) bool { return t.CDSExons[i].Start < t.CDSExons[j].Start })
 		sort.Slice(t.Exons, func(i, j int) bool { return t.Exons[i].Start < t.Exons[j].Start })
+		// Phase-consistency check (upstream gff.c tscript_init_cds): verify
+		// that every CDS exon's GFF3 phase agrees with the reading frame
+		// implied by the cumulative CDS length. Without --force a mismatch
+		// is a hard error; with --force the transcript is skipped (its CDS
+		// exons dropped so it degrades to an intron container).
+		if bad, badPos, phase, plen := transcriptPhaseInconsistency(t); bad {
+			if !pc.Force {
+				return nil, fmt.Errorf("Error: GFF3 assumption failed for transcript %s, CDS=%d: phase!=len%%3 (phase=%d, len=%d). Use the --force option to proceed anyway (at your own risk).", t.ID, badPos, phase, plen)
+			}
+			if pc.Verbosity > 0 {
+				if wrongPhaseWarned == 0 || pc.Verbosity > 1 {
+					fmt.Fprintf(os.Stderr, "Warning: The GFF has inconsistent phase column in transcript %s, skipping. CDS pos=%d: phase!=len%%3 (phase=%d, len=%d)\n", t.ID, badPos, phase, plen)
+				}
+				wrongPhaseWarned++
+			}
+			// Drop the CDS so the transcript degrades to a bare intron
+			// container (matching upstream, which keeps it in idx_tscript
+			// but skips CDS indexing). Keep it in ByChrom so region
+			// lookups still classify overlapping variants as intron.
+			t.CDSExons = nil
+		}
 		finalizeTranscript(t, idx.Refs[t.Chrom])
 		sort.Slice(t.UTRs, func(i, j int) bool { return t.UTRs[i].Start < t.UTRs[j].Start })
 		idx.ByChrom[t.Chrom] = append(idx.ByChrom[t.Chrom], t)
@@ -1101,6 +1155,99 @@ func classifyBiotype(biotype string) (canonical string, coding bool) {
 	return biotype, false
 }
 
+// transcriptPhaseInconsistency replicates upstream gff.c tscript_init_cds's
+// per-CDS reading-frame sanity check. It first applies the same 5' phase
+// trim upstream does (single-exon for forward strand; the multi-exon
+// walk-back for reverse strand — see finalizeTranscript), then walks the
+// CDS exons in transcript order verifying that each exon's GFF3 phase
+// agrees with the frame implied by the cumulative CDS length. On the first
+// mismatch it returns bad=true with the offending CDS's 1-based genomic
+// start (badPos), the computed phase (3-phase, or 0), and the cumulative
+// length so far (plen) — the exact values upstream prints. CDS exons whose
+// phase is unknown (the parser records -1 / out-of-range) are skipped, as
+// upstream skips CDS_PHASE_UNKN. The transcript's stored exons are not
+// mutated; the check operates on local copies.
+func transcriptPhaseInconsistency(t *CSQTranscript) (bad bool, badPos, phase, plen int) {
+	n := len(t.CDSExons)
+	if n == 0 {
+		return false, 0, 0, 0
+	}
+	// Local (beg, len, phase) copies in genomic order (CDSExons is sorted
+	// by Start ascending, so index 0 is the lowest coordinate).
+	type cds struct {
+		beg, ln, ph int
+	}
+	cs := make([]cds, n)
+	for i, e := range t.CDSExons {
+		ph := e.Phase
+		if ph < 0 || ph > 2 {
+			ph = csqPhaseUnknown
+		}
+		cs[i] = cds{beg: e.Start, ln: e.End - e.Start + 1, ph: ph}
+	}
+
+	if t.Strand == gff.StrandReverse {
+		// 5' trim + multi-exon walk-back (upstream STRAND_REV branch).
+		if cs[n-1].ph != csqPhaseUnknown {
+			i := n - 1
+			ph := cs[i].ph
+			for i >= 0 && ph > cs[i].ln {
+				ph -= cs[i].ln
+				cs[i].ph = 0
+				cs[i].ln = 0
+				i--
+			}
+			cs[i].ln -= cs[i].ph
+			cs[i].ph = 0
+		}
+		// Sanity check phase, walking 3'->5' in genomic terms (highest
+		// coordinate first is the 5' end on the reverse strand).
+		length := 0
+		for i := n - 1; i >= 0; i-- {
+			if cs[i].ph == csqPhaseUnknown {
+				length += cs[i].ln
+				continue
+			}
+			p := 0
+			if cs[i].ph != 0 {
+				p = 3 - cs[i].ph
+			}
+			if p != length%3 {
+				return true, cs[i].beg, p, length
+			}
+			length += cs[i].ln
+		}
+		return false, 0, 0, 0
+	}
+
+	// Forward strand (upstream STRAND_FWD branch): single 5' exon trim.
+	if cs[0].ph != csqPhaseUnknown {
+		cs[0].beg += cs[0].ph
+		cs[0].ln -= cs[0].ph
+		cs[0].ph = 0
+	}
+	length := 0
+	for i := 0; i < n; i++ {
+		if cs[i].ph == csqPhaseUnknown {
+			length += cs[i].ln
+			continue
+		}
+		p := 0
+		if cs[i].ph != 0 {
+			p = 3 - cs[i].ph
+		}
+		if p != length%3 {
+			return true, cs[i].beg, p, length
+		}
+		length += cs[i].ln
+	}
+	return false, 0, 0, 0
+}
+
+// csqPhaseUnknown marks a CDS exon whose GFF3 phase column was '.'; it
+// mirrors upstream's CDS_PHASE_UNKN sentinel.
+const csqPhaseUnknown = 3
+
 // finalizeTranscript fills in derived fields after the GFF passes:
 // Coding, the transcript span, the incomplete-CDS trim flags, and any
 // UTR regions not explicitly present in the GFF (derived as the parts
@@ -1128,13 +1275,45 @@ func finalizeTranscript(t *CSQTranscript, ref []byte) {
 	// the CDS as 5' incomplete (TRIM_5PRIME).
 	if hasCDS {
 		if t.Strand == gff.StrandReverse {
+			// The 5' end on the reverse strand is the highest-coordinate CDS
+			// exon (last after the Start-ascending sort). Upstream gff.c
+			// checks that the phase is not bigger than that exon's length and,
+			// when it is (a 5' incomplete CDS whose leading phase spills past
+			// the first exon), walks the trim back across MULTIPLE exons,
+			// fully consuming each until the residual phase fits. This is the
+			// reverse-strand incomplete-CDS case documented in upstream's
+			// test/csq/ENST00000520868; GENCODE chr20 never triggers it.
 			last := len(t.CDSExons) - 1
 			ph := t.CDSExons[last].Phase
 			if ph >= 1 && ph <= 2 {
-				t.CDSExons[last].End -= ph
 				t.Trim5 = true
 			}
-			t.CDSExons[last].Phase = 0
+			if ph < 0 || ph > 2 {
+				ph = 0
+			}
+			i := last
+			for i >= 0 && ph > t.CDSExons[i].End-t.CDSExons[i].Start+1 {
+				ph -= t.CDSExons[i].End - t.CDSExons[i].Start + 1
+				// Fully consume this exon (len -> 0) and drop out of the CDS.
+				t.CDSExons[i].End = t.CDSExons[i].Start - 1
+				t.CDSExons[i].Phase = 0
+				i--
+			}
+			if i >= 0 {
+				// Trim the residual exon by its OWN GFF phase (gff.c:780
+				// `cds[i]->len -= cds[i]->phase`), matching the sibling check
+				// in transcriptPhaseInconsistency, NOT the loop's residual ph.
+				t.CDSExons[i].End -= t.CDSExons[i].Phase
+				t.CDSExons[i].Phase = 0
+			}
+			// Drop any exons that the walk-back fully consumed (len 0).
+			trimmed := t.CDSExons[:0]
+			for _, e := range t.CDSExons {
+				if e.End >= e.Start {
+					trimmed = append(trimmed, e)
+				}
+			}
+			t.CDSExons = trimmed
 		} else {
 			ph := t.CDSExons[0].Phase
 			if ph >= 1 && ph <= 2 {

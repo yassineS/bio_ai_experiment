@@ -277,7 +277,9 @@ CSQ-specific options:
   -n, --ncsq INT                 Maximum per-haplotype consequences per site [16].
   -p, --phase a|m|r|R|s          Accepted; v1 SNP classifier ignores phasing.
       --dump-gff FILE            Dump the parsed GFF (for debugging).
-      --force                    Accepted; v1 has no sanity checks to skip.
+      --force                    Skip GFF sanity checks: warn and drop a
+                                 transcript whose CDS phase is inconsistent
+                                 instead of erroring out.
       --unify-chr-names 0|LIST   Three comma-separated VCF,GFF,FAI prefixes,
                                  each '-' for none. "0" disables.
 
@@ -298,7 +300,8 @@ General options:
   -T, --targets-file FILE        BED-like targets file.
       --targets-overlap 0|1|2    Accepted; v1 ignores.
   -@, --threads INT              Worker threads for parallel BGZF compression of -O z/-O b.
-  -v, --verbose / --verbosity INT  Accepted; v1 ignores.
+  -v, --verbose / --verbosity INT  Verbosity level (default 1). Gates the
+                                 GFF phase-inconsistency warning under --force.
   -W, --write-index[=FMT]        Accepted; v1 never auto-indexes outputs.
   -q, --quiet                    Accepted; deprecated upstream.
 
@@ -443,11 +446,9 @@ func runCSQ(args []string) int {
 	_ = samplesFile
 	_ = regionsOverlap
 	_ = targetsOverlap
-	_ = verbosity
 	_ = writeIndex
 	_ = quiet
 	_ = noVersion
-	_ = force
 
 	rest := fs.Args()
 	if len(rest) == 0 {

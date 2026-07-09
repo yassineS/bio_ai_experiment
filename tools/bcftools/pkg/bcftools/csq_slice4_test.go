@@ -327,7 +327,7 @@ func TestCSQSlice4UnifyChrNames(t *testing.T) {
 // paths and --unify-chr-names prefixes, returning the VCF text output.
 func runGoCSQ(t *testing.T, fa, gff, prefixVCF, prefixGFF, prefixFAI string) string {
 	t.Helper()
-	idx, err := loadCSQIndexUnified(fa, gff, prefixVCF, prefixGFF, prefixFAI)
+	idx, err := loadCSQIndexUnified(fa, gff, prefixVCF, prefixGFF, prefixFAI, defaultCSQPhaseCheck())
 	if err != nil {
 		t.Fatalf("loadCSQIndexUnified: %v", err)
 	}
