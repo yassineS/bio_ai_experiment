@@ -1221,7 +1221,22 @@ subcommand (verified against `reference_code/seqtk/seqtk.c` v1.5: the only
 Option-tail gaps (per existing subcommand):
 
 - `comp` — missing `-r REGION` to restrict to a BED region.
-- `seq` — missing `-A` (force ASCII output), `-C` (mask sequence with N), `-M FILE` (mask regions), the `-T int` trim option.
+- `seq` — full upstream flag surface implemented (byte-for-byte parity with
+  `reference_code/seqtk` v1.5). The full `stk_seq` option tail is ported:
+  `-q`, `-X`, `-n`, `-l`, `-Q`, `-M`, `-L`, `-c`, `-r`, `-A`/`-a`, `-C`, `-N`,
+  `-V`, `-U` plus the eight flags closed this iteration — `-1`/`-2`
+  (output odd/even records, using an `n_seqs` counter incremented for every
+  input record before the `-L`/`-f` drops), `-s`/`-f` (seeded fractional
+  sampler reusing the krand MT19937-64 port so kept-sets match upstream
+  exactly), `-S` (squeeze whitespace out of the sequence and sync quality
+  positions — including upstream's no-wrap `fputs`-to-null over-read quirk),
+  `-x` (map lowercase bases to the `-n` mask char, in the `else` of `-U`),
+  `-F` (fake/fill quality with a CHAR, suppressed by `-A`), and `-R` (emit
+  both a `name+` forward and a `name-` reverse-complement copy). Per-record
+  operation order is matched to `stk_seq` exactly. Verified against
+  `reference_code/seqtk` v1.5 on crafted FASTA/FASTQ and real GIAB chr20
+  reads; see `tools/seqtk/pkg/seqtk/seq_flags_test.go`. There is no `-T`
+  option upstream (the earlier note was a misreading).
 - `sample` — full upstream surface ported byte-for-byte (`-s SEED`, `-2`
   two-pass, fraction and fixed-number modes; see the option-tail closure
   below). The byte-parity test is no longer skipped.
