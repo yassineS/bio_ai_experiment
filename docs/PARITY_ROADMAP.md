@@ -4539,8 +4539,10 @@ implemented to the PLINK1 spec since upstream comments those options out),
 and csq slice 4 (FORMAT/TBCSQ, `--unify-chr-names`, `--dump-gff`,
 `-O b|u|z` non-text output **and `-O t` streaming-text output**) all
 landed and are live-oracle validated (see the per-subcommand sections
-below). The only bcftools item still open is `gtcheck`'s `-c/--cluster`
-dendrogram + filter expressions. (`csq -l/--local-csq` is now
+below). `gtcheck`'s `-c/--cluster` dendrogram + `-i/-e` filter
+expressions are now implemented and live-oracle validated (see the
+"`gtcheck` is feature-complete" note above and `PROJECT_STATUS.md`), so
+no bcftools subcommand remains structurally unported. (`csq -l/--local-csq` is now
 implemented; `csq -O t` is now implemented, matching upstream
 `text_print_vcsq` byte-for-byte — the residual `csq -s -` /
 sample-subsetting gap is unaffected.)

@@ -1,6 +1,8 @@
 # Project status
 
-**Last refreshed:** 2026-06-14 (post the parity-completion wave: a shared
+**Last refreshed:** 2026-07-09 (post the July threading + perf/RSS wave and
+the #479–#484 parity-gap batch — see the "Threading + perf/RSS wave" note
+below). Prior full refresh 2026-06-14 (the parity-completion wave: a shared
 `pkg/htsgo/alnbed` BAM/SAM→BED12 layer brought **BAM/SAM input** to
 `bedgenomecov` (`-ibam`, plus `-pc`/`-fs`), `bedjaccard`, `bedcoverage`,
 `bedspacing`, and `bedgroupby`; **`--split`** (BED12 block-aware) to
@@ -75,6 +77,22 @@ rounding; `consensus --mode simple` is **byte-exact** (md5-locked by
 `TestConsensus_SimpleMode_Deterministic`). The float-order audit (matched to
 `bam_consensus.c`, fixing a latent mixed-mode het-div bug) is structurally
 faithful but provably inert on these diffs.
+
+Threading + perf/RSS wave (2026-07, PRs #469–#484): the `-@/--threads`
+sweep landed across the htslib tools (PR #469 — `tabix` parallel BGZF
+build/reheader, `bcftools gtcheck`/`roh`/`query` thread honouring), followed
+by the July perf/RSS batch (#470–#478, merged): `samtools reheader` 57×,
+`mosdepth --by` region streaming, `samtools consensus` RSS, `bcftools csq`
+biotype-coding, index/CRAM and `gtcheck`/`sort` RSS cuts, `vcftools stats`
+RSS, `skewer -t`, and `fastp` gzip-output speed (klauspost backend). A
+follow-on parity-gap batch (#479–#484) closed: `bcftools norm -m+` joined-ID
+concatenation, `bcftools merge` INFO-combine rules, `bcftools csq` GFF-phase
+handling, `seqtk seq` residual flags (`-1/-2/-s/-f/-S/-x/-F/-R`), the
+`bedtools` `split/cluster/jaccard` tie-order/jaccard edges, and the
+`vcftools --diff` merge-walk row ordering + REF-mismatch/normalisation
+semantics. The remaining open items are performance/RSS residuals
+(`samtools sort`/CRAM, a few `bedtools` wall gaps, single-thread BGZF-inflate
+throughput) tracked in `docs/PARITY_ROADMAP.md`, not feature-parity gaps.
 
 Previous wave (2026-06-11, ~70 PRs): `call` modes, `convert` GEN/HAP/TSV,
 `annotate`, `consensus` chain, `mendelian2`, `csq` slices 1–4, mpileup
