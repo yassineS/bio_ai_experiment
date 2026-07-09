@@ -58,6 +58,43 @@ import (
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
 
+// gtSample is the per-sample scoring projection of one site: the diploid GT
+// dosage bitmask and its allele counts, and the parsed diploid PL. Storing these
+// pre-parsed values instead of the raw FORMAT map is the gtcheck RSS win — the
+// scoring model is a pure function of exactly these fields (see gtSite).
+type gtSample struct {
+	dsgGT    uint8 // gtToDsg(GT), 0 when GT absent/non-diploid
+	hasGT    bool  // the sample carried a FORMAT/GT value
+	gtAC0    int   // REF-allele count contributed by this sample's GT (0, 1 or 2)
+	gtAC1    int   // ALT-allele count contributed by this sample's GT
+	pl       [3]int
+	hasPL    bool // the sample carried a parseable diploid FORMAT/PL value
+	hasPLkey bool // the sample carried a FORMAT/PL entry (parseable or not)
+}
+
+// gtSite is the compact per-site projection gtcheck scores on, replacing the
+// full *vcf.Variant. The #DCv2 report is a pure function of a site's CHROM/POS,
+// REF/ALT (multiallelic + monoallelic classification and the ALT-present check
+// in the AF), INFO/AC,AN (site allele frequency) and per-sample GT/PL, so
+// projecting to exactly those fields — and dropping each record's INFO and
+// per-sample maps — leaves the output byte-identical while slashing the resident
+// set of the buffered site list.
+type gtSite struct {
+	chrom string
+	pos   int
+	ref   string
+	alt   []string
+
+	acInfo   int  // INFO/AC first value (ALT count) when acInfoOK
+	anInfo   int  // INFO/AN when acInfoOK
+	acInfoOK bool // both INFO/AC and INFO/AN parsed
+
+	samples []gtSample // per-sample projection, in header-sample order
+
+	anyGT    bool // at least one sample carried a FORMAT/GT entry (record-level tag presence)
+	anyPLkey bool // at least one sample carried a FORMAT/PL entry (record-level tag presence)
+}
+
 // GtcheckOptions controls the behaviour of Gtcheck / GtcheckFile.
 type GtcheckOptions struct {
 	// GenotypesFile is the -g panel of "truth" genotypes. When empty,
@@ -215,6 +252,157 @@ func GtcheckFile(queryPath string, out io.Writer, opts GtcheckOptions) (GtcheckR
 	return Gtcheck(in, out, opts)
 }
 
+// projectVariant builds the compact gtSite scoring projection from a full
+// *vcf.Variant, decoding only the fields the #DCv2 report depends on. It is the
+// single place the per-record INFO and per-sample FORMAT maps are consulted; the
+// returned gtSite carries no references back into v, so v may be reused
+// (ReadInto) or dropped straight after.
+func projectVariant(v *vcf.Variant) gtSite {
+	// v may be a ReadInto scratch record whose string fields alias the reader's
+	// reused line buffer, so every string kept in the projection must own its
+	// bytes (a fresh copy) or the next read would mutate it. cloneStr / cloneStrs
+	// force that copy.
+	s := gtSite{
+		chrom: cloneStr(v.Chrom),
+		pos:   v.Pos,
+		ref:   cloneStr(v.Ref),
+		alt:   cloneStrs(v.Alt),
+	}
+	if ac0, ac1, ok := acFromInfo(v); ok {
+		// acFromInfo returns (ref, alt); store AC=alt and AN=ref+alt so the
+		// projection reproduces siteAF's INFO/AC,AN arithmetic exactly.
+		s.acInfoOK = true
+		s.acInfo = ac1
+		s.anInfo = ac0 + ac1
+	}
+	if n := len(v.Samples); n > 0 {
+		s.samples = make([]gtSample, n)
+		for i := range v.Samples {
+			data := v.Samples[i].Data
+			gtStr, hasGT := data["GT"]
+			plStr, hasPLraw := data["PL"]
+			gs := &s.samples[i]
+			if hasGT {
+				gs.hasGT = true
+				s.anyGT = true
+				gs.dsgGT = gtToDsg(gtStr)
+				gs.gtAC0, gs.gtAC1 = gtAlleleCounts(gtStr)
+			}
+			if hasPLraw {
+				gs.hasPLkey = true
+				s.anyPLkey = true
+				if pl, ok := parsePL(plStr); ok {
+					gs.hasPL = true
+					gs.pl = pl
+				}
+			}
+		}
+	}
+	return s
+}
+
+// cloneStr returns a copy of s that owns its bytes, defeating any aliasing of a
+// ReadInto reader's reused line buffer.
+func cloneStr(s string) string {
+	return strings.Clone(s)
+}
+
+// cloneStrs deep-copies a slice of aliased strings so the projection owns every
+// element's bytes.
+func cloneStrs(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, len(in))
+	for i, s := range in {
+		out[i] = strings.Clone(s)
+	}
+	return out
+}
+
+// gtAlleleCounts counts REF (ac0) and ALT (ac1) alleles in one diploid GT
+// string, mirroring acFromGT's per-sample tally (only "0" and "1" are counted).
+func gtAlleleCounts(gt string) (ac0, ac1 int) {
+	if gt == "" {
+		return 0, 0
+	}
+	gt = strings.ReplaceAll(gt, "|", "/")
+	for _, a := range strings.Split(gt, "/") {
+		switch a {
+		case "0":
+			ac0++
+		case "1":
+			ac1++
+		}
+	}
+	return ac0, ac1
+}
+
+// readGtSites reads every record from in and returns the header plus the compact
+// gtSite projection of each record, applying the optional include/exclude filter
+// while the full *vcf.Variant is still live (so a filtered site is dropped before
+// it is projected, exactly as applyGtcheckFilter did on the full list). It
+// returns the sites kept and the CHROM\x00POS keys of every site dropped by the
+// filter (so paired mode can count distinct dropped positions across both
+// readers, matching upstream's per-position skip tally). VCF input is read
+// allocation-free via ReadInto; BCF input falls back to the full-variant reader
+// and is then projected.
+func readGtSites(in io.Reader, inc, exc *Filter) (*vcf.Header, []gtSite, []string, error) {
+	br := bufio.NewReader(in)
+	head, err := br.Peek(5)
+	if err != nil && err != io.EOF {
+		return nil, nil, nil, err
+	}
+	if len(head) >= 5 && head[0] == 'B' && head[1] == 'C' && head[2] == 'F' {
+		hdr, vars, berr := readAllBCF(br)
+		if berr != nil {
+			return nil, nil, nil, berr
+		}
+		sites := make([]gtSite, 0, len(vars))
+		var dropped []string
+		for _, v := range vars {
+			if filterKeeps(v, inc, exc) {
+				sites = append(sites, projectVariant(v))
+			} else {
+				dropped = append(dropped, v.Chrom+"\x00"+strconv.Itoa(v.Pos))
+			}
+		}
+		return hdr, sites, dropped, nil
+	}
+
+	r := vcf.NewReader(br)
+	hdr, herr := r.ReadHeader()
+	if herr != nil {
+		return nil, nil, nil, herr
+	}
+	var sites []gtSite
+	var dropped []string
+	var scratch vcf.Variant
+	for {
+		if err := r.ReadInto(&scratch); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return hdr, sites, dropped, err
+		}
+		if filterKeeps(&scratch, inc, exc) {
+			sites = append(sites, projectVariant(&scratch))
+		} else {
+			dropped = append(dropped, scratch.Chrom+"\x00"+strconv.Itoa(scratch.Pos))
+		}
+	}
+	return hdr, sites, dropped, nil
+}
+
+// filterKeeps applies the gtcheck include/exclude gate to a full variant,
+// mirroring applyGtcheckFilter's kept condition.
+func filterKeeps(v *vcf.Variant, inc, exc *Filter) bool {
+	if inc == nil && exc == nil {
+		return true
+	}
+	return (inc == nil || inc.Eval(v)) && (exc == nil || !exc.Eval(v))
+}
+
 // openVariantReaderThreaded opens a VCF/BCF/gzipped-VCF input with block-parallel
 // BGZF inflate under -@ >= 2 (falling back to the single-threaded opener for
 // plain/uncompressed inputs). readAllVariants dispatches on the decompressed
@@ -226,10 +414,6 @@ func openVariantReaderThreaded(path string, threads int) (io.ReadCloser, error) 
 // Gtcheck is the cross-check entry point: every query sample vs every
 // other query sample (lower triangle).
 func Gtcheck(in io.Reader, out io.Writer, opts GtcheckOptions) (GtcheckResult, error) {
-	hdr, vars, err := readAllVariants(in)
-	if err != nil {
-		return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: %w", err)
-	}
 	qInc, qExc, _, _, ferr := compileGtcheckFilters(opts)
 	if ferr != nil {
 		return GtcheckResult{}, ferr
@@ -237,42 +421,42 @@ func Gtcheck(in io.Reader, out io.Writer, opts GtcheckOptions) (GtcheckResult, e
 	// In cross-check mode there is only the query reader, so just the
 	// qry-scoped filter applies (a bare, unprefixed expression is qry-scoped
 	// here too). Each dropped site is one skipped position.
-	vars, dropped := applyGtcheckFilter(vars, qInc, qExc)
-	return runGtcheck(hdr, vars, hdr, vars, out, opts, true, uint32(len(dropped)))
+	hdr, sites, dropped, err := readGtSites(in, qInc, qExc)
+	if err != nil {
+		return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: %w", err)
+	}
+	return runGtcheck(hdr, sites, hdr, sites, out, opts, true, uint32(len(dropped)))
 }
 
 // GtcheckPaired is the -g panel entry point.
 func GtcheckPaired(qIn, gIn io.Reader, out io.Writer, opts GtcheckOptions) (GtcheckResult, error) {
-	hdrQ, varsQ, err := readAllVariants(qIn)
-	if err != nil {
-		return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: query: %w", err)
-	}
-	hdrG, varsG, err := readAllVariants(gIn)
-	if err != nil {
-		return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: panel: %w", err)
-	}
 	qInc, qExc, gInc, gExc, ferr := compileGtcheckFilters(opts)
 	if ferr != nil {
 		return GtcheckResult{}, ferr
 	}
-	var dropQ, dropG []*vcf.Variant
-	varsQ, dropQ = applyGtcheckFilter(varsQ, qInc, qExc)
-	varsG, dropG = applyGtcheckFilter(varsG, gInc, gExc)
+	hdrQ, sitesQ, dropQ, err := readGtSites(qIn, qInc, qExc)
+	if err != nil {
+		return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: query: %w", err)
+	}
+	hdrG, sitesG, dropG, err := readGtSites(gIn, gInc, gExc)
+	if err != nil {
+		return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: panel: %w", err)
+	}
 	// Upstream counts one skipped site per merged position at which either
 	// reader's record was filtered out (vcfgtcheck.c:1131-1133), so the skip
 	// count is the number of distinct CHROM:POS positions dropped from either
 	// file rather than the raw sum.
 	skipped := countDistinctPositions(dropQ, dropG)
-	return runGtcheck(hdrQ, varsQ, hdrG, varsG, out, opts, false, skipped)
+	return runGtcheck(hdrQ, sitesQ, hdrG, sitesG, out, opts, false, skipped)
 }
 
-// countDistinctPositions counts the distinct CHROM:POS positions across the
-// supplied variant slices.
-func countDistinctPositions(groups ...[]*vcf.Variant) uint32 {
+// countDistinctPositions counts the distinct CHROM\x00POS position keys across
+// the supplied dropped-key slices.
+func countDistinctPositions(groups ...[]string) uint32 {
 	seen := make(map[string]struct{})
 	for _, g := range groups {
-		for _, v := range g {
-			seen[v.Chrom+"\x00"+strconv.Itoa(v.Pos)] = struct{}{}
+		for _, k := range g {
+			seen[k] = struct{}{}
 		}
 	}
 	return uint32(len(seen))
@@ -326,24 +510,6 @@ func compileGtcheckFilters(opts GtcheckOptions) (qInc, qExc, gInc, gExc *Filter,
 		}
 	}
 	return qInc, qExc, gInc, gExc, nil
-}
-
-// applyGtcheckFilter splits vars into the variants that pass the include
-// filter (if any) and fail the exclude filter (if any) — kept — and those that
-// do not — dropped — mirroring upstream's per-site filter_test gate that skips
-// non-matching sites before scoring.
-func applyGtcheckFilter(vars []*vcf.Variant, inc, exc *Filter) (kept, dropped []*vcf.Variant) {
-	if inc == nil && exc == nil {
-		return vars, nil
-	}
-	for _, v := range vars {
-		if (inc == nil || inc.Eval(v)) && (exc == nil || !exc.Eval(v)) {
-			kept = append(kept, v)
-		} else {
-			dropped = append(dropped, v)
-		}
-	}
-	return kept, dropped
 }
 
 // tagMode is a per-sample-set tag selection: GT, PL, or auto.
@@ -440,8 +606,8 @@ func newState(opts GtcheckOptions) *gtcheckState {
 
 // runGtcheck is the shared scoring path.
 func runGtcheck(
-	hdrQ *vcf.Header, varsQ []*vcf.Variant,
-	hdrG *vcf.Header, varsG []*vcf.Variant,
+	hdrQ *vcf.Header, varsQ []gtSite,
+	hdrG *vcf.Header, varsG []gtSite,
 	out io.Writer, opts GtcheckOptions, crossCheck bool,
 	filterSkipped uint32,
 ) (GtcheckResult, error) {
@@ -569,11 +735,12 @@ func runGtcheck(
 	ds := newDistinctiveCollector(opts, len(pairs))
 
 	sites := 0
-	for _, qv := range varsQ {
-		if len(opts.Regions) > 0 && !regionMatches(qv, opts.Regions) {
+	for qi := range varsQ {
+		qv := &varsQ[qi]
+		if len(opts.Regions) > 0 && !siteRegionMatches(qv, opts.Regions) {
 			continue
 		}
-		if len(opts.Targets) > 0 && !regionMatches(qv, opts.Targets) {
+		if len(opts.Targets) > 0 && !siteRegionMatches(qv, opts.Targets) {
 			continue
 		}
 		gv := qv
@@ -668,7 +835,7 @@ func runGtcheck(
 			}
 			p.NumSites++
 		}
-		ds.pushSite(qv.Chrom, qv.Pos)
+		ds.pushSite(qv.chrom, qv.pos)
 
 		if opts.DryRun {
 			break
@@ -876,7 +1043,7 @@ func writeGtcheckClusters(out io.Writer, result GtcheckResult, opts GtcheckOptio
 // mode (from -u) is honoured (erroring if that tag is absent from every
 // record). The auto mode prefers PL for the query cohort and GT for the
 // panel cohort, falling back to the other tag.
-func resolveHeaderTag(mode tagMode, vars []*vcf.Variant, isQuery bool, label string) (bool, error) {
+func resolveHeaderTag(mode tagMode, vars []gtSite, isQuery bool, label string) (bool, error) {
 	hasGT := cohortHasTag(vars, "GT")
 	hasPL := cohortHasTag(vars, "PL")
 	switch mode {
@@ -913,41 +1080,41 @@ func resolveHeaderTag(mode tagMode, vars []*vcf.Variant, isQuery bool, label str
 // recordTag applies upstream's per-record set_data() fallback: prefer the
 // cohort-resolved tag, but flip to the other if this record lacks it.
 // Returns (useGT, ok); ok is false when neither tag is present.
-func recordTag(v *vcf.Variant, preferGT bool) (useGT bool, ok bool) {
+func recordTag(v *gtSite, preferGT bool) (useGT bool, ok bool) {
 	if preferGT {
-		if recordHasTag(v, "GT") {
+		if v.anyGT {
 			return true, true
 		}
-		if recordHasTag(v, "PL") {
+		if v.anyPLkey {
 			return false, true
 		}
 		return false, false
 	}
-	if recordHasTag(v, "PL") {
+	if v.anyPLkey {
 		return false, true
 	}
-	if recordHasTag(v, "GT") {
+	if v.anyGT {
 		return true, true
 	}
 	return false, false
 }
 
-func recordHasTag(v *vcf.Variant, tag string) bool {
-	for i := range v.Samples {
-		if _, ok := v.Samples[i].Data[tag]; ok {
-			return true
-		}
-	}
-	return false
-}
-
 // cohortHasTag reports whether any record carries the FORMAT tag. Upstream
-// checks the header; the htsgo VCF model does not retain a typed FORMAT
-// header set, so we probe the records (equivalent for well-formed input).
-func cohortHasTag(vars []*vcf.Variant, tag string) bool {
-	for _, v := range vars {
-		if recordHasTag(v, tag) {
-			return true
+// checks the header; the projected sites record per-record tag presence, so we
+// probe the projections (equivalent for well-formed input).
+func cohortHasTag(vars []gtSite, tag string) bool {
+	switch tag {
+	case "GT":
+		for i := range vars {
+			if vars[i].anyGT {
+				return true
+			}
+		}
+	case "PL":
+		for i := range vars {
+			if vars[i].anyPLkey {
+				return true
+			}
 		}
 	}
 	return false
@@ -955,22 +1122,22 @@ func cohortHasTag(vars []*vcf.Variant, tag string) bool {
 
 // sampleDsgProb returns the dosage bitmask and the three negative-log
 // probabilities (only meaningful when st.useErr) for a sample.
-func sampleDsgProb(v *vcf.Variant, idx int, useGT bool, st *gtcheckState) (uint8, [3]float64) {
+func sampleDsgProb(v *gtSite, idx int, useGT bool, st *gtcheckState) (uint8, [3]float64) {
 	var prob [3]float64
-	if v == nil || idx < 0 || idx >= len(v.Samples) {
+	if v == nil || idx < 0 || idx >= len(v.samples) {
 		return 0, prob
 	}
 	if useGT {
-		dsg := gtToDsg(v.Samples[idx].Data["GT"])
+		dsg := v.samples[idx].dsgGT
 		if dsg != 0 && st.useErr {
 			prob = st.dsg2prob[dsg]
 		}
 		return dsg, prob
 	}
-	pls, ok := parsePL(v.Samples[idx].Data["PL"])
-	if !ok {
+	if !v.samples[idx].hasPL {
 		return 0, prob
 	}
+	pls := v.samples[idx].pl
 	dsg := plToDsg(pls)
 	if dsg != 0 && st.useErr {
 		prob = plToProb(pls)
@@ -1095,15 +1262,15 @@ func computeHWEDsg(af float64) [8]float64 {
 // INFO/AC,AN and falling back to counting FORMAT/GT over all samples.
 // Mirrors bcf_calc_ac(BCF_UN_INFO|BCF_UN_FMT). A site with no observed
 // allele uses the upstream sentinel of 1e-6.
-func siteAF(v *vcf.Variant) float64 {
+func siteAF(v *gtSite) float64 {
 	if v == nil {
 		return 1e-6
 	}
-	ac0, ac1, ok := acFromInfo(v)
+	ac0, ac1, ok := acFromSiteInfo(v)
 	if !ok {
-		ac0, ac1 = acFromGT(v)
+		ac0, ac1 = acFromSiteGT(v)
 	}
-	if len(v.Alt) < 1 || v.Alt[0] == "." || v.Alt[0] == "" {
+	if len(v.alt) < 1 || v.alt[0] == "." || v.alt[0] == "" {
 		ac1 = 0
 	}
 	if ac0+ac1 == 0 {
@@ -1112,8 +1279,33 @@ func siteAF(v *vcf.Variant) float64 {
 	return float64(ac1) / float64(ac0+ac1)
 }
 
-// acFromInfo reads INFO/AC and INFO/AN. For a biallelic record AC is the
-// ALT count and AN-AC the REF count.
+// acFromSiteInfo returns the REF/ALT counts from a site's projected INFO/AC,AN
+// (AC=alt count, AN=total; ref = AN-AC clamped to 0), mirroring acFromInfo.
+func acFromSiteInfo(v *gtSite) (ac0, ac1 int, ok bool) {
+	if !v.acInfoOK {
+		return 0, 0, false
+	}
+	ac1 = v.acInfo
+	ac0 = v.anInfo - v.acInfo
+	if ac0 < 0 {
+		ac0 = 0
+	}
+	return ac0, ac1, true
+}
+
+// acFromSiteGT sums the per-sample REF/ALT allele counts precomputed at
+// projection time, mirroring acFromGT's tally across all samples.
+func acFromSiteGT(v *gtSite) (ac0, ac1 int) {
+	for i := range v.samples {
+		ac0 += v.samples[i].gtAC0
+		ac1 += v.samples[i].gtAC1
+	}
+	return ac0, ac1
+}
+
+// acFromInfo reads INFO/AC and INFO/AN from a full variant. For a biallelic
+// record AC is the ALT count and AN-AC the REF count. It is retained for the
+// projection step (projectVariant) which still holds a full *vcf.Variant.
 func acFromInfo(v *vcf.Variant) (ac0, ac1 int, ok bool) {
 	acStr, hasAC := v.Info["AC"]
 	anStr, hasAN := v.Info["AN"]
@@ -1139,27 +1331,6 @@ func acFromInfo(v *vcf.Variant) (ac0, ac1 int, ok bool) {
 	return ac0, ac1, true
 }
 
-// acFromGT counts REF (ac0) and ALT (ac1) alleles from FORMAT/GT across
-// all samples of the record.
-func acFromGT(v *vcf.Variant) (ac0, ac1 int) {
-	for i := range v.Samples {
-		gt := v.Samples[i].Data["GT"]
-		if gt == "" {
-			continue
-		}
-		gt = strings.ReplaceAll(gt, "|", "/")
-		for _, a := range strings.Split(gt, "/") {
-			switch a {
-			case "0":
-				ac0++
-			case "1":
-				ac1++
-			}
-		}
-	}
-	return ac0, ac1
-}
-
 // validateUseTag is retained for callers/tests that only want to confirm
 // a tag spec parses.
 func validateUseTag(tag string) error {
@@ -1172,14 +1343,14 @@ func validateUseTag(tag string) error {
 // (vcfgtcheck.c:1162; n_allele counts REF+ALTs, so >2 means >1 ALT).
 // Such sites are skipped and counted in sites-skipped-multiallelic
 // rather than treated as a fatal error.
-func isMultiAllelic(v *vcf.Variant) bool {
+func isMultiAllelic(v *gtSite) bool {
 	if v == nil {
 		return false
 	}
-	if len(v.Alt) > 1 {
+	if len(v.alt) > 1 {
 		return true
 	}
-	if len(v.Alt) == 1 && strings.Contains(v.Alt[0], ",") {
+	if len(v.alt) == 1 && strings.Contains(v.alt[0], ",") {
 		return true
 	}
 	return false
@@ -1188,14 +1359,14 @@ func isMultiAllelic(v *vcf.Variant) bool {
 // isMonoallelic reports whether the record has no usable ALT allele
 // (ALT is absent, ".", or "<NON_REF>"-style), i.e. bcf_get_variant_types
 // would classify it as VCF_REF.
-func isMonoallelic(v *vcf.Variant) bool {
+func isMonoallelic(v *gtSite) bool {
 	if v == nil {
 		return true
 	}
-	if len(v.Alt) == 0 {
+	if len(v.alt) == 0 {
 		return true
 	}
-	for _, a := range v.Alt {
+	for _, a := range v.alt {
 		if a != "" && a != "." {
 			return false
 		}
@@ -1203,14 +1374,14 @@ func isMonoallelic(v *vcf.Variant) bool {
 	return true
 }
 
-func posKey(v *vcf.Variant) string {
-	return v.Chrom + "\x00" + posStr(v.Pos)
+func posKey(v *gtSite) string {
+	return v.chrom + "\x00" + posStr(v.pos)
 }
 
-func indexByPos(vs []*vcf.Variant) map[string]*vcf.Variant {
-	out := make(map[string]*vcf.Variant, len(vs))
-	for _, v := range vs {
-		out[posKey(v)] = v
+func indexByPos(vs []gtSite) map[string]*gtSite {
+	out := make(map[string]*gtSite, len(vs))
+	for i := range vs {
+		out[posKey(&vs[i])] = &vs[i]
 	}
 	return out
 }
@@ -1338,21 +1509,34 @@ func loadPairs(spec, path string) ([]string, error) {
 // regionMatches returns true if the variant CHROM[:beg-end] is in any of
 // the given specs. An empty spec list returns true (no filter).
 func regionMatches(v *vcf.Variant, specs []string) bool {
+	return regionMatchesPos(v.Chrom, v.Pos, specs)
+}
+
+// siteRegionMatches is regionMatches for a projected gtSite: it shares the
+// CHROM/POS matching core so the gtcheck region/target post-filter behaves
+// identically to the full-variant path.
+func siteRegionMatches(v *gtSite, specs []string) bool {
+	return regionMatchesPos(v.chrom, v.pos, specs)
+}
+
+// regionMatchesPos reports whether CHROM/POS falls in any of the region specs.
+// An empty spec list returns true (no filter).
+func regionMatchesPos(chrom string, pos int, specs []string) bool {
 	if len(specs) == 0 {
 		return true
 	}
 	for _, s := range specs {
-		chrom, beg, end, err := parseRegionSpec(s)
+		c, beg, end, err := parseRegionSpec(s)
 		if err != nil {
 			continue
 		}
-		if v.Chrom != chrom {
+		if chrom != c {
 			continue
 		}
 		if beg <= 0 && end <= 0 {
 			return true
 		}
-		if v.Pos >= beg && (end <= 0 || v.Pos <= end) {
+		if pos >= beg && (end <= 0 || pos <= end) {
 			return true
 		}
 	}

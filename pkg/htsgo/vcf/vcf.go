@@ -38,6 +38,15 @@ type Variant struct {
 	// caller that never inspects sample data (e.g. bcftools isec) skip the
 	// expensive map round-trip. Empty for normally-parsed records.
 	RawTail string
+	// RawLine, when non-empty, is the verbatim data line (no trailing newline) a
+	// reader in KeepRawLine mode captured. In that mode only the sort-key columns
+	// (CHROM/POS/REF/ALT) are parsed; the INFO map, FILTER, QUAL and per-sample
+	// data are NOT populated. A caller that only needs to re-order records and
+	// re-emit them unchanged (e.g. bcftools sort -O v) keys the sort on the parsed
+	// columns and writes RawLine back verbatim, avoiding the full parse→re-encode
+	// round-trip and the per-record maps it allocates. Empty for normally-parsed
+	// records.
+	RawLine string
 }
 
 // Sample represents genotype data for a single sample.
@@ -74,6 +83,10 @@ type Reader struct {
 	// sample columns verbatim in Variant.RawTail instead of building per-sample
 	// maps. See KeepRawSamples.
 	keepRawTail bool
+	// keepRawLine, set by KeepRawLine, makes parseLine capture the whole verbatim
+	// data line in Variant.RawLine and parse only the sort-key columns
+	// (CHROM/POS/REF/ALT). See KeepRawLine.
+	keepRawLine bool
 }
 
 // KeepRawSamples toggles "shallow sample" parsing: when on, Read/ReadInto parse
@@ -86,6 +99,18 @@ type Reader struct {
 // parsed line, only the retaining Read path is safe to keep across reads; do not
 // retain a ReadInto Variant's RawTail.
 func (r *Reader) KeepRawSamples(on bool) { r.keepRawTail = on }
+
+// KeepRawLine toggles "raw line" parsing: when on, Read/ReadInto capture the
+// whole verbatim data line in Variant.RawLine and parse only the sort-key
+// columns (CHROM, POS, REF, ALT). The INFO/FILTER/QUAL fields and the per-sample
+// data are left unparsed (Info empty, Qual 0, Filter/Format/Samples empty). It is
+// for callers that re-order records and re-emit them unchanged — bcftools sort
+// -O v — where re-emitting the captured line is byte-identical to a full
+// parse→re-encode for a well-formed record while avoiding that round-trip and its
+// per-record allocations. Because RawLine (and the parsed key columns) alias the
+// reused line buffer on the ReadInto path, only the retaining Read path is safe
+// to keep across reads; a ReadInto caller that buffers records must copy RawLine.
+func (r *Reader) KeepRawLine(on bool) { r.keepRawLine = on }
 
 // NewReader creates a new VCF reader from an io.Reader.
 func NewReader(r io.Reader) *Reader {
@@ -218,6 +243,26 @@ func (r *Reader) parseLine(line string, v *Variant) error {
 	pos, err := strconv.Atoi(fields[1])
 	if err != nil {
 		return fmt.Errorf("invalid position %s: %v", fields[1], err)
+	}
+	if r.keepRawLine {
+		// Raw-line mode: parse only the sort-key columns and keep the whole line
+		// verbatim; leave everything else unparsed/cleared.
+		v.Chrom = fields[0]
+		v.Pos = pos
+		v.Ref = fields[3]
+		v.Alt = splitInto(v.Alt, fields[4], ',')
+		v.RawLine = line
+		v.ID = ""
+		v.Qual = 0
+		v.Filter = v.Filter[:0]
+		v.InfoOrder = v.InfoOrder[:0]
+		if v.Info != nil {
+			clear(v.Info)
+		}
+		v.Format = v.Format[:0]
+		v.Samples = v.Samples[:0]
+		v.RawTail = ""
+		return nil
 	}
 	v.Chrom = fields[0]
 	v.Pos = pos
@@ -422,6 +467,15 @@ func (w *Writer) WriteHeader() error {
 // of allocations per record that dominated VCF output.
 func (w *Writer) Write(variant *Variant) error {
 	bw := w.w
+	if variant.RawLine != "" {
+		// Raw-line record (KeepRawLine): the whole data line was captured
+		// verbatim. Re-emitting it is byte-identical to parsing every column and
+		// re-serialising, for a well-formed record.
+		if _, err := bw.WriteString(variant.RawLine); err != nil {
+			return err
+		}
+		return bw.WriteByte('\n')
+	}
 	bw.WriteString(variant.Chrom)
 	bw.WriteByte('\t')
 	w.num = strconv.AppendInt(w.num[:0], int64(variant.Pos), 10)
