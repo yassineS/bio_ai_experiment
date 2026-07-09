@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"sort"
 	"strconv"
 
@@ -98,8 +99,13 @@ func Run(a, b io.Reader, w io.Writer, opts Options) (*Result, error) {
 
 // formatJaccard renders the ratio with C++ ostream's default precision
 // (6 significant digits with %g-style trimming), which is what upstream
-// `bedtools jaccard` uses when it prints the ratio via `cout`.
+// `bedtools jaccard` uses when it prints the ratio via `cout`. When the
+// union is zero the ratio is 0.0/0.0 upstream, which `cout` renders as the
+// lowercase "nan" token; Go's strconv would emit "NaN", so special-case it.
 func formatJaccard(j float64) string {
+	if math.IsNaN(j) {
+		return "nan"
+	}
 	return strconv.FormatFloat(j, 'g', 6, 64)
 }
 
@@ -249,10 +255,10 @@ func jaccard(aReader, bReader io.Reader, opts Options) (*Result, error) {
 	}
 
 	union := totalA + totalB - totalIntersect
-	jacc := 0.0
-	if union > 0 {
-		jacc = float64(totalIntersect) / float64(union)
-	}
+	// Upstream computes jaccard as intersection/union with plain doubles, so an
+	// empty union yields 0.0/0.0 == NaN (rendered as "nan"). Mirror that here
+	// rather than clamping to 0, which would diverge from upstream byte-for-byte.
+	jacc := float64(totalIntersect) / float64(union)
 	return &Result{
 		Intersection: totalIntersect,
 		Union:        union,

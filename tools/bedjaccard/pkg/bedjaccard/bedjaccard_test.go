@@ -2,6 +2,7 @@ package bedjaccard
 
 import (
 	"bytes"
+	"math"
 	"strings"
 	"testing"
 )
@@ -53,9 +54,19 @@ func TestNoOverlap(t *testing.T) {
 }
 
 func TestEmptyBoth(t *testing.T) {
-	res, _ := runOf(t, "", "", Options{})
-	if res.Intersection != 0 || res.Union != 0 || res.Jaccard != 0 || res.N != 0 {
+	// Both inputs empty -> union 0 -> jaccard is 0.0/0.0 == NaN, rendered as the
+	// lowercase "nan" token, matching upstream `bedtools jaccard` (which computes
+	// intersection/union with plain doubles and prints via cout).
+	res, out := runOf(t, "", "", Options{})
+	if res.Intersection != 0 || res.Union != 0 || res.N != 0 {
 		t.Errorf("got %+v", res)
+	}
+	if !math.IsNaN(res.Jaccard) {
+		t.Errorf("empty-union jaccard = %v, want NaN", res.Jaccard)
+	}
+	wantBody := "0\t0\tnan\t0\n"
+	if !strings.HasSuffix(out, wantBody) {
+		t.Errorf("output = %q, want it to end with %q", out, wantBody)
 	}
 }
 
@@ -256,11 +267,52 @@ func TestStreamingDoesNotKeepAllB(t *testing.T) {
 }
 
 func TestFormatJaccard(t *testing.T) {
-	if s := formatJaccard(0); s != "0" {
-		t.Errorf("got %q", s)
+	// Each case mirrors upstream `bedtools jaccard`'s `cout << jaccard`, which
+	// uses C++ ostream default precision (6 significant digits, %g-style
+	// trailing-zero trimming). An empty union yields NaN, rendered "nan".
+	cases := []struct {
+		in   float64
+		want string
+	}{
+		{0, "0"},
+		{1, "1"},
+		{1.0 / 3.0, "0.333333"},
+		{19.0 / 49.0, "0.387755"},
+		{0.38983, "0.38983"},
+		{0.5, "0.5"},
+		{math.NaN(), "nan"},
 	}
-	if s := formatJaccard(1.0 / 3.0); s != "0.333333" {
-		t.Errorf("got %q", s)
+	for _, c := range cases {
+		if got := formatJaccard(c.in); got != c.want {
+			t.Errorf("formatJaccard(%v) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestMixedStrandSortedInputAccepted locks the not-a-bug behaviour flagged in
+// the bedtools parity triage: a globally-sorted BED whose records alternate
+// strand must be accepted under `-s` WITHOUT a false "input is not sorted"
+// error. Upstream also requires global (chrom, start) sortedness under `-s`
+// (it does not sort per-strand), so this is the correct, upstream-matching
+// contract — not a divergence to fix.
+func TestMixedStrandSortedInputAccepted(t *testing.T) {
+	// Globally sorted by (chrom, start), strands interleaved.
+	a := "chr1\t0\t10\ta\t0\t+\n" +
+		"chr1\t5\t15\tb\t0\t-\n" +
+		"chr1\t20\t30\tc\t0\t+\n" +
+		"chr1\t25\t35\td\t0\t-\n"
+	b := "chr1\t0\t12\tx\t0\t+\n" +
+		"chr1\t6\t14\ty\t0\t-\n" +
+		"chr1\t22\t28\tz\t0\t+\n"
+	var buf bytes.Buffer
+	res, err := Run(strings.NewReader(a), strings.NewReader(b), &buf, Options{SameStrand: true})
+	if err != nil {
+		t.Fatalf("mixed-strand sorted input rejected under -s: %v", err)
+	}
+	// Sanity: some same-strand overlap is counted (+/+ on 0..10 vs 0..12, 20..30
+	// vs 22..28; -/- on 5..15 vs 6..14).
+	if res.N == 0 || res.Intersection == 0 {
+		t.Errorf("expected same-strand overlap, got %+v", res)
 	}
 }
 
