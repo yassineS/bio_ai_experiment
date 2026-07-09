@@ -25,6 +25,7 @@ import (
 	"os"
 	"strings"
 
+	kgzip "github.com/klauspost/compress/gzip"
 	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/hfile"
 )
@@ -246,8 +247,11 @@ func openSource(filename string) (io.ReadCloser, error) {
 }
 
 // OpenWriter opens a file for writing, automatically handling gzip compression.
-// If the file has a .gz extension, it returns a gzip writer wrapped around the file.
-// The caller is responsible for closing the returned WriteCloser.
+// If the file has a .gz extension, it returns a standard-library gzip writer
+// wrapped around the file. The caller is responsible for closing the returned
+// WriteCloser. Tools whose wall time is dominated by output gzip compression
+// should prefer OpenWriterFast, which emits the same standard gzip format via a
+// faster encoder.
 func OpenWriter(filename string) (io.WriteCloser, error) {
 	if filename == "-" || filename == "" {
 		// Write to stdout - no gzip for stdout
@@ -263,6 +267,52 @@ func OpenWriter(filename string) (io.WriteCloser, error) {
 	if strings.HasSuffix(filename, ".gz") {
 		gzw := gzip.NewWriter(file)
 		return &writeCloserWrapper{gzw, file}, nil
+	}
+
+	return file, nil
+}
+
+// OpenWriterFast behaves like OpenWriter but, for .gz destinations, uses the
+// klauspost/compress gzip encoder instead of the standard library's. klauspost
+// emits a standard RFC 1952 gzip stream (byte-decodable by any gzip reader,
+// including compress/gzip and upstream tools) but deflates substantially faster
+// than compress/gzip at an equivalent ratio. This is on the hot path for tools
+// whose wall time is dominated by single-threaded output gzip compression
+// (fastp being the motivating case). Non-.gz destinations and stdout are handled
+// exactly as OpenWriter does.
+//
+// level selects the deflate effort. Callers should pass a value on klauspost's
+// 1..9 scale; note that klauspost's scale differs from the stdlib's — klauspost
+// level 7 reproduces the ratio of stdlib's default (level 6). Pass 0 (or any
+// value outside 1..9) to use klauspost's DefaultCompression.
+//
+// OpenWriterFast is deliberately a separate entry point from OpenWriter so that
+// the global .gz output encoder — shared by every tool — stays on the standard
+// library; only callers that opt in change their compressed bytes.
+func OpenWriterFast(filename string, level int) (io.WriteCloser, error) {
+	if filename == "-" || filename == "" {
+		// Write to stdout - no gzip for stdout
+		return &noCloseWriter{os.Stdout}, nil
+	}
+
+	file, err := os.Create(filename)
+	if err != nil {
+		return nil, err
+	}
+
+	if strings.HasSuffix(filename, ".gz") {
+		if level < kgzip.BestSpeed || level > kgzip.BestCompression {
+			level = kgzip.DefaultCompression
+		}
+		gzw, gerr := kgzip.NewWriterLevel(file, level)
+		if gerr != nil {
+			file.Close()
+			return nil, gerr
+		}
+		// Buffer between the fastq writer and the gzip encoder so the deflate
+		// stage sees large, contiguous writes rather than one call per record.
+		bw := bufio.NewWriterSize(gzw, 1<<20)
+		return &fastGzipWriteCloser{buf: bw, gzw: gzw, file: file}, nil
 	}
 
 	return file, nil
@@ -417,6 +467,37 @@ func (w *writeCloserWrapper) Close() error {
 	var err error
 	if w.gzw != nil {
 		err = w.gzw.Close()
+	}
+	if w.file != nil {
+		if ferr := w.file.Close(); ferr != nil && err == nil {
+			err = ferr
+		}
+	}
+	return err
+}
+
+// fastGzipWriteCloser wraps a buffered writer feeding a klauspost gzip encoder
+// and its underlying file. Close flushes the buffer, finalises the gzip stream,
+// and closes the file, in that order, so no buffered bytes are lost.
+type fastGzipWriteCloser struct {
+	buf  *bufio.Writer
+	gzw  *kgzip.Writer
+	file *os.File
+}
+
+func (w *fastGzipWriteCloser) Write(p []byte) (n int, err error) {
+	return w.buf.Write(p)
+}
+
+func (w *fastGzipWriteCloser) Close() error {
+	var err error
+	if w.buf != nil {
+		err = w.buf.Flush()
+	}
+	if w.gzw != nil {
+		if gerr := w.gzw.Close(); gerr != nil && err == nil {
+			err = gerr
+		}
 	}
 	if w.file != nil {
 		if ferr := w.file.Close(); ferr != nil && err == nil {

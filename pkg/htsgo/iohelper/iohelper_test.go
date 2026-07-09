@@ -553,3 +553,86 @@ func TestGzipSniff(t *testing.T) {
 		t.Error("gzipSniff(non-gzip) = true, want false")
 	}
 }
+
+// TestOpenWriterFastGzipRoundTrip verifies that OpenWriterFast produces a
+// standard gzip stream: the bytes it writes to a .gz file must be decodable by
+// the standard library's compress/gzip reader, byte-for-byte identical to the
+// original payload. This is the property fastp relies on when it swaps its
+// output encoder to the faster klauspost backend.
+func TestOpenWriterFastGzipRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	// A payload with enough structure/repetition to exercise deflate.
+	var payload bytes.Buffer
+	for i := 0; i < 5000; i++ {
+		payload.WriteString("@read")
+		payload.WriteString("ACGTACGTACGTNNNNacgt\n+\nIIIIIIIIII##########\n")
+	}
+	want := payload.Bytes()
+
+	for _, level := range []int{0, 1, 4, 6, 9} {
+		path := filepath.Join(dir, "out.fq.gz")
+		w, err := OpenWriterFast(path, level)
+		if err != nil {
+			t.Fatalf("OpenWriterFast(level=%d): %v", level, err)
+		}
+		if _, err := w.Write(want); err != nil {
+			t.Fatalf("write(level=%d): %v", level, err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatalf("close(level=%d): %v", level, err)
+		}
+
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if len(raw) < 2 || raw[0] != 0x1f || raw[1] != 0x8b {
+			t.Fatalf("level=%d: output is not a gzip stream (magic=% x)", level, raw[:min(2, len(raw))])
+		}
+		gr, err := gzip.NewReader(bytes.NewReader(raw))
+		if err != nil {
+			t.Fatalf("level=%d: stdlib gzip.NewReader: %v", level, err)
+		}
+		got, err := io.ReadAll(gr)
+		if err != nil {
+			t.Fatalf("level=%d: gzip decode: %v", level, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("level=%d: decompressed output differs from input (%d vs %d bytes)", level, len(got), len(want))
+		}
+	}
+}
+
+// TestOpenWriterFastPlainAndStdout checks the non-.gz and stdout paths behave
+// like OpenWriter: raw bytes for a plain file, and no gzip wrapping for "-".
+func TestOpenWriterFastPlainAndStdout(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "plain.fq")
+	w, err := OpenWriterFast(path, 4)
+	if err != nil {
+		t.Fatalf("OpenWriterFast plain: %v", err)
+	}
+	const data = "not gzipped\n"
+	if _, err := io.WriteString(w, data); err != nil {
+		t.Fatalf("write plain: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close plain: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read plain: %v", err)
+	}
+	if string(got) != data {
+		t.Fatalf("plain output = %q, want %q", got, data)
+	}
+
+	// stdout ("-") must not be closed by the returned writer.
+	sw, err := OpenWriterFast("-", 4)
+	if err != nil {
+		t.Fatalf("OpenWriterFast stdout: %v", err)
+	}
+	if err := sw.Close(); err != nil {
+		t.Fatalf("close stdout writer: %v", err)
+	}
+}
