@@ -1029,6 +1029,39 @@ func joinSortBit(v *vcf.Variant) int {
 	return variantTypeBit(v.Ref, v.Alt[0])
 }
 
+// bcfAddID folds id into the ';'-delimited ID string pointed to by dst,
+// mirroring htslib bcf_add_id (vcf.c:6004). If dst is empty or the missing
+// value "." it is replaced outright by id. Otherwise id is treated as a whole
+// (it is NOT split on ';'): if the entire id string already appears in dst as a
+// complete ';'-delimited token it is skipped, else it is appended verbatim
+// after a ';'.
+func bcfAddID(dst *string, id string) {
+	if *dst == "" || *dst == "." {
+		*dst = id
+		return
+	}
+	// Search for id as a whole ';'-delimited token within *dst.
+	s := *dst
+	n := len(id)
+	for start := 0; ; {
+		p := strings.Index(s[start:], id)
+		if p < 0 {
+			break
+		}
+		p += start
+		leftOK := p == 0 || s[p-1] == ';'
+		rightOK := p+n == len(s) || s[p+n] == ';'
+		if leftOK && rightOK {
+			return // already present
+		}
+		start = p + 1
+		if start > len(s)-n {
+			break
+		}
+	}
+	*dst += ";" + id
+}
+
 // mergeBiallelicsToMultiallelic merges a run of biallelic records (already
 // determined to belong to one type bucket) into a single multiallelic record,
 // porting upstream vcfnorm.c's merge_biallelics_to_multiallelic. It computes a
@@ -1041,25 +1074,20 @@ func mergeBiallelicsToMultiallelic(records []*vcf.Variant, m MultiallelicMode, n
 	}
 	dst := cloneVariant(records[0])
 
-	// ID: upstream concatenates the records' IDs with ';', preserving first-seen
-	// order and skipping missing ("." / empty) and duplicate IDs (vcfnorm.c
-	// merge_lines). If every record is missing an ID the result stays ".".
-	var ids []string
-	seenID := map[string]bool{}
-	for _, rec := range records {
-		if rec.ID == "" || rec.ID == "." {
+	// ID: upstream (vcfnorm.c merge_lines) seeds the joined ID with the first
+	// record's ID verbatim, then folds in each subsequent record's ID via
+	// htslib bcf_add_id (vcf.c:6004). It does NOT split IDs on ';' nor dedup the
+	// first record's own tokens: it treats each record's ID as a whole ';'-
+	// delimited string and only skips appending it when that exact whole string
+	// is already present as a ';'-delimited token. A missing ("." / "") ID on a
+	// later record is skipped. If every record is missing an ID the result
+	// stays ".".
+	dst.ID = records[0].ID
+	for i := 1; i < len(records); i++ {
+		if records[i].ID == "" || records[i].ID == "." {
 			continue
 		}
-		for _, part := range strings.Split(rec.ID, ";") {
-			if part == "" || part == "." || seenID[part] {
-				continue
-			}
-			seenID[part] = true
-			ids = append(ids, part)
-		}
-	}
-	if len(ids) > 0 {
-		dst.ID = strings.Join(ids, ";")
+		bcfAddID(&dst.ID, records[i].ID)
 	}
 
 	// Build the merged allele list and per-record allele-index maps.
