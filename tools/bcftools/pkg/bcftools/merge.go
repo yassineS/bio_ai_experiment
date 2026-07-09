@@ -248,7 +248,7 @@ func Merge(headers []*vcf.Header, groups [][]*vcf.Variant, out io.Writer, opts M
 		// MergeMode. Each bucket becomes one output record.
 		buckets := bucketize(participants, opts.MergeMode)
 		for _, bk := range buckets {
-			rec := mergeBucket(bk, headers, mergedHdr.Samples, infoRules)
+			rec := mergeBucket(bk, headers, mergedHdr, infoRules)
 			if len(regions) > 0 && !overlapsAny(rec, regions) {
 				continue
 			}
@@ -477,7 +477,8 @@ func isIndelRecord(v *vcf.Variant) bool {
 // Allele numbering is unified across the bucket and each input sample's
 // FORMAT values are remapped to the new ALT indices. Samples present in the
 // merged header but not in this bucket are emitted with `.` placeholders.
-func mergeBucket(bk []variantRef, srcHeaders []*vcf.Header, mergedSamples []string, infoRules map[string]infoRule) *vcf.Variant {
+func mergeBucket(bk []variantRef, srcHeaders []*vcf.Header, mergedHdr *vcf.Header, infoRules map[string]infoRule) *vcf.Variant {
+	mergedSamples := mergedHdr.Samples
 	first := bk[0].variant
 
 	// Build the union ALT list, in first-seen order.
@@ -513,7 +514,7 @@ func mergeBucket(bk []variantRef, srcHeaders []*vcf.Header, mergedSamples []stri
 	// INFO union — first input wins on collisions for tags whose Number
 	// isn't A or R; tags with A/R are remapped to the merged allele order.
 	// INFO rules (e.g. DP:sum) then combine values across the bucket.
-	out.Info, out.InfoOrder = mergeInfo(bk, perSrcMap, len(altList), infoRules)
+	out.Info, out.InfoOrder = mergeInfo(bk, perSrcMap, len(altList), infoRules, mergedHdr)
 
 	// Per-sample fan-out.
 	out.Samples = make([]vcf.Sample, len(mergedSamples))
@@ -669,53 +670,202 @@ func mergeFormat(bk []variantRef) []string {
 	return out
 }
 
-// mergeInfo returns the union of INFO tags. Tags with comma-separated
-// per-allele values (one per ALT) are remapped to the new allele order. For
-// fixed-Number tags the first input that defines the tag wins, unless the tag
-// has an INFO rule (e.g. DP:sum), in which case the rule combines the values
-// across every bucket record.
-func mergeInfo(bk []variantRef, perSrc []map[int]int, nAlt int, rules map[string]infoRule) (map[string]string, []string) {
+// mergeInfo returns the union of INFO tags together with the output key order.
+//
+// Output order mirrors upstream vcfmerge.c merge_info(), which emits INFO tags
+// in three classes:
+//
+//  1. plain scalar / fixed-Number tags with no rule — in first-seen order;
+//  2. rule-combined tags (e.g. DP:sum) — in alphabetical tag order (upstream
+//     applies the rules via bcf_update_info after sorting them by tag);
+//  3. Number=A/R/G tags with no rule (e.g. AF) — in first-seen order, last.
+//
+// A tag that carries a rule is always treated as class (2), even when its
+// Number is A/R/G (upstream's info_rules_add_values path pre-empts the AGR
+// path). Class (3) AGR-no-rule tags combine per-allele with LAST-non-missing
+// wins across every record in the bucket, remapping each source record's
+// per-ALT values through its allele map into the output allele slots.
+func mergeInfo(bk []variantRef, perSrc []map[int]int, nAlt int, rules map[string]infoRule, hdr *vcf.Header) (map[string]string, []string) {
 	out := map[string]string{}
-	var order []string
-	tagSeen := map[string]bool{}
+
+	// isAGR reports whether the tag's declared Number is A, R or G.
+	isAGR := func(tag string) bool {
+		switch infoNumber(hdr, tag) {
+		case "A", "R", "G":
+			return true
+		}
+		return false
+	}
+
+	var scalarOrder []string // class 1: first-seen
+	var agrOrder []string    // class 3: first-seen
+	var ruleOrder []string   // class 2: gathered, then sorted alphabetically
+	scalarSeen := map[string]bool{}
+	agrSeen := map[string]bool{}
+	ruleSeen := map[string]bool{}
+
+	// agrVals accumulates the per-allele output slots for each class-3 tag,
+	// applying last-non-missing-wins as records are visited in input order.
+	agrVals := map[string][]string{}
+
 	for bi, ref := range bk {
 		for _, k := range ref.variant.InfoOrder {
 			v := ref.variant.Info[k]
-			if !tagSeen[k] {
-				tagSeen[k] = true
-				order = append(order, k)
-			}
-			if r, ok := rules[k]; ok {
-				out[k] = applyInfoRule(bk, k, r)
+			if _, ok := rules[k]; ok {
+				// class 2 — rule tag. Combined below via applyInfoRule.
+				if !ruleSeen[k] {
+					ruleSeen[k] = true
+					ruleOrder = append(ruleOrder, k)
+				}
 				continue
 			}
-			if _, exists := out[k]; exists {
+			if isAGR(k) {
+				// class 3 — Number=A/R/G, no rule: per-allele last-wins.
+				if !agrSeen[k] {
+					agrSeen[k] = true
+					agrOrder = append(agrOrder, k)
+					slots := make([]string, agrSlots(hdr, k, nAlt))
+					for i := range slots {
+						slots[i] = "."
+					}
+					agrVals[k] = slots
+				}
+				remapAGRInto(agrVals[k], v, infoNumber(hdr, k), infoType(hdr, k), perSrc[bi])
 				continue
 			}
-			// Heuristic: a comma-separated value with len(parts) == #ALT
-			// in this input is a per-allele tag.
-			parts := strings.Split(v, ",")
-			if len(parts) == len(ref.variant.Alt) && nAlt > 0 {
-				remapped := make([]string, nAlt)
-				for i := range remapped {
-					remapped[i] = "."
-				}
-				for j, p := range parts {
-					mappedIdx, ok := perSrc[bi][j+1]
-					if !ok {
-						continue
-					}
-					if mappedIdx-1 >= 0 && mappedIdx-1 < len(remapped) {
-						remapped[mappedIdx-1] = p
-					}
-				}
-				out[k] = strings.Join(remapped, ",")
-			} else {
+			// class 1 — plain scalar / fixed-Number, first-wins.
+			if !scalarSeen[k] {
+				scalarSeen[k] = true
+				scalarOrder = append(scalarOrder, k)
 				out[k] = v
 			}
 		}
 	}
+
+	// class 2 — apply rules, emit alphabetically.
+	sort.Strings(ruleOrder)
+	for _, k := range ruleOrder {
+		out[k] = applyInfoRule(bk, k, rules[k], nAlt, infoNumber(hdr, k), infoType(hdr, k), perSrc)
+	}
+
+	// class 3 — materialise the accumulated per-allele slots.
+	for _, k := range agrOrder {
+		out[k] = strings.Join(agrVals[k], ",")
+	}
+
+	order := make([]string, 0, len(scalarOrder)+len(ruleOrder)+len(agrOrder))
+	order = append(order, scalarOrder...)
+	order = append(order, ruleOrder...)
+	order = append(order, agrOrder...)
 	return out, order
+}
+
+// infoNumber returns the declared Number= field ("A", "R", "G", "0", "1",
+// ".", a positive integer, ...) for INFO tag from the header, or "" when the
+// tag is not declared. It reads the authoritative ##INFO header line rather
+// than guessing from the value's arity.
+func infoNumber(hdr *vcf.Header, tag string) string {
+	if hdr == nil {
+		return ""
+	}
+	for _, ln := range hdr.MetaInfo {
+		if !strings.HasPrefix(ln, "##INFO=<") {
+			continue
+		}
+		if headerLineID(ln) != tag {
+			continue
+		}
+		return headerLineField(ln, "Number")
+	}
+	return ""
+}
+
+// headerLineField extracts a key=value field (e.g. Number=A) from a structured
+// header line, returning "" when the key is absent.
+func headerLineField(ln, key string) string {
+	i := strings.Index(ln, key+"=")
+	if i < 0 {
+		return ""
+	}
+	s := ln[i+len(key)+1:]
+	for j := 0; j < len(s); j++ {
+		if s[j] == ',' || s[j] == '>' {
+			return s[:j]
+		}
+	}
+	return s
+}
+
+// agrSlots returns the number of output value slots a Number=A/R/G tag occupies
+// given nAlt output ALT alleles. G is the number of diploid genotypes over
+// nAlt+1 alleles; R is nAlt+1; A is nAlt.
+func agrSlots(hdr *vcf.Header, tag string, nAlt int) int {
+	switch infoNumber(hdr, tag) {
+	case "R":
+		return nAlt + 1
+	case "G":
+		n := nAlt + 1 // total alleles incl. REF
+		return n * (n + 1) / 2
+	default: // "A"
+		return nAlt
+	}
+}
+
+// remapAGRInto writes a source record's comma-separated Number=A/R/G value into
+// the output slots, remapping each source allele index through alleleMap and
+// overwriting with the last non-missing value seen per slot. Float values are
+// re-normalised (e.g. 0.50 -> 0.5) to match upstream, which stores AGR values
+// numerically and re-renders them. G-typed tags are copied positionally
+// (genotype remapping across differing ALT sets is not attempted; this matches
+// the common single-ALT case byte-exactly).
+func remapAGRInto(slots []string, val, number, typ string, alleleMap map[int]int) {
+	parts := strings.Split(val, ",")
+	norm := func(p string) string {
+		if typ != "Float" {
+			return p
+		}
+		if f, err := strconv.ParseFloat(p, 64); err == nil {
+			return formatInfoFloat(f)
+		}
+		return p
+	}
+	switch number {
+	case "A":
+		// parts[j] is for source ALT j+1 -> output allele alleleMap[j+1].
+		for j, p := range parts {
+			if p == "." || p == "" {
+				continue
+			}
+			dst, ok := alleleMap[j+1]
+			if !ok {
+				continue
+			}
+			if idx := dst - 1; idx >= 0 && idx < len(slots) {
+				slots[idx] = norm(p)
+			}
+		}
+	case "R":
+		// parts[j] is for source allele j (0=REF) -> output allele alleleMap[j].
+		for j, p := range parts {
+			if p == "." || p == "" {
+				continue
+			}
+			dst, ok := alleleMap[j]
+			if !ok {
+				continue
+			}
+			if dst >= 0 && dst < len(slots) {
+				slots[dst] = norm(p)
+			}
+		}
+	default: // "G" — positional copy.
+		for j, p := range parts {
+			if p == "." || p == "" || j >= len(slots) {
+				continue
+			}
+			slots[j] = norm(p)
+		}
+	}
 }
 
 // infoRule is one INFO-combine method for the -i/--info-rules machinery.
@@ -756,11 +906,18 @@ func resolveInfoRules(spec string, hdr *vcf.Header) (map[string]infoRule, error)
 		}
 		spec = strings.Join(parts, ",")
 	}
-	return parseInfoRules(spec)
+	return parseInfoRules(spec, hdr)
 }
 
-// parseInfoRules parses a "TAG:method,TAG:method" spec.
-func parseInfoRules(spec string) (map[string]infoRule, error) {
+// parseInfoRules parses a "TAG:method,TAG:method" spec against the merged
+// header. It mirrors upstream's info_rules_init validation:
+//
+//   - the tag must be declared in the merged header (else an error);
+//   - a numeric method (sum/avg/min/max) on a String/Type-flag tag is rejected;
+//   - join on an ALREADY variable-length A/R/G tag rewrites that tag's declared
+//     Number to '.' in the merged header (upstream only rewrites when the tag's
+//     Number was variable, i.e. 0xfffff; a fixed Number=1 is left untouched).
+func parseInfoRules(spec string, hdr *vcf.Header) (map[string]infoRule, error) {
 	if spec == "" {
 		return nil, nil
 	}
@@ -770,6 +927,7 @@ func parseInfoRules(spec string) (map[string]infoRule, error) {
 		if len(kv) != 2 || kv[0] == "" {
 			return nil, fmt.Errorf("bcftools merge: could not parse INFO rule %q", item)
 		}
+		tag := kv[0]
 		var r infoRule
 		switch kv[1] {
 		case "sum":
@@ -785,9 +943,67 @@ func parseInfoRules(spec string) (map[string]infoRule, error) {
 		default:
 			return nil, fmt.Errorf("bcftools merge: unknown INFO rule method %q", kv[1])
 		}
-		out[kv[0]] = r
+		if hdr != nil {
+			if !infoTagSet(hdr)[tag] {
+				return nil, fmt.Errorf("The INFO tag is not defined in the header: \"%s\"", tag)
+			}
+			typ := infoType(hdr, tag)
+			if r != infoRuleJoin && (typ == "String" || typ == "Flag") {
+				return nil, fmt.Errorf("Numeric operation \"%s\" requested on non-numeric field: %s", kv[1], tag)
+			}
+			if r == infoRuleJoin {
+				// Upstream only rewrites Number when it was ALREADY variable
+				// (A/R/G) and not the plain "." variable form; a fixed Number
+				// (1, 4, ...) is left untouched.
+				switch infoNumber(hdr, tag) {
+				case "A", "R", "G":
+					setInfoNumber(hdr, tag, ".")
+				}
+			}
+		}
+		out[tag] = r
 	}
 	return out, nil
+}
+
+// infoType returns the declared Type= field ("Integer", "Float", "String",
+// "Flag", ...) for INFO tag from the header, or "" when undeclared.
+func infoType(hdr *vcf.Header, tag string) string {
+	if hdr == nil {
+		return ""
+	}
+	for _, ln := range hdr.MetaInfo {
+		if !strings.HasPrefix(ln, "##INFO=<") || headerLineID(ln) != tag {
+			continue
+		}
+		return headerLineField(ln, "Type")
+	}
+	return ""
+}
+
+// setInfoNumber rewrites the Number= field of INFO tag's header line to n,
+// mutating the merged header in place (used by join on an A/R/G tag). It
+// mirrors upstream's bcf_hdr_remove + bcf_hdr_add_hrec: the rewritten line is
+// removed from its original position and re-appended to the very end of the
+// meta-information block (after any ##FORMAT lines), so it moves to the end.
+func setInfoNumber(hdr *vcf.Header, tag, n string) {
+	if hdr == nil {
+		return
+	}
+	idx := -1
+	for i, ln := range hdr.MetaInfo {
+		if strings.HasPrefix(ln, "##INFO=<") && headerLineID(ln) == tag {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return
+	}
+	old := headerLineField(hdr.MetaInfo[idx], "Number")
+	rewritten := strings.Replace(hdr.MetaInfo[idx], "Number="+old, "Number="+n, 1)
+	hdr.MetaInfo = append(hdr.MetaInfo[:idx], hdr.MetaInfo[idx+1:]...)
+	hdr.MetaInfo = append(hdr.MetaInfo, rewritten)
 }
 
 // infoTagSet returns the set of INFO tag IDs declared in the header.
@@ -820,57 +1036,122 @@ func headerLineID(ln string) string {
 }
 
 // applyInfoRule combines a tag's value across every record in the bucket per
-// the rule. Numeric rules (sum/avg/min/max) operate element-wise over the
-// comma-separated value vectors; join concatenates the raw values. Records
-// lacking the tag are skipped (a missing field never contributes).
-func applyInfoRule(bk []variantRef, tag string, r infoRule) string {
+// the rule, mirroring upstream's info_rules_* mergers:
+//
+//   - join   — concatenates every record's raw value with commas;
+//   - sum/avg — element-wise; a per-record missing element counts as 0. avg
+//     divides each slot by the number of records that CARRIED the tag (not by
+//     the number of missing-aware contributions);
+//   - min/max — element-wise, skipping missing elements; a slot missing in
+//     every record renders as '.'.
+//
+// When number is A/R/G the source per-allele values are remapped through each
+// record's allele map (perSrc) into the output allele slots before combining,
+// so inputs with differing ALT sets combine correctly.
+func applyInfoRule(bk []variantRef, tag string, r infoRule, nAlt int, number, typ string, perSrc []map[int]int) string {
 	if r == infoRuleJoin {
 		var vals []string
 		for _, ref := range bk {
-			if v, ok := ref.variant.Info[tag]; ok {
-				vals = append(vals, v)
+			v, ok := ref.variant.Info[tag]
+			if !ok {
+				continue
 			}
+			// Numeric joins re-render each element (upstream stores the joined
+			// vector numerically); Float normalises 0.50 -> 0.5.
+			if typ == "Float" {
+				elems := strings.Split(v, ",")
+				for i, e := range elems {
+					if e == "." || e == "" {
+						continue
+					}
+					if f, err := strconv.ParseFloat(e, 64); err == nil {
+						elems[i] = formatInfoFloat(f)
+					}
+				}
+				v = strings.Join(elems, ",")
+			}
+			vals = append(vals, v)
 		}
 		return strings.Join(vals, ",")
 	}
-	var acc []float64
-	count := 0
-	anyFloat := false
-	for _, ref := range bk {
+
+	isAGR := number == "A" || number == "R" || number == "G"
+
+	var acc []float64 // running accumulator per output slot
+	var present []int // count of records contributing a non-missing value per slot
+	count := 0        // records that carried the tag (avg divisor)
+	anyFloat := false // render as float when any input looked float-like
+	blockSize := -1   // fixed-Number vector length (non-AGR)
+	for bi, ref := range bk {
 		v, ok := ref.variant.Info[tag]
 		if !ok {
 			continue
 		}
+		count++
 		parts := strings.Split(v, ",")
-		if acc == nil {
-			acc = make([]float64, len(parts))
-		}
-		if len(parts) != len(acc) {
-			// Vector-length mismatch: fall back to the first value seen.
-			return v
-		}
-		for i, p := range parts {
-			f, err := strconv.ParseFloat(p, 64)
-			if err != nil {
+
+		// Build this record's per-slot value list. For AGR tags remap through
+		// the allele map; for fixed-Number tags use the values positionally.
+		var slots []string
+		if isAGR {
+			slots = make([]string, agrSlotsN(number, nAlt))
+			for i := range slots {
+				slots[i] = "."
+			}
+			remapAGRInto(slots, v, number, "", perSrc[bi])
+		} else {
+			if blockSize < 0 {
+				blockSize = len(parts)
+			} else if len(parts) != blockSize {
+				// Vector-length mismatch: fall back to the raw value.
 				return v
 			}
-			if strings.ContainsAny(p, ".eE") {
-				anyFloat = true
+			slots = parts
+		}
+
+		if acc == nil {
+			acc = make([]float64, len(slots))
+			present = make([]int, len(slots))
+		}
+		if len(slots) != len(acc) {
+			return v
+		}
+		for i, p := range slots {
+			missing := p == "." || p == ""
+			var f float64
+			if !missing {
+				var err error
+				f, err = strconv.ParseFloat(p, 64)
+				if err != nil {
+					return v
+				}
+				if strings.ContainsAny(p, ".eE") {
+					anyFloat = true
+				}
 			}
 			switch r {
 			case infoRuleSum, infoRuleAvg:
+				// Missing counts as 0 (upstream sets missing->0 pre-sum).
 				acc[i] += f
+				present[i]++
 			case infoRuleMin:
-				if count == 0 || f < acc[i] {
+				if missing {
+					continue
+				}
+				if present[i] == 0 || f < acc[i] {
 					acc[i] = f
 				}
+				present[i]++
 			case infoRuleMax:
-				if count == 0 || f > acc[i] {
+				if missing {
+					continue
+				}
+				if present[i] == 0 || f > acc[i] {
 					acc[i] = f
 				}
+				present[i]++
 			}
 		}
-		count++
 	}
 	if count == 0 {
 		return ""
@@ -883,6 +1164,10 @@ func applyInfoRule(bk []variantRef, tag string, r infoRule) string {
 	}
 	strs := make([]string, len(acc))
 	for i, a := range acc {
+		if (r == infoRuleMin || r == infoRuleMax) && present[i] == 0 {
+			strs[i] = "."
+			continue
+		}
 		if anyFloat {
 			strs[i] = formatInfoFloat(a)
 		} else {
@@ -890,6 +1175,20 @@ func applyInfoRule(bk []variantRef, tag string, r infoRule) string {
 		}
 	}
 	return strings.Join(strs, ",")
+}
+
+// agrSlotsN returns the output slot count for a Number=A/R/G tag given nAlt
+// output ALT alleles (the header-free counterpart of agrSlots).
+func agrSlotsN(number string, nAlt int) int {
+	switch number {
+	case "R":
+		return nAlt + 1
+	case "G":
+		n := nAlt + 1
+		return n * (n + 1) / 2
+	default: // "A"
+		return nAlt
+	}
 }
 
 // formatInfoFloat renders a combined float the way bcftools prints INFO floats
