@@ -23,6 +23,35 @@ type covAccum struct {
 	// are clamped to refLen so the closing event still subtracts the
 	// open count at the boundary.
 	refLen int
+	// sorted records whether events is currently in ascending-position order.
+	// It is set true by sortEvents and cleared by every code path that
+	// appends a new event (add, addOverlapCorrection). Guarding sortEvents on
+	// this flag collapses the O(regions) re-sorts done by regionStats — which
+	// is called once per --by region — into a single sort per reference.
+	sorted bool
+
+	// curIdx / curDepth / curPos are a resumable scan cursor into the sorted
+	// event slice, used by regionStats to skip the O(events) linear re-scan it
+	// would otherwise do from event[0] for every --by region. curDepth is the
+	// running depth after applying every event with pos <= curPos, and curIdx
+	// is the index of the first event with pos > curPos. The cursor advances
+	// only up to a region's begin coordinate (never into its interior), so it
+	// stays valid across overlapping regions; it is reset whenever a region
+	// begins before curPos or the event slice is (re)sorted.
+	curIdx   int
+	curDepth int32
+	curPos   int
+	curValid bool
+}
+
+// resetRegionCursor clears the resumable regionStats scan cursor so the next
+// regionStats call re-seeds it from the start of the event slice. It is
+// called whenever the event ordering may have changed (a fresh sort).
+func (a *covAccum) resetRegionCursor() {
+	a.curValid = false
+	a.curIdx = 0
+	a.curDepth = 0
+	a.curPos = 0
 }
 
 // newCovAccum constructs an accumulator for a reference of refLen bases.
@@ -54,6 +83,7 @@ func (a *covAccum) add(start, end int) {
 	}
 	a.events = append(a.events, covEvent{pos: start, delta: 1})
 	a.events = append(a.events, covEvent{pos: end, delta: -1})
+	a.sorted = false
 }
 
 // addRecord walks rec's CIGAR and inserts one event pair per contiguous
@@ -197,10 +227,19 @@ func mateOnSameRef(rec *sam.Record) bool {
 // relative order so emit() applies all deltas at a position atomically; a
 // stable sort isn't required because emit() collapses ties.
 func (a *covAccum) sortEvents() {
+	// Skip re-sorting when no event has been appended since the last sort.
+	// regionStats calls sortEvents once per --by region; without this guard
+	// a chromosome with N regions pays N full sorts of the whole event slice.
+	if a.sorted {
+		return
+	}
 	// In-place insertion sort would be cheap for the often-mostly-sorted
 	// input we receive from coordinate-sorted BAMs, but stdlib's sort.Sort
 	// is simple and good enough.
 	sortEventSlice(a.events)
+	a.sorted = true
+	// The event indices just changed, so any saved scan cursor is stale.
+	a.resetRegionCursor()
 }
 
 // emit walks the (sorted) event list and invokes fn for every 0-based
@@ -310,11 +349,27 @@ func (a *covAccum) regionStats(beg0, end0 int, thresholds []int, emitFn func(sta
 	a.sortEvents()
 	var depth int32
 	idx := 0
-	// Advance to depth at beg0 by applying every event with pos <= beg0.
+	// Advance to the depth at beg0 by applying every event with pos <= beg0.
+	// Resume from the saved cursor when it sits at or before beg0 (the common
+	// case for ascending --by regions), otherwise scan from the start. The
+	// cursor only ever advances up to a region begin, never into a region's
+	// interior, so it remains valid even for overlapping regions.
+	if a.curValid && a.curPos <= beg0 {
+		depth = a.curDepth
+		idx = a.curIdx
+	}
 	for idx < len(a.events) && a.events[idx].pos <= beg0 {
 		depth += a.events[idx].delta
 		idx++
 	}
+	// Checkpoint the cursor at beg0 so the next region can resume here. This is
+	// the sweep state (depth after all events with pos <= beg0, and the index
+	// of the first event with pos > beg0); the interior sweep below advances a
+	// local copy of idx/depth and must not disturb this checkpoint.
+	a.curDepth = depth
+	a.curIdx = idx
+	a.curPos = beg0
+	a.curValid = true
 	pos := beg0
 	first := true
 	for pos < end0 {
@@ -520,6 +575,7 @@ func (a *covAccum) addOverlapCorrection(rec, mate *sam.Record, recStart, mateSta
 		a.events = append(a.events,
 			covEvent{pos: recStart, delta: -1},
 			covEvent{pos: mateStop, delta: 1})
+		a.sorted = false
 		return
 	}
 	ses := genStartEnds(rec.Cigar, recStart)
@@ -534,6 +590,7 @@ func (a *covAccum) addOverlapCorrection(rec, mate *sam.Record, recStart, mateSta
 			a.events = append(a.events,
 				covEvent{pos: lastPos, delta: -1},
 				covEvent{pos: p.pos, delta: 1})
+			a.sorted = false
 		}
 		pairDepth += p.value
 		lastPos = p.pos
