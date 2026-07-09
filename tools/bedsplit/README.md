@@ -51,3 +51,18 @@ are produced (matching upstream).
 the manifest **and** every emitted shard file across several `-n` values
 (including `-n` greater than the record count), on a fixture of
 distinct-length records so the size-descending sort order is unambiguous.
+
+### Equal-length tie order
+
+When several records share the same length, which shard each lands in is
+decided by the C++ standard library's `std::sort` **tie order for
+equal-key elements** — a *stdlib-defined* detail, not a bedtools one. Our
+`pkg/cppsort` is a libstdc++ introsort port, so it reproduces the
+**libstdc++** upstream (the CI/container oracle) byte-for-byte; a
+**libc++** oracle (e.g. a local arm64-macOS `bedtools`) may place a tied
+record in a different shard. Only the per-shard membership of tied records
+can differ — never the per-file bp totals, record counts, or the overall
+partition. `live_parity_test.go`'s `TestLiveParity_SizeTie_*` cases assert
+those order-**independent** invariants so they hold on either oracle.
+Switching `pkg/cppsort` to a libc++ variant is a deferred, owner-gated
+decision (it would flip parity from the CI oracle to a local one).

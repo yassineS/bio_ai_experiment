@@ -146,3 +146,108 @@ func TestLiveParity_Size_N2(t *testing.T)  { assertSizeParity(t, "distinct_sizes
 func TestLiveParity_Size_N3(t *testing.T)  { assertSizeParity(t, "distinct_sizes.bed", 3) }
 func TestLiveParity_Size_N5(t *testing.T)  { assertSizeParity(t, "distinct_sizes.bed", 5) }
 func TestLiveParity_Size_N10(t *testing.T) { assertSizeParity(t, "distinct_sizes.bed", 10) }
+
+// shardRecordSet returns, for a set of shard files, the map filename -> set of
+// record lines (order-independent) that shard contains. It is used to compare
+// the *content* of each shard without depending on intra-shard ordering.
+func shardRecordSet(shards map[string][]byte) map[string]map[string]int {
+	out := make(map[string]map[string]int, len(shards))
+	for name, data := range shards {
+		set := make(map[string]int)
+		for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+			if line == "" {
+				continue
+			}
+			set[line]++
+		}
+		out[name] = set
+	}
+	return out
+}
+
+// assertSizeTieInvariants runs `split -a size` on a fixture whose records all
+// share the same length, so the per-file assignment is driven entirely by the
+// std::sort tie order of equal-key elements. That tie order is C++-stdlib
+// defined: our pkg/cppsort (a libstdc++ introsort port) reproduces the
+// libstdc++ oracle exactly (the CI/container upstream), while a libc++ oracle
+// (e.g. the local arm64-macOS bedtools) may order equal-length records
+// differently, changing WHICH shard a given record lands in.
+//
+// Rather than assert an exact intra-file layout — which would falsely fail
+// against a libc++ oracle — this test asserts the robust invariants that hold
+// on ANY conforming oracle: the manifest's per-file bp TOTALS and record COUNTS
+// are byte-exact, and the SET of records is identical (the union of all shards
+// is a partition of the input, and every record appears exactly once). The
+// exact intra-file record ORDER is stdlib-tie-dependent and intentionally not
+// asserted here (the distinct-sizes fixtures above lock the ordered layout on
+// the libstdc++ oracle).
+func assertSizeTieInvariants(t *testing.T, fixture string, n int) {
+	t.Helper()
+	bin := upstreamBedtools(t)
+	in := fixtureAbs(t, fixture)
+
+	upDir := t.TempDir()
+	cmd := exec.Command(bin, "split", "-i", in, "-n", strconv.Itoa(n), "-p", "s", "-a", "size")
+	cmd.Dir = upDir
+	wantManifest, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("upstream split -n %d: %v", n, err)
+	}
+
+	ourDir := t.TempDir()
+	prefix := filepath.Join(ourDir, "s")
+	data, err := os.ReadFile(in)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var manifest bytes.Buffer
+	if _, err := Split(bytes.NewReader(data), &manifest, Options{N: n, Prefix: prefix, Algorithm: AlgSize}); err != nil {
+		t.Fatalf("Split: %v", err)
+	}
+	gotManifest := strings.ReplaceAll(manifest.String(), ourDir+string(os.PathSeparator), "")
+
+	// The manifest (filename \t total_bp \t num_records) is order-independent:
+	// even with a different tie order, a valid bin-packing of equal-length
+	// records yields the same per-file bp totals and counts. Assert it byte-exact.
+	if gotManifest != string(wantManifest) {
+		t.Errorf("manifest mismatch (-n %d): the per-file totals/counts should match on any oracle\nupstream:\n%s\nours:\n%s",
+			n, wantManifest, gotManifest)
+	}
+
+	wantShards := shardRecordSet(readShards(t, upDir))
+	gotShards := shardRecordSet(readShards(t, ourDir))
+	if len(wantShards) != len(gotShards) {
+		t.Fatalf("shard count mismatch (-n %d): upstream=%d ours=%d", n, len(wantShards), len(gotShards))
+	}
+
+	// The UNION of all shard record-sets must be identical between ours and
+	// upstream (every input record appears exactly once, regardless of which
+	// shard the tie order placed it in).
+	unionOf := func(shards map[string]map[string]int) map[string]int {
+		u := make(map[string]int)
+		for _, set := range shards {
+			for line, c := range set {
+				u[line] += c
+			}
+		}
+		return u
+	}
+	wantUnion := unionOf(wantShards)
+	gotUnion := unionOf(gotShards)
+	if len(wantUnion) != len(gotUnion) {
+		t.Fatalf("record-union size mismatch (-n %d): upstream=%d ours=%d", n, len(wantUnion), len(gotUnion))
+	}
+	for line, wc := range wantUnion {
+		if gc := gotUnion[line]; gc != wc {
+			t.Errorf("record %q count mismatch (-n %d): upstream=%d ours=%d", line, n, wc, gc)
+		}
+	}
+}
+
+// The same-size-tie fixture stresses the equal-length std::sort tie order that
+// distinguishes libstdc++ (our pkg/cppsort target and the CI oracle) from
+// libc++ (the local arm64 binary). These assert the order-independent
+// invariants that must hold on either oracle.
+func TestLiveParity_SizeTie_N2(t *testing.T) { assertSizeTieInvariants(t, "same_size_ties.bed", 2) }
+func TestLiveParity_SizeTie_N3(t *testing.T) { assertSizeTieInvariants(t, "same_size_ties.bed", 3) }
+func TestLiveParity_SizeTie_N4(t *testing.T) { assertSizeTieInvariants(t, "same_size_ties.bed", 4) }

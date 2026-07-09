@@ -103,6 +103,37 @@ gaps were closed and parity-validated against the vendored upstream binaries:
   header without `-names` and now reproduces upstream's per-chromosome/per-UCSC-bin
   record ordering (the `getBin` function was ported); `-names` is variadic and
   the header pads the `#` with `bedType-1` tabs.
+- **bedtools family — split/cluster tie order & jaccard float/nan
+  (2026-07-09).** Triage of three pipeline-flagged `bedtools` items resolved
+  them as follows:
+  - **`bedsplit -a size` per-file assignment & `bedcluster -s` intra-cluster
+    order** are governed by the C++ standard library's `std::sort` **tie order
+    for equal-key elements** (equal-length records in split; equal-start records
+    in cluster). This is *stdlib-defined*, not tool-defined: our `pkg/cppsort`
+    is a libstdc++ introsort port, so it reproduces the **libstdc++** upstream
+    (the CI/container oracle) **byte-for-byte**. A **libc++** oracle (e.g. the
+    local arm64-macOS `bedtools`) may order equal-key records differently,
+    changing only which shard/row a tied record lands in — never the bp totals,
+    record counts, clustering, or any coordinate-defined result. This is **not a
+    port bug**; swapping `pkg/cppsort` for a libc++ introsort variant is a
+    deferred, **owner-gated** item (it would flip parity from the CI oracle to
+    the local one). New live-oracle tests assert the order-**independent**
+    invariants that must hold on *any* conforming oracle — split: per-file bp
+    totals + counts (byte-exact) and the record partition; cluster: cluster IDs
+    and the set of records per cluster — so they are meaningful on both the
+    libstdc++ CI oracle and the local libc++ binary without falsely failing
+    (`tools/bedsplit/.../live_parity_test.go`,
+    `tools/bedcluster/.../live_parity_test.go`).
+  - **`bedjaccard -s` "false not sorted"** is **NOT a bug.** Upstream `jaccard`
+    also requires globally `(chrom, start)`-sorted input under `-s` (it does not
+    sort per-strand); a globally-sorted mixed-strand input is accepted without
+    error, locked by `TestMixedStrandSortedInputAccepted`.
+  - **`bedjaccard` ratio formatting — FIXED.** The ratio now renders with C++
+    ostream default precision (6 significant digits, `%g`-style trimming) so
+    e.g. `19/49` prints `0.387755` (not `0.389831…`), and an **empty union**
+    (`0/0`) now emits the lowercase `nan` token, both matching upstream's
+    `cout << jaccard` byte-for-byte (validated vs the local upstream binary on
+    crafted ratios and real chr20 self-jaccard).
 - **bcftools.** `view -s` recomputes INFO/AC/AN (`-I` to suppress); `view -v/-V`
   type selectors; `query` position tokens (`%POS0/%END/%END0/%FIRST_ALT/%IS_TS`);
   three **BCF writer** encoding fixes (missing-value sentinels, GT-missing,
