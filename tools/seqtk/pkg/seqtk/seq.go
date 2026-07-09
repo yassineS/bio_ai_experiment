@@ -19,6 +19,14 @@
 //	-M FILE mask regions named in a BED or name-list file
 //	-c  mask the complement of the -M regions
 //	-N  drop sequences containing ambiguous bases
+//	-1  output only the 2n-1 (odd) records
+//	-2  output only the 2n (even) records
+//	-s INT  random seed for -f (default 11)
+//	-f FLOAT  keep each record with probability FLOAT (default 1.0)
+//	-S  strip white spaces out of sequences (and sync quality)
+//	-x  convert lowercase bases to the -n mask char
+//	-F CHAR  fake/fill quality with CHAR (turns FASTA into FASTQ)
+//	-R  output both a forward (name+) and reverse-complement (name-) copy
 //
 // The implementation mirrors upstream's ordering of operations precisely so
 // the output is byte-for-byte identical.
@@ -58,25 +66,33 @@ var compTab = func() [256]byte {
 
 // SeqOptions holds the option-tail flags for SeqRun, mirroring stk_seq.
 type SeqOptions struct {
-	ForceFASTA   bool   // -A/-a: discard quality, emit FASTA
-	DropComment  bool   // -C: drop the header comment
-	RevComp      bool   // -r: reverse complement
-	LineLen      int    // -l: residues per line (0 => no wrapping)
-	QualThres    int    // -q: mask bases with quality below this (0 => disabled)
-	MaxQual      int    // -X: mask bases with quality above this (default 255)
-	QualShift    int    // -Q: ASCII offset for quality (default 33)
-	MaskChar     byte   // -n: replacement for masked bases (0 => lowercase)
-	MinLen       int    // -L: drop sequences shorter than this
-	Uppercase    bool   // -U: convert all bases to uppercase
-	ShiftQual    bool   // -V: shift quality by (-Q) - 33
-	DropAmbig    bool   // -N: drop sequences containing ambiguous bases
-	MaskComplent bool   // -c: mask the complement of -M regions
-	MaskFile     string // -M: path to a BED or name-list mask file ("" => none)
+	ForceFASTA   bool    // -A/-a: discard quality, emit FASTA
+	DropComment  bool    // -C: drop the header comment
+	RevComp      bool    // -r: reverse complement
+	BothStrands  bool    // -R: output both forward and reverse-complement copies
+	OddOnly      bool    // -1: output only the 2n-1 records
+	EvenOnly     bool    // -2: output only the 2n records
+	Squeeze      bool    // -S: strip white spaces out of sequences
+	LowerToMask  bool    // -x: convert lowercase bases to the -n mask char
+	LineLen      int     // -l: residues per line (0 => no wrapping)
+	QualThres    int     // -q: mask bases with quality below this (0 => disabled)
+	MaxQual      int     // -X: mask bases with quality above this (default 255)
+	QualShift    int     // -Q: ASCII offset for quality (default 33)
+	MaskChar     byte    // -n: replacement for masked bases (0 => lowercase)
+	MinLen       int     // -L: drop sequences shorter than this
+	Uppercase    bool    // -U: convert all bases to uppercase
+	ShiftQual    bool    // -V: shift quality by (-Q) - 33
+	DropAmbig    bool    // -N: drop sequences containing ambiguous bases
+	MaskComplent bool    // -c: mask the complement of -M regions
+	MaskFile     string  // -M: path to a BED or name-list mask file ("" => none)
+	Frac         float64 // -f: keep each record with this probability (default 1.0; negative => unset/keep-all sentinel)
+	Seed         int64   // -s: seed for the -f sampler (default 11)
+	FakeQual     int     // -F: fake/fill quality with this CHAR (-1 => disabled)
 }
 
 // DefaultSeqOptions returns SeqOptions with upstream's defaults.
 func DefaultSeqOptions() SeqOptions {
-	return SeqOptions{MaxQual: 255, QualShift: 33}
+	return SeqOptions{MaxQual: 255, QualShift: 33, Frac: 1.0, Seed: 11, FakeQual: -1}
 }
 
 // seqRecord is a minimal kseq-equivalent: a record with its name, comment,
@@ -87,6 +103,21 @@ type seqRecord struct {
 	comment string
 	seq     []byte
 	qual    []byte // empty for FASTA
+
+	// seqNoWrap, when non-nil, is the byte view the no-wrap (line_len == 0)
+	// printer must emit instead of seq. It reproduces an upstream kseq quirk:
+	// stk_printstr's no-wrap branch prints seq.s via fputs (up to the C null
+	// terminator), so after `-S` squeezes whitespace out in place — WITHOUT
+	// shrinking the underlying buffer or re-terminating it — the leftover tail
+	// bytes past the new logical length are still printed. seqNoWrap shares
+	// seq's backing array (the compacted prefix followed by that stale tail),
+	// so later in-place edits on seq[:len(seq)] show through here too, exactly
+	// as they do on seq.s[0..seq.l-1] upstream. It is only set by the -S path.
+	seqNoWrap []byte
+
+	// qualNoWrap is the quality analogue of seqNoWrap for the FASTQ no-wrap
+	// path; only set by -S. It shares qual's backing array.
+	qualNoWrap []byte
 }
 
 // splitNameComment splits a full FASTA/Q header line into the upstream "name"
@@ -114,6 +145,15 @@ func SeqRun(in io.Reader, w io.Writer, opts SeqOptions) error {
 	if opts.QualShift == 0 {
 		opts.QualShift = 33
 	}
+	// A negative Frac is the "unset" sentinel (the CLI passes it when -f was not
+	// given); it means keep-all. An explicit Frac of 0 must NOT be rewritten:
+	// upstream's `-f 0` sets frac=0, and `frac < 1 && kr_drand() >= 0` is always
+	// true, so every record is dropped. Only the negative sentinel resets to 1.0;
+	// this preserves keep-all for zero-value library callers that route through
+	// DefaultSeqOptions (Frac == 1.0) while letting an explicit -f 0 drop all.
+	if opts.Frac < 0 {
+		opts.Frac = 1.0
+	}
 
 	var maskRegions *regHash
 	if opts.MaskFile != "" {
@@ -130,9 +170,66 @@ func SeqRun(in io.Reader, w io.Writer, opts SeqOptions) error {
 	// qualThres is the absolute quality cutoff in ASCII space.
 	qualThres := opts.QualThres + opts.QualShift
 
+	// kr drives the -f sampler; upstream always seeds it (default 11), matching
+	// kr_srand(11) when -s is absent. It is consulted only when frac < 1.
+	kr := newKrand(uint64(opts.Seed))
+
+	// n_seqs increments for EVERY input record (before -L/-f/-1/-2 drop), as in
+	// upstream stk_seq.
+	var nSeqs int64
+
 	emit := func(rec *seqRecord) error {
+		nSeqs++
+
+		// -L: drop short sequences (length filter before taking random).
 		if len(rec.seq) < opts.MinLen {
 			return nil
+		}
+
+		// -f: keep each record with probability frac (draw before -1/-2).
+		if opts.Frac < 1.0 && kr.drand() >= opts.Frac {
+			return nil
+		}
+
+		// -1 / -2: output only the odd (2n-1) or even (2n) records.
+		if opts.OddOnly || opts.EvenOnly {
+			if opts.OddOnly && (nSeqs&1) == 0 {
+				return nil
+			}
+			if opts.EvenOnly && (nSeqs&1) == 1 {
+				return nil
+			}
+		}
+
+		// -S: squeeze out white spaces (and sync qual positions), early.
+		// Upstream compacts seq.s / qual.s in place, sets seq.l / qual.l to the
+		// new length, but leaves the stale tail bytes (and the original C null
+		// terminator) in place. The no-wrap printer prints to that terminator,
+		// so we retain a full-length "no-wrap" view sharing the same backing
+		// array. See seqRecord.seqNoWrap.
+		if opts.Squeeze {
+			origSeqLen := len(rec.seq)
+			if len(rec.qual) > 0 {
+				origQualLen := len(rec.qual)
+				k := 0
+				for i := 0; i < origSeqLen; i++ {
+					if !isSpaceByte(rec.seq[i]) {
+						rec.qual[k] = rec.qual[i]
+						k++
+					}
+				}
+				rec.qualNoWrap = rec.qual[:origQualLen]
+				rec.qual = rec.qual[:k]
+			}
+			k := 0
+			for i := 0; i < origSeqLen; i++ {
+				if !isSpaceByte(rec.seq[i]) {
+					rec.seq[k] = rec.seq[i]
+					k++
+				}
+			}
+			rec.seqNoWrap = rec.seq[:origSeqLen]
+			rec.seq = rec.seq[:k]
 		}
 
 		// -q / -X: quality masking (FASTQ only).
@@ -148,16 +245,33 @@ func SeqRun(in io.Reader, w io.Writer, opts SeqOptions) error {
 			}
 		}
 
-		// -U: uppercase everything.
+		// -U: uppercase everything. Else if -x: lowercase bases to the mask char
+		// (only when a mask char is set). -U takes precedence over -x.
 		if opts.Uppercase {
 			for i := 0; i < len(rec.seq); i++ {
 				rec.seq[i] = toUpperByte(rec.seq[i])
 			}
+		} else if opts.LowerToMask && opts.MaskChar != 0 {
+			for i := 0; i < len(rec.seq); i++ {
+				if isLowerByte(rec.seq[i]) {
+					rec.seq[i] = opts.MaskChar
+				}
+			}
 		}
 
-		// -A: drop quality (fastq -> fasta).
+		// -A: drop quality (fastq -> fasta). Else if -F: fill/fake quality with
+		// the given CHAR (turns FASTA into FASTQ), matching upstream's else-if.
 		if opts.ForceFASTA {
 			rec.qual = nil
+		} else if opts.FakeQual >= 33 && opts.FakeQual <= 127 {
+			if cap(rec.qual) >= len(rec.seq) {
+				rec.qual = rec.qual[:len(rec.seq)]
+			} else {
+				rec.qual = make([]byte, len(rec.seq))
+			}
+			for i := range rec.qual {
+				rec.qual[i] = byte(opts.FakeQual)
+			}
 		}
 
 		// -C: drop comment.
@@ -170,8 +284,14 @@ func SeqRun(in io.Reader, w io.Writer, opts SeqOptions) error {
 			maskRecord(rec, maskRegions, opts.MaskComplent, opts.MaskChar)
 		}
 
-		// -r: reverse complement.
-		if opts.RevComp {
+		// -r or -R: reverse complement. With -R the forward copy (name+"+") is
+		// written BEFORE reverse-complementing, then the "-" copy after.
+		if opts.RevComp || opts.BothStrands {
+			if opts.BothStrands {
+				if err := writeSeqRecordSuffix(bw, rec, opts.LineLen, "+"); err != nil {
+					return err
+				}
+			}
 			reverseComplementInPlace(rec.seq)
 			if len(rec.qual) > 0 {
 				reverseBytes(rec.qual)
@@ -195,6 +315,9 @@ func SeqRun(in io.Reader, w io.Writer, opts SeqOptions) error {
 			}
 		}
 
+		if opts.BothStrands {
+			return writeSeqRecordSuffix(bw, rec, opts.LineLen, "-")
+		}
 		return writeSeqRecord(bw, rec, opts.LineLen)
 	}
 
@@ -236,6 +359,22 @@ func SeqRun(in io.Reader, w io.Writer, opts SeqOptions) error {
 	return bw.Flush()
 }
 
+// isSpaceByte reports whether b is an ASCII whitespace byte, matching C's
+// isspace (space, form-feed, newline, carriage return, tab, vertical tab).
+func isSpaceByte(b byte) bool {
+	switch b {
+	case ' ', '\f', '\n', '\r', '\t', '\v':
+		return true
+	}
+	return false
+}
+
+// isLowerByte reports whether b is an ASCII lowercase letter, matching C's
+// islower for the default C locale (used by -x).
+func isLowerByte(b byte) bool {
+	return b >= 'a' && b <= 'z'
+}
+
 // writeSeqRecord writes a single record in upstream layout: '>' or '@' marker,
 // name, optional " comment", wrapped sequence, and (for FASTQ) the '+' line and
 // wrapped quality.
@@ -258,14 +397,72 @@ func writeSeqRecord(bw *bufio.Writer, rec *seqRecord, lineLen int) error {
 			return err
 		}
 	}
-	if err := writeWrapped(bw, rec.seq, lineLen); err != nil {
+	if err := writeWrapped(bw, seqBytesForPrint(rec, lineLen), lineLen); err != nil {
 		return err
 	}
 	if len(rec.qual) > 0 {
 		if _, err := bw.WriteString("+"); err != nil {
 			return err
 		}
-		if err := writeWrapped(bw, rec.qual, lineLen); err != nil {
+		if err := writeWrapped(bw, qualBytesForPrint(rec, lineLen), lineLen); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// seqBytesForPrint returns the sequence bytes to emit. In the no-wrap path
+// (lineLen <= 0) it returns the seqNoWrap over-read view when -S set one, so we
+// reproduce upstream stk_printstr's fputs-to-null behaviour; otherwise it
+// returns the logical sequence.
+func seqBytesForPrint(rec *seqRecord, lineLen int) []byte {
+	if lineLen <= 0 && rec.seqNoWrap != nil {
+		return rec.seqNoWrap
+	}
+	return rec.seq
+}
+
+// qualBytesForPrint is the quality analogue of seqBytesForPrint.
+func qualBytesForPrint(rec *seqRecord, lineLen int) []byte {
+	if lineLen <= 0 && rec.qualNoWrap != nil {
+		return rec.qualNoWrap
+	}
+	return rec.qual
+}
+
+// writeSeqRecordSuffix writes a single record like writeSeqRecord but appends
+// suffix to the name (before any comment). It mirrors upstream's
+// stk_printseq_suffix, used by -R to emit the "+" forward and "-" reverse copies.
+func writeSeqRecordSuffix(bw *bufio.Writer, rec *seqRecord, lineLen int, suffix string) error {
+	marker := byte('>')
+	if len(rec.qual) > 0 {
+		marker = '@'
+	}
+	if err := bw.WriteByte(marker); err != nil {
+		return err
+	}
+	if _, err := bw.WriteString(rec.name); err != nil {
+		return err
+	}
+	if _, err := bw.WriteString(suffix); err != nil {
+		return err
+	}
+	if rec.comment != "" {
+		if err := bw.WriteByte(' '); err != nil {
+			return err
+		}
+		if _, err := bw.WriteString(rec.comment); err != nil {
+			return err
+		}
+	}
+	if err := writeWrapped(bw, seqBytesForPrint(rec, lineLen), lineLen); err != nil {
+		return err
+	}
+	if len(rec.qual) > 0 {
+		if _, err := bw.WriteString("+"); err != nil {
+			return err
+		}
+		if err := writeWrapped(bw, qualBytesForPrint(rec, lineLen), lineLen); err != nil {
 			return err
 		}
 	}

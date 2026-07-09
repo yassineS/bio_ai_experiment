@@ -195,22 +195,43 @@ func seqCommand() {
 	var hv subFlags
 	hv.register(fs, true)
 	var revComp, forceFASTA, dropComment, upper, dropAmbig, shiftQual, maskComplement bool
-	var output, maskFile, maskCharStr string
+	var bothStrands, oddOnly, evenOnly, squeeze, lowerToMask bool
+	var output, maskFile, maskCharStr, fakeQualStr string
 	var lineLen, minLen, qualThres, maxQual, qualShift int
+	var seed int64
+	var frac float64
 
 	cliflag.BoolVar(fs, &revComp, "r", "reverse", false, "Reverse complement sequences")
 	cliflag.BoolVar(fs, &forceFASTA, "A", "fasta", false, "Force FASTA output (discard quality)")
+	// -a is an upstream synonym for -A (force FASTA); register it directly.
+	fs.BoolVar(&forceFASTA, "a", false, "")
 	cliflag.BoolVar(fs, &dropComment, "C", "drop-comment", false, "Drop the comment at header lines")
 	cliflag.BoolVar(fs, &upper, "U", "upper", false, "Convert all bases to uppercase")
 	cliflag.BoolVar(fs, &dropAmbig, "N", "drop-ambig", false, "Drop sequences containing ambiguous bases")
 	cliflag.BoolVar(fs, &shiftQual, "V", "shift-quality", false, "Shift quality by '(-Q) - 33'")
 	cliflag.BoolVar(fs, &maskComplement, "c", "mask-complement", false, "Mask the complement of -M regions")
+	cliflag.BoolVar(fs, &bothStrands, "R", "both-strands", false, "Output both forward and reverse-complement copies")
+	// -1 / -2 are numeric short flags; Go's flag package accepts digit names, so
+	// register them on the raw FlagSet, with GNU-style long aliases via cliflag.
+	fs.BoolVar(&oddOnly, "1", false, "")
+	fs.BoolVar(&evenOnly, "2", false, "")
+	cliflag.BoolVar(fs, &oddOnly, "", "odd", false, "Output the 2n-1 (odd) records only")
+	cliflag.BoolVar(fs, &evenOnly, "", "even", false, "Output the 2n (even) records only")
+	cliflag.BoolVar(fs, &squeeze, "S", "squeeze", false, "Strip white spaces out of sequences")
+	cliflag.BoolVar(fs, &lowerToMask, "x", "lower-to-mask", false, "Convert lowercase bases to the -n mask char")
 	cliflag.IntVar(fs, &lineLen, "l", "line-len", 0, "Number of residues per line (0 = no wrapping)")
 	cliflag.IntVar(fs, &minLen, "L", "min-len", 0, "Drop sequences shorter than INT")
 	cliflag.IntVar(fs, &qualThres, "q", "min-qual", 0, "Mask bases with quality lower than INT")
 	cliflag.IntVar(fs, &maxQual, "X", "max-qual", 255, "Mask bases with quality higher than INT")
 	cliflag.IntVar(fs, &qualShift, "Q", "qual-shift", 33, "Quality shift: ASCII-INT gives base quality")
+	cliflag.Int64Var(fs, &seed, "s", "seed", 11, "Random seed (effective with -f) [11]")
+	// -f default is a negative "unset" sentinel so SeqRun can distinguish an
+	// explicit `-f 0` (drop all) from -f being absent (keep all). SeqRun resets a
+	// negative Frac to 1.0; an explicit 0 reaches the sampler and drops every
+	// record, matching upstream (`frac < 1 && kr_drand() >= 0` is always true).
+	cliflag.Float64Var(fs, &frac, "f", "frac", -1.0, "Sample FLOAT fraction of sequences [1]")
 	cliflag.StringVar(fs, &maskCharStr, "n", "mask-char", "", "Masked bases converted to CHAR (default: lowercase)")
+	cliflag.StringVar(fs, &fakeQualStr, "F", "fake-qual", "", "Fake FASTQ quality with CHAR")
 	cliflag.StringVar(fs, &maskFile, "M", "mask-file", "", "Mask regions in a BED or name-list FILE")
 	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout)")
 
@@ -228,21 +249,31 @@ Options:
   -n, --mask-char CHAR   Masked bases converted to CHAR (default: lowercase)
   -l, --line-len INT     Number of residues per line; 0 = no wrapping [0]
   -Q, --qual-shift INT   Quality shift: ASCII-INT gives base quality [33]
+  -s, --seed INT         Random seed (effective with -f) [11]
+  -f, --frac FLOAT       Sample FLOAT fraction of sequences [1]
   -M, --mask-file FILE   Mask regions in a BED or name-list FILE
   -L, --min-len INT      Drop sequences shorter than INT [0]
+  -F, --fake-qual CHAR   Fake FASTQ quality with CHAR
   -c, --mask-complement  Mask the complement region (effective with -M)
   -r, --reverse          Reverse complement
+  -R, --both-strands     Output both forward and reverse-complement copies
   -A, --fasta            Force FASTA output (discard quality)
   -C, --drop-comment     Drop the comment at header lines
   -N, --drop-ambig       Drop sequences containing ambiguous bases
+  -1, --odd              Output the 2n-1 (odd) records only
+  -2, --even             Output the 2n (even) records only
   -V, --shift-quality    Shift quality by '(-Q) - 33'
   -U, --upper            Convert all bases to uppercase
+  -x, --lower-to-mask    Convert lowercase bases to the -n mask char
+  -S, --squeeze          Strip white spaces out of sequences
   -o, --output FILE      Output file (default: stdout, supports .gz)
 
 Examples:
   seqtk seq -A reads.fastq > reads.fasta
   seqtk seq -C -r genome.fa > rc.fa
   seqtk seq -M mask.bed -n N genome.fa > masked.fa
+  seqtk seq -R reads.fq > with_revcomp.fq
+  seqtk seq -f 0.5 -s 7 reads.fq > sample.fq
 
 `)
 	}
@@ -285,14 +316,25 @@ Examples:
 	opts.DropAmbig = dropAmbig
 	opts.ShiftQual = shiftQual
 	opts.MaskComplent = maskComplement
+	opts.BothStrands = bothStrands
+	opts.OddOnly = oddOnly
+	opts.EvenOnly = evenOnly
+	opts.Squeeze = squeeze
+	opts.LowerToMask = lowerToMask
 	opts.LineLen = lineLen
 	opts.MinLen = minLen
 	opts.QualThres = qualThres
 	opts.MaxQual = maxQual
 	opts.QualShift = qualShift
 	opts.MaskFile = maskFile
+	opts.Seed = seed
+	opts.Frac = frac
 	if maskCharStr != "" {
 		opts.MaskChar = maskCharStr[0]
+	}
+	// -F CHAR: upstream takes the first byte of the argument (fake_qual = *optarg).
+	if fakeQualStr != "" {
+		opts.FakeQual = int(fakeQualStr[0])
 	}
 
 	if err := seqtk.SeqRun(input, out, opts); err != nil {
